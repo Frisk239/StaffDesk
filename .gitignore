@@ -1,0 +1,4 @@
+# Upstream design/implementation references, cloned locally for reading.
+# Not part of StaffDesk source. See docs/adr/0007-research-is-task-not-brief.md
+reference/
+.memory/
