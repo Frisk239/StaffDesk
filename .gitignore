@@ -1,4 +1,35 @@
-# Upstream design/implementation references, cloned locally for reading.
-# Not part of StaffDesk source. See docs/adr/0007-research-is-task-not-brief.md
-reference/
+# Local upstream clones. Catalog is tracked; clone bodies are not.
+# See docs/reference.md
+reference/*
+!reference/README.md
 .memory/
+
+# Dependencies
+node_modules/
+
+# Build
+dist/
+out/
+app/out/
+app/dist/
+coverage/
+app/coverage/
+
+# Brain files (user data)
+app/data/*.db
+app/data/*.db-*
+
+# Logs / env
+*.log
+.env
+.env.*
+
+# Tooling caches
+.playwright-cli/
+.zcode/
+*.tsbuildinfo
+
+# OS
+Thumbs.db
+Desktop.ini
+.DS_Store
