@@ -1,6 +1,6 @@
 # Local upstream clones. Catalog is tracked; clone bodies are not.
 # See docs/reference.md
-reference/*
+reference/
 !reference/README.md
 .memory/
 
@@ -33,3 +33,7 @@ app/data/*.db-*
 Thumbs.db
 Desktop.ini
 .DS_Store
+
+# Playwright 测试产物
+app/test-results/
+app/playwright-report/
