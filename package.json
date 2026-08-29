@@ -1,0 +1,27 @@
+{
+  "name": "staffdesk",
+  "private": true,
+  "scripts": {
+    "prototype": "npm run dev --prefix prototype",
+    "dev": "npm run dev --prefix app",
+    "build": "npm run build --prefix app",
+    "lint": "npm run lint --prefix app",
+    "typecheck": "npm run typecheck --prefix app",
+    "test": "npm run test --prefix app",
+    "test:watch": "npm run test:watch --prefix app",
+    "e2e": "npm run e2e --prefix app",
+    "package": "npm run package --prefix app",
+    "rebuild": "npm run rebuild --prefix app",
+    "prepare": "husky"
+  },
+  "devDependencies": {
+    "@commitlint/cli": "^19.8.1",
+    "@commitlint/config-conventional": "^19.8.1",
+    "husky": "^9.1.7",
+    "lint-staged": "^16.1.0"
+  },
+  "lint-staged": {
+    "app/**/*.{ts,tsx,js,cjs,mjs,css,json,yml,md}": "prettier --write",
+    "app/**/*.{ts,tsx}": "eslint --fix"
+  }
+}
