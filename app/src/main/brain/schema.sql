@@ -1,0 +1,156 @@
+-- M1 schema. 禁止裸改历史：新版本走 schema_migrations。
+-- conflicts 不建表（0029：派生关系）。密钥不落库（0040）。
+
+CREATE TABLE IF NOT EXISTS schema_migrations (
+  version INTEGER PRIMARY KEY,
+  applied_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS workspaces (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  scenario TEXT NOT NULL CHECK (scenario IN ('求职面试', '求学申请', '技术选型', '尽调研究', '自定义')),
+  created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS objects (
+  id TEXT PRIMARY KEY,
+  kind TEXT NOT NULL CHECK (kind IN ('人', '组织', '项目')),
+  name TEXT NOT NULL,
+  note TEXT,
+  workspace_id TEXT,
+  archived INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS object_relations (
+  from_id TEXT NOT NULL,
+  to_id TEXT NOT NULL,
+  PRIMARY KEY (from_id, to_id)
+);
+
+CREATE TABLE IF NOT EXISTS sources (
+  id TEXT PRIMARY KEY,
+  title TEXT NOT NULL,
+  body TEXT NOT NULL,
+  path TEXT NOT NULL CHECK (path IN ('手给', '调研')),
+  role TEXT CHECK (role IN ('主键', '转述')),
+  workspace_id TEXT,
+  unparsed INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS source_bindings (
+  source_id TEXT NOT NULL,
+  object_id TEXT NOT NULL,
+  PRIMARY KEY (source_id, object_id)
+);
+
+CREATE TABLE IF NOT EXISTS slot_defs (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  kind TEXT NOT NULL CHECK (kind IN ('人', '组织', '项目')),
+  arity TEXT NOT NULL CHECK (arity IN ('单值', '多值')),
+  scenarios TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  UNIQUE (name, kind)
+);
+
+CREATE TABLE IF NOT EXISTS scenario_brief_specs (
+  scenario TEXT PRIMARY KEY CHECK (scenario IN ('求职面试', '求学申请', '技术选型', '尽调研究', '自定义')),
+  spec TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS claims (
+  id TEXT PRIMARY KEY,
+  object_id TEXT NOT NULL,
+  predicate TEXT NOT NULL,
+  text TEXT NOT NULL,
+  status TEXT NOT NULL CHECK (status IN ('成立', '过时')),
+  unverified INTEGER NOT NULL DEFAULT 1,
+  valid_from TEXT,
+  valid_to TEXT,
+  close_reason TEXT CHECK (close_reason IN ('世界已变', '从未成立', '来源删除', '对象误建')),
+  source_id TEXT NOT NULL,
+  span TEXT,
+  superseded_by TEXT,
+  created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS memories (
+  id TEXT PRIMARY KEY,
+  scope TEXT NOT NULL CHECK (scope IN ('全局', '对象', '会话')),
+  object_id TEXT,
+  kind TEXT NOT NULL CHECK (kind IN ('偏好', '禁写', '习惯')),
+  text TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS proposals (
+  id TEXT PRIMARY KEY,
+  type TEXT NOT NULL CHECK (type IN ('整理', '候选记忆')),
+  payload TEXT NOT NULL,
+  pending INTEGER NOT NULL,
+  decision TEXT,
+  created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS tasks (
+  id TEXT PRIMARY KEY,
+  object_id TEXT NOT NULL,
+  kind TEXT NOT NULL CHECK (kind IN ('调研', '出简报', '再搜一轮', '周期性雷达')),
+  status TEXT NOT NULL CHECK (status IN ('待启动', '进行中', '已完成', '已停止')),
+  stop_reason TEXT CHECK (stop_reason IN ('手动', '触顶', '失败')),
+  budget_gear TEXT CHECK (budget_gear IN ('快搜', '深挖')),
+  created_at TEXT NOT NULL,
+  finished_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS task_audit (
+  task_id TEXT NOT NULL,
+  seq INTEGER NOT NULL,
+  kind TEXT NOT NULL,
+  payload TEXT NOT NULL,
+  ts TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS briefs (
+  id TEXT PRIMARY KEY,
+  object_id TEXT NOT NULL,
+  task_id TEXT NOT NULL,
+  blocks TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS operations (
+  id TEXT PRIMARY KEY,
+  action TEXT NOT NULL,
+  payload TEXT NOT NULL,
+  undo_of TEXT,
+  chat_ref TEXT,
+  created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS certs (
+  id TEXT PRIMARY KEY,
+  provider_id TEXT NOT NULL,
+  model_id TEXT NOT NULL,
+  scores TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS chat_messages (
+  id TEXT PRIMARY KEY,
+  object_id TEXT NOT NULL,
+  role TEXT NOT NULL CHECK (role IN ('user', 'desk', 'card')),
+  text TEXT NOT NULL,
+  claim_refs TEXT,
+  card TEXT,
+  created_at TEXT NOT NULL
+);
+
+CREATE VIRTUAL TABLE IF NOT EXISTS claims_fts USING fts5(
+  text,
+  object_id UNINDEXED,
+  predicate UNINDEXED
+);
