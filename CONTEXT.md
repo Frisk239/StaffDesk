@@ -2,6 +2,15 @@
 
 带主张账本的个人参谋台：对象档案里的稳定判断能回到出处，再按任务生成简报。材料不足时结果是未知，而不是用模型常识把页面写满。
 
+## Current implementation
+
+- M8 closed the model-settings/mock cleanup slice: model configuration is product-global, and production paths no longer fall back to prototype model data.
+- M9 added the real ingestion path: Inbox and onboarding now call main-process ingestion for pasted text, URL, text files, and PDF; failed ingestion remains an IngestJob and never becomes a business Source.
+- Sources now carry origin, content hash, fetched time, and locatable segments. Claims can carry absolute source ranges and a segment/page locator while preserving legacy `span`.
+- Extraction now runs over stable source chunks instead of the first 8000 characters only. A technical failure in a chunk keeps the whole extraction attempt terminal without writing partial new claims.
+- Legacy `unparsed` sources are preserved for migration visibility, but they cannot be newly created through `ADD_SOURCE` and cannot be bound for extraction; users should re-import them through the real ingestion path.
+- Current working branch for this cut: `codex/m9-real-ingestion`. Previous stacked branch: `codex/m8-trustworthiness-closeout`.
+
 ## Language
 
 **StaffDesk**:

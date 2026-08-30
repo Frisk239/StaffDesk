@@ -589,6 +589,13 @@ textarea {
   border-color: var(--brand);
   box-shadow: 0 0 0 1px var(--brand);
 }
+.inbox-card.ingest-job {
+  cursor: default;
+  background: var(--bg-50);
+}
+.inbox-card.ingest-job.failed {
+  border-color: color-mix(in srgb, var(--error) 34%, var(--line-2));
+}
 .inbox-card-title {
   font-weight: 600;
   font-family: var(--font-code);
@@ -598,6 +605,11 @@ textarea {
   display: flex;
   gap: 4px;
   flex-wrap: wrap;
+}
+.ingest-job-detail {
+  color: var(--ink-3);
+  font-size: 12px;
+  line-height: 1.5;
 }
 .inbox-detail {
   flex: 1;
@@ -4119,6 +4131,24 @@ html[data-theme='dark'] .window {
   resize: vertical;
   padding: 11px 12px;
   line-height: 20px;
+}
+.onboarding-source-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 12px;
+}
+.onboarding-source-actions .btn {
+  min-height: 34px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex: none;
+}
+.onboarding-source-actions span {
+  color: var(--ink-3);
+  font-size: 11px;
+  line-height: 17px;
 }
 .onboarding-actions {
   min-height: 68px;

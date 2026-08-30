@@ -6,6 +6,7 @@ import type {
   DeletedSourceRecovery,
   DeskObject,
   DeskTask,
+  IngestJob,
   Memory,
   Proposal,
   SlotDef,
@@ -37,6 +38,18 @@ export function clearLegacyModelMeta(db: Database.Database): void {
   })();
 }
 
+export function interruptActiveIngestJobs(db: Database.Database): void {
+  const now = new Date().toISOString();
+  db.prepare(
+    `UPDATE ingest_jobs
+     SET status = '失败',
+         failure_kind = 'interrupted',
+         detail = '上次导入中断，可重试',
+         updated_at = ?
+     WHERE status IN ('排队', '获取中', '解析中', '提交中')`,
+  ).run(now);
+}
+
 /** 把出荷状态写入大脑文件。账本真相源是 SQLite，不是内存。 */
 export function persistLedger(db: Database.Database, state: State): void {
   const tx = db.transaction(() => {
@@ -50,6 +63,7 @@ export function persistLedger(db: Database.Database, state: State): void {
       DELETE FROM tasks;
       DELETE FROM task_audit;
       DELETE FROM briefs;
+      DELETE FROM ingest_jobs;
       DELETE FROM objects;
       DELETE FROM sources;
       DELETE FROM workspaces;
@@ -84,8 +98,10 @@ export function persistLedger(db: Database.Database, state: State): void {
     }
 
     const insSrc = db.prepare(
-      `INSERT INTO sources (id, title, body, path, role, workspace_id, unparsed, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO sources (
+        id, title, body, path, role, workspace_id, unparsed,
+        origin_json, segments_json, content_hash, fetched_at, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     );
     const insBind = db.prepare(`INSERT INTO source_bindings (source_id, object_id) VALUES (?, ?)`);
     for (const s of state.sources) {
@@ -98,6 +114,10 @@ export function persistLedger(db: Database.Database, state: State): void {
         s.role ?? null,
         s.workspaceId ?? null,
         s.unparsed ? 1 : 0,
+        s.origin ? JSON.stringify(s.origin) : null,
+        s.segments ? JSON.stringify(s.segments) : null,
+        s.contentHash ?? s.origin?.contentHash ?? null,
+        s.fetchedAt ?? s.origin?.fetchedAt ?? null,
         stateStamp(state),
       );
       for (const oid of s.boundObjectIds) {
@@ -123,8 +143,9 @@ export function persistLedger(db: Database.Database, state: State): void {
     const insClaim = db.prepare(
       `INSERT INTO claims (
         id, object_id, predicate, text, status, unverified, valid_from, valid_to,
-        close_reason, source_id, span, superseded_by, created_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        close_reason, source_id, span, source_start, source_end, source_locator,
+        superseded_by, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     );
     for (const c of state.claims) {
       insClaim.run(
@@ -139,6 +160,9 @@ export function persistLedger(db: Database.Database, state: State): void {
         c.closeReason ?? null,
         c.sourceId,
         c.span ?? null,
+        c.sourceStart ?? null,
+        c.sourceEnd ?? null,
+        c.sourceLocator ? JSON.stringify(c.sourceLocator) : null,
         c.supersededBy ?? null,
         c.createdAt,
       );
@@ -198,6 +222,30 @@ export function persistLedger(db: Database.Database, state: State): void {
     );
     for (const b of state.briefs) {
       insBrief.run(b.id, b.objectId, b.taskId, JSON.stringify(b.blocks), b.createdAt);
+    }
+
+    const insIngest = db.prepare(
+      `INSERT INTO ingest_jobs (
+        id, input_kind, input_json, status, title, locator, source_id,
+        failure_kind, detail, attempt, workspace_id, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    );
+    for (const job of state.ingestJobs) {
+      insIngest.run(
+        job.id,
+        job.inputKind,
+        job.input ? JSON.stringify(job.input) : null,
+        job.status,
+        job.title ?? null,
+        job.locator ?? null,
+        job.sourceId ?? null,
+        job.failureKind ?? null,
+        job.detail ?? null,
+        job.attempt,
+        job.workspaceId ?? null,
+        job.createdAt,
+        job.updatedAt,
+      );
     }
 
     const insMsg = db.prepare(
@@ -328,10 +376,20 @@ function stateStamp(_state: State): string {
   return new Date().toISOString();
 }
 
+function parseJson<T>(value: string | null): T | undefined {
+  if (!value) return undefined;
+  try {
+    return JSON.parse(value) as T;
+  } catch {
+    return undefined;
+  }
+}
+
 export type LedgerRows = {
   workspaces: Workspace[];
   objects: DeskObject[];
   sources: Source[];
+  ingestJobs: IngestJob[];
   slotDefs: SlotDef[];
   claims: Claim[];
   memories: Memory[];
@@ -408,7 +466,9 @@ export function loadLedger(db: Database.Database): LedgerRows {
   const sources = (
     db
       .prepare(
-        'SELECT id, title, body, path, role, workspace_id, unparsed FROM sources ORDER BY created_at',
+        `SELECT id, title, body, path, role, workspace_id, unparsed,
+                origin_json, segments_json, content_hash, fetched_at
+         FROM sources ORDER BY created_at`,
       )
       .all() as {
       id: string;
@@ -418,6 +478,10 @@ export function loadLedger(db: Database.Database): LedgerRows {
       role: Source['role'] | null;
       workspace_id: string | null;
       unparsed: number;
+      origin_json: string | null;
+      segments_json: string | null;
+      content_hash: string | null;
+      fetched_at: string | null;
     }[]
   ).map((s) => {
     const src: Source = {
@@ -430,6 +494,12 @@ export function loadLedger(db: Database.Database): LedgerRows {
     if (s.role) src.role = s.role;
     if (s.workspace_id) src.workspaceId = s.workspace_id;
     if (s.unparsed) src.unparsed = true;
+    const origin = parseJson<Source['origin']>(s.origin_json);
+    const segments = parseJson<Source['segments']>(s.segments_json);
+    if (origin) src.origin = origin;
+    if (segments) src.segments = segments;
+    if (s.content_hash) src.contentHash = s.content_hash;
+    if (s.fetched_at) src.fetchedAt = s.fetched_at;
     return src;
   });
 
@@ -460,6 +530,9 @@ export function loadLedger(db: Database.Database): LedgerRows {
       close_reason: Claim['closeReason'] | null;
       source_id: string;
       span: string | null;
+      source_start: number | null;
+      source_end: number | null;
+      source_locator: string | null;
       superseded_by: string | null;
       created_at: string;
     }[]
@@ -478,6 +551,10 @@ export function loadLedger(db: Database.Database): LedgerRows {
     if (c.valid_to) claim.validTo = c.valid_to;
     if (c.close_reason) claim.closeReason = c.close_reason;
     if (c.span) claim.span = c.span;
+    if (typeof c.source_start === 'number') claim.sourceStart = c.source_start;
+    if (typeof c.source_end === 'number') claim.sourceEnd = c.source_end;
+    const locator = parseJson<Claim['sourceLocator']>(c.source_locator);
+    if (locator) claim.sourceLocator = locator;
     if (c.superseded_by) claim.supersededBy = c.superseded_by;
     return claim;
   });
@@ -581,6 +658,48 @@ export function loadLedger(db: Database.Database): LedgerRows {
     blocks: JSON.parse(b.blocks) as Brief['blocks'],
   }));
 
+  const ingestJobs = (
+    db
+      .prepare(
+        `SELECT id, input_kind, input_json, status, title, locator, source_id,
+                failure_kind, detail, attempt, workspace_id, created_at, updated_at
+         FROM ingest_jobs ORDER BY created_at, id`,
+      )
+      .all() as {
+      id: string;
+      input_kind: IngestJob['inputKind'];
+      input_json: string | null;
+      status: IngestJob['status'];
+      title: string | null;
+      locator: string | null;
+      source_id: string | null;
+      failure_kind: IngestJob['failureKind'] | null;
+      detail: string | null;
+      attempt: number;
+      workspace_id: string | null;
+      created_at: string;
+      updated_at: string;
+    }[]
+  ).map((row) => {
+    const job: IngestJob = {
+      id: row.id,
+      inputKind: row.input_kind,
+      status: row.status,
+      attempt: row.attempt,
+      createdAt: row.created_at,
+      updatedAt: row.updated_at,
+    };
+    const input = parseJson<IngestJob['input']>(row.input_json);
+    if (input) job.input = input;
+    if (row.title) job.title = row.title;
+    if (row.locator) job.locator = row.locator;
+    if (row.source_id) job.sourceId = row.source_id;
+    if (row.failure_kind) job.failureKind = row.failure_kind;
+    if (row.detail) job.detail = row.detail;
+    if (row.workspace_id) job.workspaceId = row.workspace_id;
+    return job;
+  });
+
   const msgs = db
     .prepare(
       'SELECT id, object_id, role, text, claim_refs, card FROM chat_messages ORDER BY seq, created_at',
@@ -613,6 +732,7 @@ export function loadLedger(db: Database.Database): LedgerRows {
     workspaces,
     objects,
     sources,
+    ingestJobs,
     slotDefs,
     claims,
     memories,

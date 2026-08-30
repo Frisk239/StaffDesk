@@ -7,6 +7,7 @@ import { openDatabase } from './migrate';
 import {
   appendOperation,
   clearLegacyModelMeta,
+  interruptActiveIngestJobs,
   listDeletedSourceRecoveries,
   loadLedger,
   persistLedger,
@@ -61,6 +62,7 @@ export class Brain {
     const configured = shouldMigrateLegacy ? legacyConfigured : stored;
     if (shouldMigrateLegacy) modelSettings.save(configured);
     clearLegacyModelMeta(this.db);
+    interruptActiveIngestJobs(this.db);
     this.ui = { ...emptyUiFields(), ...hydrateModelSettings(configured, secrets) };
   }
 
@@ -83,6 +85,7 @@ export class Brain {
       currentWorkspaceId: ledger.currentWorkspaceId,
       objects: ledger.objects,
       sources,
+      ingestJobs: ledger.ingestJobs,
       deletedSourceRecoveries: listDeletedSourceRecoveries(this.db, ledger.sources),
       claims: ledger.claims,
       slotDefs: ledger.slotDefs,
@@ -140,6 +143,7 @@ export class Brain {
       sourceFocusId: next.sourceFocusId,
       toast: next.toast,
       briefDraftingFor: next.briefDraftingFor,
+      ingestJobs: next.ingestJobs,
       extractJobs: next.extractJobs,
       pendingClaims: next.pendingClaims,
       themePreference: next.themePreference,

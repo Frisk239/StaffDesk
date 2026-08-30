@@ -7,6 +7,7 @@ export function emptyUiFields(): Pick<
   | 'sourceFocusId'
   | 'toast'
   | 'briefDraftingFor'
+  | 'ingestJobs'
   | 'extractJobs'
   | 'pendingClaims'
   | 'themePreference'
@@ -26,6 +27,7 @@ export function emptyUiFields(): Pick<
     sourceFocusId: null,
     toast: null,
     briefDraftingFor: null,
+    ingestJobs: [],
     extractJobs: [],
     pendingClaims: [],
     themePreference: 'system',

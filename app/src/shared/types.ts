@@ -23,6 +23,27 @@ export interface DeskObject {
 
 export type FeedPath = '手给' | '调研';
 export type SourceRole = '主键' | '转述';
+export type SourceOriginKind = 'text' | 'url' | 'file' | 'research' | 'legacy';
+
+export interface SourceOrigin {
+  kind: SourceOriginKind;
+  locator?: string | undefined;
+  finalUrl?: string | undefined;
+  fileName?: string | undefined;
+  mimeType?: string | undefined;
+  sizeBytes?: number | undefined;
+  contentHash?: string | undefined;
+  fetchedAt?: string | undefined;
+  pageCount?: number | undefined;
+}
+
+export interface SourceSegment {
+  id: string;
+  start: number;
+  end: number;
+  page?: number | undefined;
+  label?: string | undefined;
+}
 
 export interface Source {
   id: string;
@@ -34,6 +55,10 @@ export interface Source {
   workspaceId?: string | undefined;
   virtual?: boolean | undefined; // 使用者陈述的落点：不进 Inbox、不进来源侧
   unparsed?: boolean | undefined; // 当前版本未解析的 PDF/二进制来源，只保留可见占位说明。
+  origin?: SourceOrigin | undefined;
+  segments?: SourceSegment[] | undefined;
+  contentHash?: string | undefined;
+  fetchedAt?: string | undefined;
 }
 
 // 0030：主张状态收敛为成立/过时；未知只是页面语义（槽内无主张的空格子），不是账本枚举值。
@@ -72,6 +97,9 @@ export interface Claim {
   closeReason?: CloseReason | undefined;
   sourceId: string; // 'user-stmt' 表示使用者陈述
   span?: string | undefined; // 来源原文片段
+  sourceStart?: number | undefined;
+  sourceEnd?: number | undefined;
+  sourceLocator?: SourceSegment | undefined;
   supersededBy?: string | undefined;
   createdAt: string;
 }
@@ -132,6 +160,38 @@ export interface ExtractJob {
 }
 
 export type ExtractionOutcomeKind = 'success' | 'unconfigured' | 'invalid-output' | 'failed';
+
+export type IngestFailureKind =
+  | 'invalid-input'
+  | 'unsupported-mime'
+  | 'too-large'
+  | 'too-many-pages'
+  | 'timeout'
+  | 'fetch-failed'
+  | 'parse-failed'
+  | 'empty-body'
+  | 'interrupted';
+
+export type IngestInput =
+  | { kind: 'text'; text: string; suggestedTitle?: string | undefined }
+  | { kind: 'url'; url: string }
+  | { kind: 'file'; filePath: string };
+
+export interface IngestJob {
+  id: string;
+  inputKind: IngestInput['kind'];
+  input?: IngestInput | undefined;
+  status: '排队' | '获取中' | '解析中' | '提交中' | '完成' | '失败';
+  title?: string | undefined;
+  locator?: string | undefined;
+  sourceId?: string | undefined;
+  failureKind?: IngestFailureKind | undefined;
+  detail?: string | undefined;
+  attempt: number;
+  workspaceId?: string | undefined;
+  createdAt: string;
+  updatedAt: string;
+}
 
 export type ProposalDecision = 'accept-merge' | 'accept-drop' | 'reject';
 
@@ -340,6 +400,7 @@ export interface State {
   briefs: Brief[];
   memories: Memory[];
   inbox: string[];
+  ingestJobs: IngestJob[];
   extractJobs: ExtractJob[];
   pendingClaims: Claim[]; // 抽取循环还没写进账本的主张（绑定确认后才入账）
   proposals: Proposal[];

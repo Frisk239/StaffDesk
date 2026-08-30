@@ -166,6 +166,50 @@ describe('主张抽取循环 0024', () => {
     expect(failed.detail).toContain('endpoint unavailable');
   });
 
+  it('抽取覆盖 8000 字符之后的正文，并写入绝对位置', async () => {
+    const lateSpan = '验收组织正在建设真实导入链路';
+    const prefix = '填充内容。'.repeat(1800);
+    const longSource: Source = {
+      ...source,
+      body: `${prefix}\n${lateSpan}。`,
+      segments: [{ id: 'seg-all', start: 0, end: `${prefix}\n${lateSpan}。`.length }],
+    };
+    let calls = 0;
+
+    const result = await runExtractLoop({
+      source: longSource,
+      objects: [org],
+      slotDefs: DEFAULT_SLOT_DEFS,
+      existing: [],
+      complete: async (request) => {
+        calls += 1;
+        const user = request.messages[1]?.content ?? '';
+        if (!user.includes(lateSpan)) return { content: '{"claims":[]}', toolCalls: [] };
+        return {
+          content: JSON.stringify({
+            claims: [
+              {
+                objectName: '验收组织',
+                predicate: '未编目',
+                text: `验收组织${lateSpan.slice('验收组织'.length)}`,
+                span: lateSpan,
+              },
+            ],
+          }),
+          toolCalls: [],
+        };
+      },
+    });
+
+    expect(calls).toBeGreaterThan(1);
+    expect(result.status).toBe('success');
+    expect(result.claims).toHaveLength(1);
+    const claim = result.claims[0];
+    expect(claim?.sourceStart).toBeGreaterThan(8000);
+    if (typeof claim?.sourceStart !== 'number') throw new Error('missing sourceStart');
+    expect(claim.sourceEnd).toBe(claim.sourceStart + lateSpan.length);
+  });
+
   it('mapPredicate 自开槽 → 未编目', () => {
     expect(mapPredicate('我发明的槽', '组织', DEFAULT_SLOT_DEFS)).toBe('未编目');
     expect(mapPredicate('后端主栈', '组织', DEFAULT_SLOT_DEFS)).toBe('后端主栈');

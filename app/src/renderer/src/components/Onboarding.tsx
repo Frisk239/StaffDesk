@@ -11,6 +11,7 @@ import {
   ShieldCheck,
   Sparkle,
   Tray,
+  UploadSimple,
   User,
 } from '@phosphor-icons/react';
 import { SCENARIOS, SCENARIO_HINTS } from '@shared/scenario';
@@ -63,6 +64,7 @@ export function Onboarding({ onClose }: { onClose: () => void }) {
     项目: '',
   });
   const [sourceDraft, setSourceDraft] = useState('');
+  const [sourceBusy, setSourceBusy] = useState(false);
 
   const cert = state.certByProvider[provider.id];
   const modelId = provider.models[0]?.id ?? '';
@@ -139,16 +141,35 @@ export function Onboarding({ onClose }: { onClose: () => void }) {
 
   const addSourceAndFinish = async () => {
     const body = sourceDraft.trim();
-    if (body) {
-      const fromUrl = /^https?:\/\//i.test(body);
-      await window.staffdesk.dispatch({
-        type: 'ADD_SOURCE',
-        title: fromUrl ? (body.split(/[?#\s]/)[0] ?? body.slice(0, 32)) : body.slice(0, 32),
-        body,
-        fromUrl,
-      });
+    setSourceBusy(true);
+    let finished = false;
+    try {
+      if (body) {
+        const fromUrl = /^https?:\/\//i.test(body);
+        if (fromUrl) await window.staffdesk.ingestUrl(body);
+        else await window.staffdesk.ingestText(body, body.slice(0, 32));
+      }
+      await finish();
+      finished = true;
+    } finally {
+      if (!finished) setSourceBusy(false);
     }
-    await finish();
+  };
+
+  const chooseFilesAndFinish = async () => {
+    setSourceBusy(true);
+    let finished = false;
+    try {
+      const before = state.sources.length + state.ingestJobs.length;
+      const next = await window.staffdesk.chooseAndIngestFiles();
+      const after = next.sources.length + next.ingestJobs.length;
+      if (after > before) {
+        await finish();
+        finished = true;
+      }
+    } finally {
+      if (!finished) setSourceBusy(false);
+    }
   };
 
   return (
@@ -426,7 +447,10 @@ export function Onboarding({ onClose }: { onClose: () => void }) {
               <>
                 <div className="onboarding-copy">
                   <h1>放入第一份真实材料</h1>
-                  <p>粘贴一段文字或链接，它会先进入 Inbox。只有你确认绑定后，内容才会进入对象。</p>
+                  <p>
+                    粘贴一段文字、链接，或选择 TXT/PDF 文件。它会先进入
+                    Inbox；只有你确认绑定后，内容才会进入对象。
+                  </p>
                 </div>
                 <label className="onboarding-source">
                   <span>
@@ -439,6 +463,17 @@ export function Onboarding({ onClose }: { onClose: () => void }) {
                     onChange={(event) => setSourceDraft(event.target.value)}
                   />
                 </label>
+                <div className="onboarding-source-actions">
+                  <button
+                    type="button"
+                    className="btn outline"
+                    disabled={sourceBusy}
+                    onClick={() => void chooseFilesAndFinish()}
+                  >
+                    <UploadSimple size={16} /> 选择 TXT / PDF 文件
+                  </button>
+                  <span>文件正文只在主进程读取与解析，不会在界面里伪造成占位材料。</span>
+                </div>
                 <p className="onboarding-note">现在没有材料也没关系，可以直接进入 StaffDesk。</p>
               </>
             )}
@@ -515,8 +550,17 @@ export function Onboarding({ onClose }: { onClose: () => void }) {
                 </button>
               )}
               {step === 4 && (
-                <button type="button" className="primary" onClick={() => void addSourceAndFinish()}>
-                  {sourceDraft.trim() ? '加入 Inbox 并开始' : '进入 StaffDesk'}
+                <button
+                  type="button"
+                  className="primary"
+                  disabled={sourceBusy}
+                  onClick={() => void addSourceAndFinish()}
+                >
+                  {sourceBusy
+                    ? '处理中…'
+                    : sourceDraft.trim()
+                      ? '加入 Inbox 并开始'
+                      : '进入 StaffDesk'}
                 </button>
               )}
             </div>

@@ -4,6 +4,7 @@ import type { Action } from '@shared/actions';
 import { attachTurn } from '@shared/turn';
 import { createReachAdapter } from './adapters/reach';
 import type { Brain } from './brain';
+import { createIngestionExecutor } from './ingestion';
 import { checkCapability, checkConnect } from './llm/selfCheck';
 import { activeModelCompletion, completionForProvider } from './llm/runtime';
 import { createExtractionJobExecutor } from './extraction';
@@ -22,6 +23,7 @@ function broadcast(next: unknown): void {
 
 export function registerIpc(brain: Brain): void {
   const executeExtractionJob = createExtractionJobExecutor({ brain, publish: broadcast });
+  const executeIngest = createIngestionExecutor({ brain, publish: broadcast });
   ipcMain.handle('brain:snapshot', () => brain.snapshot());
   ipcMain.handle('brain:dispatch', (_event, action: Action) => {
     const next = brain.dispatch(action);
@@ -67,6 +69,60 @@ export function registerIpc(brain: Brain): void {
     });
     broadcast(next);
     return next;
+  });
+
+  ipcMain.handle(
+    'ingest:text',
+    async (_event, payload: { text: string; suggestedTitle?: string }) => {
+      return executeIngest({
+        kind: 'text',
+        text: payload.text,
+        suggestedTitle: payload.suggestedTitle,
+      });
+    },
+  );
+
+  ipcMain.handle('ingest:url', async (_event, payload: { url: string }) => {
+    return executeIngest({ kind: 'url', url: payload.url });
+  });
+
+  ipcMain.handle('ingest:chooseFiles', async () => {
+    const picked = await dialog.showOpenDialog({
+      title: '选择材料',
+      properties: ['openFile', 'multiSelections'],
+      filters: [
+        {
+          name: '可解析材料',
+          extensions: [
+            'txt',
+            'md',
+            'markdown',
+            'csv',
+            'json',
+            'html',
+            'htm',
+            'log',
+            'yaml',
+            'yml',
+            'xml',
+            'pdf',
+          ],
+        },
+        { name: '所有文件', extensions: ['*'] },
+      ],
+    });
+    if (picked.canceled || picked.filePaths.length === 0) return brain.snapshot();
+    let next = brain.snapshot();
+    for (const filePath of picked.filePaths) {
+      next = await executeIngest({ kind: 'file', filePath });
+    }
+    return next;
+  });
+
+  ipcMain.handle('ingest:retry', async (_event, jobId: string) => {
+    const job = brain.snapshot().ingestJobs.find((item) => item.id === jobId);
+    if (!job?.input) return brain.snapshot();
+    return executeIngest(job.input, job.id);
   });
 
   ipcMain.handle('extract:run', async (_event, sourceId: string) => {
@@ -192,6 +248,10 @@ export function unregisterIpc(): void {
   ipcMain.removeHandler('brain:snapshot');
   ipcMain.removeHandler('brain:dispatch');
   ipcMain.removeHandler('chat:send');
+  ipcMain.removeHandler('ingest:text');
+  ipcMain.removeHandler('ingest:url');
+  ipcMain.removeHandler('ingest:chooseFiles');
+  ipcMain.removeHandler('ingest:retry');
   ipcMain.removeHandler('extract:run');
   ipcMain.removeHandler('settings:testProvider');
   ipcMain.removeHandler('task:startResearch');

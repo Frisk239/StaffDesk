@@ -5,6 +5,7 @@ import type {
   ChatMessage,
   Claim,
   ExtractionOutcomeKind,
+  IngestJob,
   RightTab,
   Predicate,
   RightTabKind,
@@ -200,6 +201,17 @@ function extractionResultText(
   return '原文中没有抽出可核对的主张；没有写入账本。';
 }
 
+function ingestStatusText(job: IngestJob): string {
+  if (job.inputKind === 'url') return '正在获取链接正文';
+  if (job.inputKind === 'file') return '正在读取文件';
+  return '正在解析文本';
+}
+
+function claimEvidenceKey(claim: Claim): string {
+  const span = claim.span ?? claim.text;
+  return typeof claim.sourceStart === 'number' ? `${span}\0${claim.sourceStart}` : span;
+}
+
 function enqueueWrite(state: State, draft: Omit<WriteProposal, 'id'>): State {
   if ((draft.kind === '晋升' || draft.kind === '纠正' || draft.kind === '整理') && !draft.claimId) {
     return {
@@ -288,6 +300,13 @@ export function reducer(state: State, action: Action): State {
     case 'BIND_CONFIRMED': {
       const source = state.sources.find((s) => s.id === action.sourceId);
       if (!source || action.objectIds.length === 0) return state;
+      if (source.unparsed) {
+        return {
+          ...state,
+          toast: { text: '旧版占位材料需要重新导入后再绑定', id: state.seq },
+          seq: state.seq + 1,
+        };
+      }
       const seq = state.seq;
       const sources = state.sources.map((s) =>
         s.id === action.sourceId ? { ...s, boundObjectIds: action.objectIds } : s,
@@ -538,7 +557,7 @@ export function reducer(state: State, action: Action): State {
       // 抽取请求可能在解绑/重绑之间并发完成；最终落账必须再次按当前账本幂等复核。
       const seen = new Set(
         state.claims.map((claim) =>
-          idempotencyKey(claim.sourceId, claim.objectId, claim.predicate, claim.span ?? claim.text),
+          idempotencyKey(claim.sourceId, claim.objectId, claim.predicate, claimEvidenceKey(claim)),
         ),
       );
       const incoming = candidates.filter((claim) => {
@@ -549,7 +568,7 @@ export function reducer(state: State, action: Action): State {
           claim.sourceId,
           claim.objectId,
           claim.predicate,
-          claim.span ?? claim.text,
+          claimEvidenceKey(claim),
         );
         if (seen.has(key)) return false;
         seen.add(key);
@@ -1113,6 +1132,13 @@ export function reducer(state: State, action: Action): State {
     }
 
     case 'ADD_SOURCE': {
+      if (action.fromUrl || action.unparsed) {
+        return {
+          ...state,
+          toast: { text: '请使用导入入口获取真实正文', id: state.seq },
+          seq: state.seq + 1,
+        };
+      }
       const body = action.body.trim();
       if (!body) return state;
       const [id, seq] = nextId(state, 'src');
@@ -1132,18 +1158,93 @@ export function reducer(state: State, action: Action): State {
             path: '手给',
             boundObjectIds: [],
             workspaceId: state.currentWorkspaceId,
-            ...(action.unparsed ? { unparsed: true } : {}),
           },
         ],
         inbox: [...state.inbox, id],
-        toast: {
-          text: action.unparsed
-            ? '文件已收下，当前版本暂不解析'
-            : action.fromUrl
-              ? '链接已收下，当前版本暂不抓取正文'
-              : '已加入 Inbox',
-          id: seq,
-        },
+        toast: { text: '已加入 Inbox', id: seq },
+      };
+    }
+
+    case 'INGEST_STARTED': {
+      const existing = state.ingestJobs.find((job) => job.id === action.job.id);
+      const jobs = existing
+        ? state.ingestJobs.map((job) =>
+            job.id === action.job.id
+              ? {
+                  ...action.job,
+                  createdAt: job.createdAt,
+                  attempt: Math.max(action.job.attempt, job.attempt + 1),
+                }
+              : job,
+          )
+        : [...state.ingestJobs, action.job];
+      return {
+        ...state,
+        ingestJobs: jobs,
+        toast: { text: ingestStatusText(action.job), id: state.seq },
+      };
+    }
+
+    case 'INGEST_SUCCEEDED': {
+      const body = action.body.trim();
+      if (!body) return state;
+      const [id, seq] = nextId(state, 'src');
+      const source = {
+        id,
+        title: action.title.trim() || '导入材料',
+        body,
+        path: '手给' as const,
+        boundObjectIds: [],
+        workspaceId: state.currentWorkspaceId,
+        origin: action.origin,
+        segments: action.segments,
+        contentHash: action.contentHash,
+        fetchedAt: action.origin.fetchedAt,
+      };
+      const updatedAt = new Date().toISOString();
+      const jobs = state.ingestJobs.map((job) =>
+        job.id === action.jobId
+          ? {
+              ...job,
+              status: '完成' as const,
+              sourceId: id,
+              title: source.title,
+              locator: action.origin.finalUrl ?? action.origin.locator ?? job.locator,
+              detail: undefined,
+              failureKind: undefined,
+              updatedAt,
+            }
+          : job,
+      );
+      return {
+        ...state,
+        seq,
+        sources: [...state.sources, source],
+        inbox: [...state.inbox, id],
+        ingestJobs: jobs,
+        toast: { text: '真实材料已解析并加入 Inbox', id: seq },
+      };
+    }
+
+    case 'INGEST_FAILED': {
+      const updatedAt = new Date().toISOString();
+      const jobs = state.ingestJobs.map((job) =>
+        job.id === action.jobId
+          ? {
+              ...job,
+              status: '失败' as const,
+              title: action.title ?? job.title,
+              locator: action.locator ?? job.locator,
+              failureKind: action.failureKind,
+              detail: action.detail,
+              updatedAt,
+            }
+          : job,
+      );
+      return {
+        ...state,
+        ingestJobs: jobs,
+        toast: { text: `导入失败：${action.detail}`, id: state.seq },
       };
     }
 

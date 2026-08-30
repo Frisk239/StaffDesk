@@ -4,11 +4,14 @@ import type {
   CloseReason,
   DeletedSourceRecovery,
   DeskTask,
+  IngestJob,
   LlmProvider,
   ObjectKind,
   RightTabKind,
   ScenarioKind,
   Source,
+  SourceOrigin,
+  SourceSegment,
   TaskAudit,
   ThemePreference,
   ThinkingEffort,
@@ -84,6 +87,24 @@ export type Action =
       body: string;
       fromUrl?: boolean | undefined;
       unparsed?: boolean | undefined;
+    }
+  | { type: 'INGEST_STARTED'; job: IngestJob }
+  | {
+      type: 'INGEST_SUCCEEDED';
+      jobId: string;
+      title: string;
+      body: string;
+      origin: SourceOrigin;
+      segments: SourceSegment[];
+      contentHash: string;
+    }
+  | {
+      type: 'INGEST_FAILED';
+      jobId: string;
+      failureKind: IngestJob['failureKind'];
+      detail: string;
+      title?: string | undefined;
+      locator?: string | undefined;
     }
   | { type: 'TOAST'; text: string | null }
   | { type: 'SELECT_CLAIM'; claimId: string | null }

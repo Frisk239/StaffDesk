@@ -45,6 +45,53 @@ describe('建库与迁移', () => {
     brain.close();
   });
 
+  it('v3 迁移提供真实导入与定位字段', () => {
+    const brain = openBrain(tmpBrain());
+    const tables = tableNames(brain);
+    expect(tables).toContain('ingest_jobs');
+    const sourceColumns = columnNames(brain.db, 'sources');
+    expect(sourceColumns).toEqual(
+      expect.arrayContaining(['origin_json', 'segments_json', 'content_hash']),
+    );
+    const claimColumns = columnNames(brain.db, 'claims');
+    expect(claimColumns).toEqual(
+      expect.arrayContaining(['source_start', 'source_end', 'source_locator']),
+    );
+    const row = brain.db.prepare('SELECT MAX(version) AS version FROM schema_migrations').get() as {
+      version: number;
+    };
+    expect(row.version).toBeGreaterThanOrEqual(3);
+    brain.close();
+  });
+
+  it('旧版 unparsed 来源迁移后保留但不会被绑定抽取', () => {
+    const brain = openBrain(tmpBrain());
+    brain.dispatch({ type: 'ADD_WORKSPACE', name: '旧库', scenario: '求职面试' });
+    brain.dispatch({ type: 'ADD_OBJECT', kind: '组织', name: '旧组织' });
+    brain.db
+      .prepare(
+        `INSERT INTO sources (id, title, body, path, workspace_id, unparsed, created_at)
+         VALUES (?, ?, ?, '手给', ?, 1, ?)`,
+      )
+      .run(
+        'legacy-unparsed-pdf',
+        '旧 PDF',
+        'binary placeholder',
+        brain.snapshot().currentWorkspaceId,
+        '2026-08-30T00:00:00.000Z',
+      );
+    const state = brain.snapshot();
+    const source = state.sources.find((item) => !item.virtual);
+    const object = state.objects[0];
+    if (!source || !object) throw new Error('setup failed');
+    brain.dispatch({ type: 'BIND_CONFIRMED', sourceId: source.id, objectIds: [object.id] });
+
+    const next = brain.snapshot();
+    expect(next.sources.find((item) => item.id === source.id)?.boundObjectIds).toEqual([]);
+    expect(next.extractJobs).toHaveLength(0);
+    brain.close();
+  });
+
   it('首启后槽名/简报说明与 DEFAULT_SLOT_DEFS/BRIEF_SPECS 一致，且对象/来源/主张计数为 0', () => {
     const brain = openBrain(tmpBrain());
     const snap = brain.snapshot();
@@ -124,3 +171,9 @@ describe('建库与迁移', () => {
     migrated.close();
   });
 });
+
+function columnNames(db: import('better-sqlite3').Database, table: string): string[] {
+  return (db.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[]).map(
+    (row) => row.name,
+  );
+}

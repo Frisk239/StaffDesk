@@ -1,20 +1,33 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { UploadSimple } from '@phosphor-icons/react';
+import type { State } from '@shared/types';
 import { useStore } from '../store';
 import { SourceDeleteDialog } from './SourceDeleteDialog';
 
 // Inbox：未绑定来源的进料口。上页必须走绑定，且必须人点「确认绑定」。
 // 未绑定来源不投影、不进对象对话默认语境（reducer 保证）。
-// 进料三路：粘贴文本/URL、拖入文件、选择文件。文本文件直接读正文；
-// PDF/二进制收下但诚实标注当前版本暂不解析；URL 同样不假装已经抓取正文。
+// 进料三路：粘贴文本/URL、选择文件。读取、抓取、解析全部在主进程完成；
+// 失败只留导入任务，不会把 URL 或 PDF 占位写成业务来源。
 
-const TEXT_FILE_RE = /\.(txt|md|markdown|csv|json|html?|htm|log|ya?ml|xml|ts|tsx|js|jsx)$/i;
-
-function isTextFile(f: File): boolean {
-  return f.type.startsWith('text/') || TEXT_FILE_RE.test(f.name);
+function originLabel(kind: string | undefined): string {
+  if (kind === 'url') return 'URL';
+  if (kind === 'file') return '文件';
+  if (kind === 'text') return '文本';
+  if (kind === 'research') return '调研';
+  return '旧版';
 }
 
-const MAX_BODY = 200_000;
+function latestInboxSourceId(state: State): string | null {
+  const ids = state.sources
+    .filter(
+      (source) =>
+        state.inbox.includes(source.id) &&
+        !source.virtual &&
+        source.workspaceId === state.currentWorkspaceId,
+    )
+    .map((source) => source.id);
+  return ids.at(-1) ?? null;
+}
 
 export function InboxView() {
   const { state, dispatch } = useStore();
@@ -24,7 +37,6 @@ export function InboxView() {
   const [draft, setDraft] = useState('');
   const [dragOver, setDragOver] = useState(false);
   const [deleteSourceId, setDeleteSourceId] = useState<string | null>(null);
-  const fileInputRef = useRef<HTMLInputElement>(null);
   const looksUrl = /^https?:\/\//i.test(draft.trim());
 
   // 拖到窗口其他位置时拦掉浏览器默认行为（打开文件会覆盖整个应用）。
@@ -38,41 +50,30 @@ export function InboxView() {
     };
   }, []);
 
-  const handleFiles = async (files: FileList | File[]) => {
-    const list = Array.from(files);
-    if (list.length === 0) return;
-    const start = state.seq;
-    let added = 0;
-    let lastBodyEmpty = false;
-    for (const f of list) {
-      let body: string;
-      let unparsed = false;
-      if (isTextFile(f)) {
-        const text = await f.text();
-        body = text.length > MAX_BODY ? `${text.slice(0, MAX_BODY)}\n…（超长截断）` : text;
-        if (!body.trim()) {
-          lastBodyEmpty = true;
-          continue; // 空文本文件：没有可指向的原文，不写来源
-        }
-      } else if (f.type === 'application/pdf' || /\.pdf$/i.test(f.name)) {
-        body = `（PDF「${f.name}」已收下。当前版本暂不解析 PDF，此处只保留文件名。）`;
-        unparsed = true;
-      } else {
-        body = `（文件「${f.name}」已收下。当前版本暂不解析该格式，此处只保留文件名。）`;
-        unparsed = true;
-      }
-      dispatch({ type: 'ADD_SOURCE', title: f.name, body, unparsed });
-      added += 1;
-    }
-    // 投料后自动选中新来源；全被跳过（空文件）时不选。
-    if (added > 0) setSelectedId(`src-${start + added - 1}`);
-    else if (lastBodyEmpty) dispatch({ type: 'TOAST', text: '空文件没有可指向的原文，未收' });
+  const submitDraft = async () => {
+    const body = draft.trim();
+    if (!body) return;
+    const next = looksUrl
+      ? await window.staffdesk.ingestUrl(body)
+      : await window.staffdesk.ingestText(body, body.slice(0, 32));
+    setSelectedId(latestInboxSourceId(next));
+    setDraft('');
+  };
+
+  const chooseFiles = async () => {
+    const next = await window.staffdesk.chooseAndIngestFiles();
+    setSelectedId(latestInboxSourceId(next));
   };
 
   const sources = state.sources.filter(
     (s) => state.inbox.includes(s.id) && !s.virtual && s.workspaceId === state.currentWorkspaceId,
   );
+  const ingestJobs = state.ingestJobs.filter(
+    (job) =>
+      job.status !== '完成' && (!job.workspaceId || job.workspaceId === state.currentWorkspaceId),
+  );
   const selected = sources.find((s) => s.id === selectedId) ?? null;
+  const selectedCanBind = Boolean(selected && !selected.unparsed);
 
   const toggle = (id: string) => {
     const next = new Set(checked);
@@ -82,7 +83,7 @@ export function InboxView() {
   };
 
   const confirmBind = () => {
-    if (!selected || checked.size === 0) return; // 不点确认、不挑对象，就无法绑定
+    if (!selected || selected.unparsed || checked.size === 0) return; // 不点确认、不挑对象，就无法绑定
     dispatch({ type: 'BIND_CONFIRMED', sourceId: selected.id, objectIds: [...checked] });
     setBindOpen(false);
     setChecked(new Set());
@@ -96,10 +97,10 @@ export function InboxView() {
           className={`inbox-dropzone${dragOver ? ' over' : ''}`}
           role="button"
           tabIndex={0}
-          aria-label="拖入文件或点击选择文件"
-          onClick={() => fileInputRef.current?.click()}
+          aria-label="选择文件"
+          onClick={() => void chooseFiles()}
           onKeyDown={(e) => {
-            if (e.key === 'Enter' || e.key === ' ') fileInputRef.current?.click();
+            if (e.key === 'Enter' || e.key === ' ') void chooseFiles();
           }}
           onDragOver={(e) => {
             e.preventDefault();
@@ -111,38 +112,18 @@ export function InboxView() {
           onDrop={(e) => {
             e.preventDefault();
             setDragOver(false);
-            void handleFiles(e.dataTransfer.files);
+            void chooseFiles();
           }}
         >
           <UploadSimple size={18} />
-          <span>拖文件到这里，或点击选择文件</span>
-          <span className="dim">文本文件直接读入，其他格式先收下并标记待解析</span>
+          <span>点击选择文件</span>
+          <span className="dim">TXT / Markdown / HTML / PDF 由主进程解析</span>
         </div>
-        <input
-          ref={fileInputRef}
-          type="file"
-          multiple
-          hidden
-          onChange={(e) => {
-            if (e.target.files) void handleFiles(e.target.files);
-            e.target.value = '';
-          }}
-        />
         <form
           className="inbox-drop"
           onSubmit={(e) => {
             e.preventDefault();
-            const body = draft.trim();
-            if (!body) return;
-            dispatch({
-              type: 'ADD_SOURCE',
-              title: looksUrl ? (body.split(/[?#\s]/)[0] ?? body.slice(0, 32)) : body.slice(0, 32),
-              body,
-              fromUrl: looksUrl,
-            });
-            // 投料后自动选中新来源（id 规则：src-{seq}，见 store 的 nextId），不用再点一次卡片。
-            setSelectedId(`src-${state.seq}`);
-            setDraft('');
+            void submitDraft();
           }}
         >
           <textarea
@@ -152,36 +133,61 @@ export function InboxView() {
             onChange={(e) => setDraft(e.target.value)}
           />
           <button type="submit" className="primary" disabled={!draft.trim()}>
-            {looksUrl ? '收下链接' : '加入 Inbox'}
+            {looksUrl ? '获取链接' : '加入 Inbox'}
           </button>
         </form>
-        {sources.length === 0 ? (
+        {sources.length === 0 && ingestJobs.length === 0 ? (
           <div className="empty-guide">
             <div className="empty-big">没有未绑定材料</div>
           </div>
         ) : (
-          sources.map((s) => (
-            <button
-              key={s.id}
-              className={`inbox-card${selected?.id === s.id ? ' active' : ''}`}
-              onClick={() => {
-                setSelectedId(s.id);
-                setBindOpen(false);
-                setChecked(new Set());
-              }}
-            >
-              <div className="inbox-card-title">{s.title}</div>
-              <div className="inbox-card-meta">
-                <span className="tag">未绑定</span>
-                <span className="tag path">{s.path}</span>
-                {s.role && <span className="tag role">{s.role}</span>}
-                {s.unparsed && <span className="tag grey">待解析</span>}
-                {!s.unparsed && /^https?:\/\//i.test(s.body.trim()) && (
-                  <span className="tag grey">待抓取</span>
+          <>
+            {ingestJobs.map((job) => (
+              <div
+                key={job.id}
+                className={`inbox-card ingest-job${job.status === '失败' ? ' failed' : ''}`}
+              >
+                <div className="inbox-card-title">{job.title ?? job.locator ?? '导入材料'}</div>
+                <div className="inbox-card-meta">
+                  <span className={`tag ${job.status === '失败' ? 'red' : 'amber'}`}>
+                    {job.status === '失败' ? '导入失败' : job.status}
+                  </span>
+                  <span className="tag grey">{originLabel(job.inputKind)}</span>
+                  {job.failureKind && <span className="tag grey">{job.failureKind}</span>}
+                </div>
+                {job.detail && <div className="ingest-job-detail">{job.detail}</div>}
+                {job.status === '失败' && (
+                  <button
+                    type="button"
+                    className="btn outline sm"
+                    onClick={() => void window.staffdesk.retryIngest(job.id)}
+                  >
+                    重试
+                  </button>
                 )}
               </div>
-            </button>
-          ))
+            ))}
+            {sources.map((s) => (
+              <button
+                key={s.id}
+                className={`inbox-card${selected?.id === s.id ? ' active' : ''}`}
+                onClick={() => {
+                  setSelectedId(s.id);
+                  setBindOpen(false);
+                  setChecked(new Set());
+                }}
+              >
+                <div className="inbox-card-title">{s.title}</div>
+                <div className="inbox-card-meta">
+                  <span className="tag">未绑定</span>
+                  <span className="tag path">{s.path}</span>
+                  <span className="tag grey">{originLabel(s.origin?.kind)}</span>
+                  {s.role && <span className="tag role">{s.role}</span>}
+                  {s.unparsed && <span className="tag grey">旧版待重新导入</span>}
+                </div>
+              </button>
+            ))}
+          </>
         )}
       </div>
 
@@ -195,14 +201,23 @@ export function InboxView() {
             <div className="pane-title row">
               <span>{selected.title}</span>
               <span className="tag path">{selected.path}</span>
+              <span className="tag grey">{originLabel(selected.origin?.kind)}</span>
               {selected.role && <span className="tag role">{selected.role}</span>}
-              {selected.unparsed && <span className="tag grey">待解析</span>}
+              {selected.origin?.pageCount && (
+                <span className="tag grey">{selected.origin.pageCount} 页</span>
+              )}
+              {selected.unparsed && <span className="tag grey">旧版待重新导入</span>}
             </div>
+            {selected.origin?.locator && <div className="bind-hint">{selected.origin.locator}</div>}
             <pre className="source-body">{selected.body}</pre>
 
             {!bindOpen ? (
               <div className="bind-entry">
-                <button className="primary" onClick={() => setBindOpen(true)}>
+                <button
+                  className="primary"
+                  disabled={!selectedCanBind}
+                  onClick={() => setBindOpen(true)}
+                >
                   绑定
                 </button>
                 <button
@@ -212,6 +227,9 @@ export function InboxView() {
                 >
                   删除来源
                 </button>
+                {selected.unparsed && (
+                  <span className="bind-hint">旧版占位材料需要重新导入后再绑定</span>
+                )}
               </div>
             ) : (
               <div className="bind-panel">
