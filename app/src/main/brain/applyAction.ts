@@ -15,6 +15,13 @@ import type {
   WriteProposal,
 } from '@shared/types';
 import { bannedHit } from '@shared/brief';
+import {
+  pendingTaskClaimReview,
+  sourceResearchTaskId,
+  taskClaimReviewReady,
+  taskClaimReviewSummary,
+  unverifiedClaimIdsForTask,
+} from '@shared/taskClaims';
 import { outboundBrief, verifyBrief } from './briefOut';
 import { idempotencyKey } from '../loops/extract';
 import { proposeDropUnverified } from '../loops/tidy';
@@ -223,6 +230,31 @@ function enqueueWrite(state: State, draft: Omit<WriteProposal, 'id'>): State {
   // TODO(待拍板 §10) 任务级白名单「本任务内允许晋升」先不做。
   const [id, seq] = nextId(state, 'wr');
   return { ...state, seq, writeQueue: [...state.writeQueue, { ...draft, id }] };
+}
+
+function enqueueTaskClaimReview(state: State, taskId: string): State {
+  const task = state.tasks.find((item) => item.id === taskId);
+  if (!task || !taskClaimReviewReady(state, taskId) || pendingTaskClaimReview(state, taskId)) {
+    return state;
+  }
+  const claimIds = unverifiedClaimIdsForTask(state, taskId);
+  if (claimIds.length === 0) return state;
+  // 0016：任务结束时只允许对「本任务产生的未核」批量决策；晋升只翻核对轴。
+  return enqueueWrite(state, {
+    objectId: task.objectId,
+    taskId,
+    kind: '批量晋升',
+    claimIds,
+    headline: `本次${task.kind}新增未核 ${claimIds.length} 条：全部晋升，还是全部保持？`,
+    evidence: taskClaimReviewSummary(state, claimIds),
+    outbound: true,
+  });
+}
+
+function enqueueTaskClaimReviewForSource(state: State, sourceId: string): State {
+  const source = state.sources.find((item) => item.id === sourceId);
+  const taskId = source ? sourceResearchTaskId(source) : null;
+  return taskId ? enqueueTaskClaimReview(state, taskId) : state;
 }
 
 function proposalObjectId(state: State, proposalId: string): string | null {
@@ -609,7 +641,7 @@ export function reducer(state: State, action: Action): State {
           );
           next = pushCard(next, objectId, { kind: '结果', result: '抽取' }, text);
         }
-        return next;
+        return enqueueTaskClaimReviewForSource(next, action.sourceId);
       }
       const now = new Date().toISOString().slice(0, 10);
       const claims = [...state.claims, ...incoming.map((c) => ({ ...c, createdAt: now }))];
@@ -644,7 +676,7 @@ export function reducer(state: State, action: Action): State {
         const tidy = proposeDropUnverified(next, objectId, next.seq);
         if (tidy) next = { ...next, proposals: [...next.proposals, tidy] };
       }
-      return next;
+      return enqueueTaskClaimReviewForSource(next, action.sourceId);
     }
 
     case 'OPEN_AUDIT_CARD': {
@@ -879,14 +911,14 @@ export function reducer(state: State, action: Action): State {
       next = pushCard(
         next,
         objectId,
-        { kind: '结果', briefId, result: '简报' },
+        { kind: '结果', taskId, briefId, result: '简报' },
         `简报已出 · ${brief.blocks.length} 块 · ${unverifiedClaims.length} 条未核`,
       );
-      // 0016：任务结束可对本任务未核全部晋升或保持——唯一的批量白名单，以 takeover 提议出现。
       // 0016：任务结束可对本任务未核全部晋升或保持——唯一的批量白名单，以 takeover 提议出现。
       if (unverifiedClaims.length > 0) {
         next = enqueueWrite(next, {
           objectId,
+          taskId,
           kind: '批量晋升',
           claimIds: unverifiedClaims.map((c) => c.id),
           headline: `本任务未核 ${unverifiedClaims.length} 条：全部晋升，还是全部保持？`,
@@ -1491,10 +1523,13 @@ export function reducer(state: State, action: Action): State {
           );
         }
       } else if (head.kind === '批量晋升' && head.claimIds) {
+        const liveClaimIds = head.claimIds.filter((id) =>
+          st.claims.some((claim) => claim.id === id && claim.status === '成立' && claim.unverified),
+        );
         st = {
           ...st,
           claims: st.claims.map((c) =>
-            head.claimIds!.includes(c.id) ? { ...c, unverified: false } : c,
+            liveClaimIds.includes(c.id) ? { ...c, unverified: false } : c,
           ),
         };
         st = pushCard(
@@ -1502,11 +1537,13 @@ export function reducer(state: State, action: Action): State {
           head.objectId,
           {
             kind: '结果',
-            claimIds: head.claimIds,
+            taskId: head.taskId,
+            claimIds: liveClaimIds,
             result: '批量晋升',
-            undo: { kind: '批量晋升', claimIds: head.claimIds },
+            undo:
+              liveClaimIds.length > 0 ? { kind: '批量晋升', claimIds: liveClaimIds } : undefined,
           },
-          `已全部晋升 ${head.claimIds.length} 条，简报不再带未核`,
+          `已全部晋升 ${liveClaimIds.length} 条，简报不再带未核`,
         );
       } else if (head.kind === '批量回退' && head.claimIds) {
         // 0034：批量晋升的补偿走 takeover 确认（Q3/Q5），确认后整批回到未核。
@@ -1519,7 +1556,7 @@ export function reducer(state: State, action: Action): State {
         st = pushCard(
           st,
           head.objectId,
-          { kind: '结果', claimIds: head.claimIds, result: '撤销' },
+          { kind: '结果', taskId: head.taskId, claimIds: head.claimIds, result: '撤销' },
           `已全部回到未核 ${head.claimIds.length} 条`,
         );
       } else if (head.kind === '绑定' && head.sourceId && head.objectIds) {
@@ -1543,7 +1580,7 @@ export function reducer(state: State, action: Action): State {
       return pushCard(
         { ...state, writeQueue: rest },
         head.objectId,
-        { kind: '结果', result: '拒绝' },
+        { kind: '结果', taskId: head.taskId, claimIds: head.claimIds, result: '拒绝' },
         text,
       );
     }
@@ -1712,6 +1749,7 @@ export function reducer(state: State, action: Action): State {
           // Q3：影响面大的补偿走 takeover 确认，不一键。
           return enqueueWrite(st, {
             objectId: action.objectId,
+            taskId: msg.card?.taskId,
             kind: '批量回退',
             claimIds: undo.claimIds,
             headline: `撤销批量晋升：${undo.claimIds.length} 条回到未核`,

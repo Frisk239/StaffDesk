@@ -18,7 +18,8 @@
 - M14 added the data-safety backup/restore path: Settings can export a manifest-backed StaffDesk brain zip and restore it after inline confirmation; restore validates zip/hash/SQLite/schema, saves a pre-restore safety backup, removes stale WAL/SHM sidecars, and keeps product-global model settings/keychain/qualification outside the brain file.
 - Model configuration actions are product-global only and no longer persist into the brain operation log; legacy model-setting operation rows are cleared when a brain opens.
 - M15 added task run control: research/radar runs first create a visible `进行中` task, append process audit rows while running, can be manually stopped as `已停止 · 手动`, and can be opened from the object page replay surface during or after the run.
-- Current working branch for this cut: `codex/m15-task-run-control`. Previous merged branch: `codex/m14-brain-backup-restore`.
+- M16 added task-scoped claim review after research extraction: research sources now carry `origin.taskId`; when all sources for a completed research/re-search task finish extraction, the object page takeover offers the 0016 batch choice for only this task’s live unverified claims. Confirming flips only `unverified`; keeping leaves the claims untouched and records a result card. Replay shows a lightweight pointer back to the object page when the decision is pending.
+- Current working branch for this cut: `codex/m16-claim-promotion-flow`. Previous merged branch: `codex/m15-task-run-control`.
 
 ## Language
 

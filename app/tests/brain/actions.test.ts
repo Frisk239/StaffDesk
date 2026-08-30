@@ -10,6 +10,7 @@ import {
   type Brain,
 } from '../../src/main/brain';
 import { listUserTables } from '../../src/main/brain/migrate';
+import type { DeskTask, Source } from '../../src/shared/types';
 import { completeExtraction } from '../helpers/extraction';
 
 const dirs: string[] = [];
@@ -349,6 +350,123 @@ describe('账本动作覆盖', () => {
     expect(snapshot.view).toEqual({ kind: 'replay', taskId: task.id });
   });
 
+  it('调研来源全部抽取结束后，只对本任务未核生成批量决策', () => {
+    const brain = track(openBrain(tmpBrain()));
+    brain.dispatch({ type: 'ADD_WORKSPACE', name: '批量决策区', scenario: '求职面试' });
+    brain.dispatch({ type: 'ADD_OBJECT', kind: '组织', name: '乙组织' });
+    const obj = brain.snapshot().objects.find((item) => item.name === '乙组织');
+    if (!obj) throw new Error('无对象');
+
+    brain.dispatch({
+      type: 'ADD_SOURCE',
+      title: '手给材料',
+      body: '办公地点在上海。',
+    });
+    const manualSource = brain.snapshot().sources.find((item) => item.title === '手给材料');
+    if (!manualSource) throw new Error('无手给来源');
+    brain.dispatch({ type: 'BIND_CONFIRMED', sourceId: manualSource.id, objectIds: [obj.id] });
+    const manualClaims = completeExtraction(brain, manualSource.id, [
+      { predicate: '办公地点', text: '办公地点在上海', span: '办公地点在上海' },
+    ]);
+    const manualClaim = manualClaims[0];
+
+    const task: DeskTask = {
+      id: 'task-review',
+      objectId: obj.id,
+      kind: '调研',
+      status: '已完成',
+      createdAt: '2026-08-30 16:00',
+      budgetGear: '快搜',
+      query: '乙组织 官方',
+    };
+    const sourceA = researchSource(task, obj.workspaceId, 1, '官网称乙组织在做数据平台。');
+    const sourceB = researchSource(task, obj.workspaceId, 2, '招聘页称主栈是 Rust。');
+    brain.dispatch({
+      type: 'APPLY_RESEARCH',
+      task,
+      audits: [
+        {
+          taskId: task.id,
+          seq: 1,
+          kind: '打开',
+          payload: { url: 'https://example.test/a' },
+          ts: '2026-08-30T16:00:01.000Z',
+        },
+      ],
+      sources: [sourceA, sourceB],
+    });
+
+    brain.dispatch({ type: 'BIND_CONFIRMED', sourceId: sourceA.id, objectIds: [obj.id] });
+    const claimA = completeExtraction(brain, sourceA.id, [
+      { predicate: '主营业务', text: '乙组织在做数据平台', span: '乙组织在做数据平台' },
+    ])[0];
+    expect(brain.snapshot().writeQueue.some((write) => write.taskId === task.id)).toBe(false);
+
+    brain.dispatch({ type: 'BIND_CONFIRMED', sourceId: sourceB.id, objectIds: [obj.id] });
+    const claimB = completeExtraction(brain, sourceB.id, [
+      { predicate: '使用技术', text: '主栈是 Rust', span: '主栈是 Rust' },
+    ])[0];
+    if (!claimA || !claimB || !manualClaim) throw new Error('测试抽取失败');
+
+    const batch = brain
+      .snapshot()
+      .writeQueue.find((write) => write.kind === '批量晋升' && write.taskId === task.id);
+    expect(batch?.claimIds).toEqual([claimA.id, claimB.id]);
+    expect(batch?.claimIds).not.toContain(manualClaim.id);
+
+    if (!batch) throw new Error('无批量决策');
+    brain.dispatch({ type: 'REJECT_WRITE', writeId: batch.id });
+    const afterKeep = brain.snapshot();
+    expect(afterKeep.claims.find((claim) => claim.id === claimA.id)?.unverified).toBe(true);
+    expect(afterKeep.claims.find((claim) => claim.id === claimB.id)?.unverified).toBe(true);
+    expect(afterKeep.claims.find((claim) => claim.id === manualClaim.id)?.unverified).toBe(true);
+    expect(
+      (afterKeep.chatByObject[obj.id] ?? []).some((msg) => msg.text === '已全部保持未核 2 条'),
+    ).toBe(true);
+  });
+
+  it('单来源调研抽取完成后也生成任务末批量决策', () => {
+    const brain = track(openBrain(tmpBrain()));
+    brain.dispatch({ type: 'ADD_WORKSPACE', name: '单来源区', scenario: '求职面试' });
+    brain.dispatch({ type: 'ADD_OBJECT', kind: '组织', name: '丙组织' });
+    const obj = brain.snapshot().objects.find((item) => item.name === '丙组织');
+    if (!obj) throw new Error('无对象');
+    const task: DeskTask = {
+      id: 'task-single-review',
+      objectId: obj.id,
+      kind: '调研',
+      status: '已完成',
+      createdAt: '2026-08-30 17:00',
+      budgetGear: '快搜',
+      query: '丙组织 官方',
+    };
+    const source = researchSource(task, obj.workspaceId, 1, '官网称丙组织在做 AI 工具。');
+    brain.dispatch({
+      type: 'APPLY_RESEARCH',
+      task,
+      audits: [
+        {
+          taskId: task.id,
+          seq: 1,
+          kind: '打开',
+          payload: { url: 'https://example.test/single' },
+          ts: '2026-08-30T17:00:01.000Z',
+        },
+      ],
+      sources: [source],
+    });
+    brain.dispatch({ type: 'BIND_CONFIRMED', sourceId: source.id, objectIds: [obj.id] });
+    const claim = completeExtraction(brain, source.id, [
+      { predicate: '主营业务', text: '丙组织在做 AI 工具', span: '丙组织在做 AI 工具' },
+    ])[0];
+    if (!claim) throw new Error('测试抽取失败');
+
+    const batch = brain
+      .snapshot()
+      .writeQueue.find((write) => write.kind === '批量晋升' && write.taskId === task.id);
+    expect(batch?.claimIds).toEqual([claim.id]);
+  });
+
   it('整理提议并入与丢弃、候选记忆、解绑撤销', () => {
     const { brain, obj } = setup();
     const uncat = brain.snapshot().claims.find((c) => c.predicate === '未编目');
@@ -437,3 +555,26 @@ describe('账本动作覆盖', () => {
     brain.dispatch({ type: 'MARK_TURN_PLAYED', objectId: obj.id, messageId: 'nope' });
   });
 });
+
+function researchSource(task: DeskTask, workspaceId: string, index: number, body: string): Source {
+  const id = `src-res-${task.id}-${index}`;
+  return {
+    id,
+    title: `调研来源 ${index}`,
+    body,
+    path: '调研',
+    boundObjectIds: [task.objectId],
+    workspaceId,
+    origin: {
+      kind: 'research',
+      taskId: task.id,
+      locator: `https://example.test/${index}`,
+      finalUrl: `https://example.test/${index}`,
+      contentHash: `hash-${index}`,
+      fetchedAt: '2026-08-30T16:00:00.000Z',
+    },
+    segments: [{ id: 'body', start: 0, end: body.length, label: `调研来源 ${index}` }],
+    contentHash: `hash-${index}`,
+    fetchedAt: '2026-08-30T16:00:00.000Z',
+  };
+}

@@ -305,6 +305,7 @@ function sourceFromPage(
     boundObjectIds: [objectId],
     origin: {
       kind: 'research',
+      taskId: task.id,
       locator: hit.url,
       finalUrl: page.finalUrl ?? page.url,
       contentHash,
