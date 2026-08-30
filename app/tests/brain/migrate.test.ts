@@ -84,6 +84,30 @@ describe('建库与迁移', () => {
     brain.close();
   });
 
+  it('v5 迁移提供待确认写提议队列表', () => {
+    const brain = openBrain(tmpBrain());
+    const tables = tableNames(brain);
+    expect(tables).toContain('write_queue');
+    const writeColumns = columnNames(brain.db, 'write_queue');
+    expect(writeColumns).toEqual(
+      expect.arrayContaining([
+        'object_id',
+        'kind',
+        'task_id',
+        'claim_ids',
+        'object_ids',
+        'target_predicate',
+        'outbound',
+        'position',
+      ]),
+    );
+    const row = brain.db.prepare('SELECT MAX(version) AS version FROM schema_migrations').get() as {
+      version: number;
+    };
+    expect(row.version).toBeGreaterThanOrEqual(5);
+    brain.close();
+  });
+
   it('旧版 unparsed 来源迁移后保留但不会被绑定抽取', () => {
     const brain = openBrain(tmpBrain());
     brain.dispatch({ type: 'ADD_WORKSPACE', name: '旧库', scenario: '求职面试' });

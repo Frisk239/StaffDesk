@@ -13,6 +13,7 @@ import type {
   Source,
   State,
   TaskAudit,
+  WriteProposal,
   Workspace,
 } from '@shared/types';
 
@@ -75,6 +76,7 @@ export function persistLedger(db: Database.Database, state: State): void {
       DELETE FROM claims;
       DELETE FROM memories;
       DELETE FROM proposals;
+      DELETE FROM write_queue;
       DELETE FROM tasks;
       DELETE FROM task_audit;
       DELETE FROM briefs;
@@ -207,6 +209,31 @@ export function persistLedger(db: Database.Database, state: State): void {
         p.detail,
       );
     }
+
+    const insWrite = db.prepare(
+      `INSERT INTO write_queue (
+        id, object_id, kind, task_id, headline, evidence, claim_id, claim_ids,
+        source_id, object_ids, target_predicate, outbound, position, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    );
+    state.writeQueue.forEach((write, position) => {
+      insWrite.run(
+        write.id,
+        write.objectId,
+        write.kind,
+        write.taskId ?? null,
+        write.headline,
+        write.evidence,
+        write.claimId ?? null,
+        write.claimIds ? JSON.stringify(write.claimIds) : null,
+        write.sourceId ?? null,
+        write.objectIds ? JSON.stringify(write.objectIds) : null,
+        write.targetPredicate ?? null,
+        typeof write.outbound === 'boolean' ? (write.outbound ? 1 : 0) : null,
+        position,
+        stateStamp(state),
+      );
+    });
 
     const insTask = db.prepare(
       `INSERT INTO tasks (
@@ -417,6 +444,7 @@ export type LedgerRows = {
   claims: Claim[];
   memories: Memory[];
   proposals: Proposal[];
+  writeQueue: WriteProposal[];
   tasks: DeskTask[];
   taskAudits: TaskAudit[];
   briefs: Brief[];
@@ -626,6 +654,47 @@ export function loadLedger(db: Database.Database): LedgerRows {
     return prop;
   });
 
+  const writeQueue = (
+    db
+      .prepare(
+        `SELECT id, object_id, kind, task_id, headline, evidence, claim_id, claim_ids,
+                source_id, object_ids, target_predicate, outbound
+         FROM write_queue ORDER BY position, created_at, id`,
+      )
+      .all() as {
+      id: string;
+      object_id: string;
+      kind: WriteProposal['kind'];
+      task_id: string | null;
+      headline: string;
+      evidence: string;
+      claim_id: string | null;
+      claim_ids: string | null;
+      source_id: string | null;
+      object_ids: string | null;
+      target_predicate: string | null;
+      outbound: number | null;
+    }[]
+  ).map((row) => {
+    const write: WriteProposal = {
+      id: row.id,
+      objectId: row.object_id,
+      kind: row.kind,
+      headline: row.headline,
+      evidence: row.evidence,
+    };
+    if (row.task_id) write.taskId = row.task_id;
+    if (row.claim_id) write.claimId = row.claim_id;
+    const claimIds = parseJson<string[]>(row.claim_ids);
+    if (claimIds) write.claimIds = claimIds;
+    if (row.source_id) write.sourceId = row.source_id;
+    const objectIds = parseJson<string[]>(row.object_ids);
+    if (objectIds) write.objectIds = objectIds;
+    if (row.target_predicate) write.targetPredicate = row.target_predicate;
+    if (typeof row.outbound === 'number') write.outbound = row.outbound === 1;
+    return write;
+  });
+
   const tasks = (
     db.prepare('SELECT * FROM tasks ORDER BY created_at').all() as {
       id: string;
@@ -772,6 +841,7 @@ export function loadLedger(db: Database.Database): LedgerRows {
     claims,
     memories,
     proposals,
+    writeQueue,
     tasks,
     taskAudits,
     briefs,

@@ -584,15 +584,14 @@ export function reducer(state: State, action: Action): State {
       const outcome = action.outcome ?? 'success';
       const finalStatus: State['extractJobs'][number]['status'] =
         outcome === 'success' ? '完成' : outcome === 'unconfigured' ? '未配置' : '失败';
-      const jobs = state.extractJobs.map((j) =>
-        j.sourceId === action.sourceId
-          ? {
-              ...j,
-              status: finalStatus,
-              detail: action.detail,
-            }
-          : j,
-      );
+      const terminalJob = {
+        sourceId: action.sourceId,
+        status: finalStatus,
+        detail: action.detail,
+      };
+      const jobs = state.extractJobs.some((job) => job.sourceId === action.sourceId)
+        ? state.extractJobs.map((job) => (job.sourceId === action.sourceId ? terminalJob : job))
+        : [...state.extractJobs, terminalJob];
       const src = state.sources.find((s) => s.id === action.sourceId);
       // 绑定被撤销后迟到的抽取完成：来源已不在绑定态，只清理作业，不写入、不弹卡。
       if (!src || src.boundObjectIds.length === 0) {

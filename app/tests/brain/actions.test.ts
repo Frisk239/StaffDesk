@@ -467,6 +467,49 @@ describe('账本动作覆盖', () => {
     expect(batch?.claimIds).toEqual([claim.id]);
   });
 
+  it('抽取终态即使没有事先抽取作业也会记下作业并入队任务末决策', () => {
+    const brain = track(openBrain(tmpBrain()));
+    brain.dispatch({ type: 'ADD_WORKSPACE', name: '迟到抽取区', scenario: '求职面试' });
+    brain.dispatch({ type: 'ADD_OBJECT', kind: '组织', name: '丁组织' });
+    const obj = brain.snapshot().objects.find((item) => item.name === '丁组织');
+    if (!obj) throw new Error('无对象');
+    const task: DeskTask = {
+      id: 'task-late-extract',
+      objectId: obj.id,
+      kind: '调研',
+      status: '已完成',
+      createdAt: '2026-08-30 18:00',
+      budgetGear: '快搜',
+      query: '丁组织 官方',
+    };
+    const source = researchSource(task, obj.workspaceId, 1, '官网称丁组织在做工具。');
+    brain.dispatch({
+      type: 'APPLY_RESEARCH',
+      task,
+      audits: [
+        {
+          taskId: task.id,
+          seq: 1,
+          kind: '打开',
+          payload: { url: 'https://example.test/late' },
+          ts: '2026-08-30T18:00:01.000Z',
+        },
+      ],
+      sources: [source],
+    });
+    const claim = completeExtraction(brain, source.id, [
+      { predicate: '主营业务', text: '丁组织在做工具', span: '丁组织在做工具' },
+    ])[0];
+    if (!claim) throw new Error('测试抽取失败');
+
+    const snapshot = brain.snapshot();
+    expect(snapshot.extractJobs.find((job) => job.sourceId === source.id)?.status).toBe('完成');
+    expect(
+      snapshot.writeQueue.find((write) => write.kind === '批量晋升' && write.taskId === task.id)
+        ?.claimIds,
+    ).toEqual([claim.id]);
+  });
+
   it('整理提议并入与丢弃、候选记忆、解绑撤销', () => {
     const { brain, obj } = setup();
     const uncat = brain.snapshot().claims.find((c) => c.predicate === '未编目');

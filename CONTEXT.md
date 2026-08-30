@@ -19,7 +19,8 @@
 - Model configuration actions are product-global only and no longer persist into the brain operation log; legacy model-setting operation rows are cleared when a brain opens.
 - M15 added task run control: research/radar runs first create a visible `进行中` task, append process audit rows while running, can be manually stopped as `已停止 · 手动`, and can be opened from the object page replay surface during or after the run.
 - M16 added task-scoped claim review after research extraction: research sources now carry `origin.taskId`; when all sources for a completed research/re-search task finish extraction, the object page takeover offers the 0016 batch choice for only this task’s live unverified claims. Confirming flips only `unverified`; keeping leaves the claims untouched and records a result card. Replay shows a lightweight pointer back to the object page when the decision is pending.
-- Current working branch for this cut: `codex/m16-claim-promotion-flow`. Previous merged branch: `codex/m15-task-run-control`.
+- M17 made takeover write proposals durable ledger state: pending `writeQueue` rows now live in SQLite `write_queue`, restore through `snapshot()`, survive app restart and brain backup/restore, and continue to confirm/reject by the same `writeId`. Legacy backups without the table are validated through a temporary migration before restore.
+- Current working branch for this cut: `codex/m17-persistent-write-queue`. Previous merged branch: `codex/m16-claim-promotion-flow`.
 
 ## Language
 

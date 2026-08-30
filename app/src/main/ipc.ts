@@ -41,11 +41,11 @@ function broadcast(next: unknown): void {
 
 export function registerIpc(
   brainHandle: BrainHandle,
-  security?: IpcSecurity,
+  security: IpcSecurity,
   lifecycle?: BrainLifecycle,
 ): void {
   const getBrain = typeof brainHandle === 'function' ? brainHandle : () => brainHandle;
-  const assertTrustedSender = security?.assertTrustedSender ?? (() => undefined);
+  const assertTrustedSender = security.assertTrustedSender;
   const runningResearchByObject = new Map<string, string>();
   const handleTrusted = <Args extends unknown[], Result>(
     channel: string,

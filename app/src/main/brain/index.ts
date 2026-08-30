@@ -129,7 +129,7 @@ export class Brain {
       sourceFocusId: this.ui.sourceFocusId,
       toast: this.ui.toast,
       briefDraftingFor: this.ui.briefDraftingFor,
-      writeQueue: this.ui.writeQueue,
+      writeQueue: ledger.writeQueue,
       rightTabsByObject: this.ui.rightTabsByObject,
       activeRightTabByObject: this.ui.activeRightTabByObject,
       qualification: this.qualificationFor(providers),

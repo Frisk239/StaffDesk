@@ -37,6 +37,44 @@ afterEach(() => {
 });
 
 describe('撤销补偿与重启', () => {
+  it('待确认写提议关掉再打开仍能确认', () => {
+    const file = tmp();
+    let brain = openBrain(file);
+    brains.push(brain);
+    brain.dispatch({ type: 'ADD_WORKSPACE', name: '区', scenario: '求职面试' });
+    brain.dispatch({ type: 'ADD_OBJECT', kind: '组织', name: '甲' });
+    const obj = brain.snapshot().objects[0]!;
+    brain.dispatch({ type: 'ADD_SOURCE', title: 't', body: '团队主栈是 Rust。' });
+    const src = brain.snapshot().sources.find((s) => !s.virtual)!;
+    brain.dispatch({ type: 'BIND_CONFIRMED', sourceId: src.id, objectIds: [obj.id] });
+    const claim = completeExtraction(brain, src.id, [
+      { predicate: '使用技术', text: '团队主栈是 Rust', span: '团队主栈是 Rust' },
+    ])[0]!;
+    brain.dispatch({
+      type: 'ENQUEUE_WRITE',
+      draft: {
+        objectId: obj.id,
+        kind: '晋升',
+        claimId: claim.id,
+        headline: `晋升「${claim.text}」`,
+        evidence: claim.text,
+        outbound: true,
+      },
+    });
+    const queued = brain.snapshot().writeQueue[0];
+    expect(queued?.claimId).toBe(claim.id);
+    brain.close();
+
+    brain = openBrain(file);
+    brains.push(brain);
+    const restored = brain.snapshot().writeQueue[0];
+    expect(restored?.id).toBe(queued?.id);
+    expect(restored?.headline).toContain('晋升');
+    brain.dispatch({ type: 'CONFIRM_WRITE', writeId: restored!.id });
+    expect(brain.snapshot().writeQueue).toHaveLength(0);
+    expect(brain.snapshot().claims.find((c) => c.id === claim.id)?.unverified).toBe(false);
+  });
+
   it('晋升后关掉再打开，仍能一键撤回', () => {
     const file = tmp();
     let brain = openBrain(file);
