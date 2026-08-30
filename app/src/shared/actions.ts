@@ -67,6 +67,9 @@ export type Action =
   | { type: 'CHAT_APPEND_DESK'; objectId: string; text: string; claimRefs?: string[] | undefined }
   | { type: 'ADD_CANDIDATE_MEMORIES'; objectId: string; candidates: CandidatePayload[] }
   | { type: 'RUN_MEMORY_DREAM' }
+  | { type: 'TASK_RUN_STARTED'; task: DeskTask }
+  | { type: 'TASK_AUDIT_APPENDED'; taskId: string; audits: TaskAudit[] }
+  | { type: 'TASK_STOP_REQUESTED'; taskId: string }
   | {
       type: 'APPLY_RESEARCH';
       task: DeskTask;

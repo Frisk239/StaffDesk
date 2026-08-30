@@ -33,6 +33,7 @@ export interface StaffdeskApi {
   runExtract: (sourceId: string) => Promise<State>;
   testProvider: (providerId: string, modelId: string) => Promise<State>;
   startResearch: (objectId: string, gear?: BudgetGear) => Promise<State>;
+  stopTask: (taskId: string) => Promise<State>;
   createRadar: (objectId: string) => Promise<State>;
   runRadar: (radarTaskId: string) => Promise<State>;
   generateBrief: (objectId: string) => Promise<State>;
