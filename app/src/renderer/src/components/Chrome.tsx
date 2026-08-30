@@ -1,9 +1,10 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import {
   Archive,
   Buildings,
   CaretDown,
   CaretRight,
+  ClipboardText,
   FileText,
   FolderOpen,
   GearSix,
@@ -18,13 +19,14 @@ import {
 } from '@phosphor-icons/react';
 import { useStore } from '../store';
 import { SCENARIOS, SCENARIO_HINTS } from '@shared/scenario';
-import type { ObjectKind, ScenarioKind, View } from '@shared/types';
+import type { DeskTask, ObjectKind, ScenarioKind, View } from '@shared/types';
 
 function currentTitle(view: View, objects: { id: string; name: string }[]): string {
   if (view.kind === 'object')
     return objects.find((o) => o.id === view.objectId)?.name ?? 'StaffDesk';
   if (view.kind === 'pending') return '待确认';
   if (view.kind === 'all') return '全部对象';
+  if (view.kind === 'tasks') return '任务';
   if (view.kind === 'replay') return '任务回放';
   return 'Inbox';
 }
@@ -110,6 +112,13 @@ export function IconRail({
         onClick={() => nav({ kind: 'all' })}
       >
         <Stack size={18} />
+      </button>
+      <button
+        className={state.view.kind === 'tasks' ? 'on' : ''}
+        title="任务"
+        onClick={() => nav({ kind: 'tasks' })}
+      >
+        <ClipboardText size={18} />
       </button>
       {!state.onboardingDone && (
         <button className="rail-foot" title="继续设置" onClick={onContinueSetup}>
@@ -408,6 +417,99 @@ export function SessionList({ width, open }: { width: number; open: boolean }) {
   );
 }
 
+// M19 调研档位入口：主按钮点击仍是快搜；箭头下拉给快搜 / 深挖 / 再搜一轮。
+// 词条见 CONTEXT：「深挖」是更高预算的一轮，「再搜一轮」是带上轮语境的新任务（0036），
+// 必须挂最近一条非雷达任务作为上轮。界面不出现任何内部机制名。
+function GearMenu({
+  objectId,
+  disabled,
+  lastRoundTask,
+}: {
+  objectId: string;
+  disabled: boolean;
+  lastRoundTask: DeskTask | undefined;
+}) {
+  const [open, setOpen] = useState(false);
+  const root = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const onDoc = (e: MouseEvent) => {
+      if (!root.current?.contains(e.target as Node)) setOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setOpen(false);
+    };
+    document.addEventListener('mousedown', onDoc);
+    document.addEventListener('keydown', onKey);
+    return () => {
+      document.removeEventListener('mousedown', onDoc);
+      document.removeEventListener('keydown', onKey);
+    };
+  }, [open]);
+
+  return (
+    <div className="cmenu" ref={root}>
+      <button
+        type="button"
+        className={`btn outline sm gear-caret${open ? ' open' : ''}`}
+        aria-label="选择调研档位"
+        aria-haspopup="listbox"
+        aria-expanded={open}
+        disabled={disabled}
+        onClick={() => setOpen((v) => !v)}
+      >
+        <CaretDown size={10} weight="bold" />
+      </button>
+      {open && (
+        <div className="cmenu-pop gear-pop" role="listbox">
+          <button
+            type="button"
+            role="option"
+            aria-selected={false}
+            title="调研任务的默认档"
+            onClick={() => {
+              setOpen(false);
+              void window.staffdesk.startResearch(objectId, '快搜');
+            }}
+          >
+            快搜
+          </button>
+          <button
+            type="button"
+            role="option"
+            aria-selected={false}
+            title="更高预算的一轮"
+            onClick={() => {
+              setOpen(false);
+              void window.staffdesk.startResearch(objectId, '深挖');
+            }}
+          >
+            深挖
+          </button>
+          <button
+            type="button"
+            role="option"
+            aria-selected={false}
+            disabled={!lastRoundTask}
+            title={lastRoundTask ? '带着上轮语境新开一轮' : '该对象还没有可作为上轮的任务'}
+            onClick={() => {
+              setOpen(false);
+              if (!lastRoundTask) return;
+              void window.staffdesk.startResearch(objectId, lastRoundTask.budgetGear ?? '快搜', {
+                kind: '再搜一轮',
+                fromTaskId: lastRoundTask.id,
+              });
+            }}
+          >
+            再搜一轮
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function ChatTopbar({
   rightOpen,
   onToggleRight,
@@ -425,8 +527,9 @@ export function ChatTopbar({
   const runningTask = [...objectTasks]
     .reverse()
     .find((task) => task.status === '进行中' && (task.kind === '调研' || task.kind === '再搜一轮'));
-  const replayTarget =
-    runningTask ?? [...objectTasks].reverse().find((task) => task.kind !== '周期性雷达');
+  // 最近一条非雷达任务：回放兜底目标，也是「再搜一轮」的上轮语境来源。
+  const lastRoundTask = [...objectTasks].reverse().find((task) => task.kind !== '周期性雷达');
+  const replayTarget = runningTask ?? lastRoundTask;
   const radar = state.tasks.find(
     (task) => task.objectId === obj.id && task.kind === '周期性雷达' && task.status !== '已停止',
   );
@@ -446,6 +549,12 @@ export function ChatTopbar({
         >
           {runningTask ? '调研中' : '调研'}
         </button>
+        <GearMenu
+          key={obj.id}
+          objectId={obj.id}
+          disabled={Boolean(runningTask)}
+          lastRoundTask={lastRoundTask}
+        />
         {runningTask && (
           <>
             <span className="tag grey" title={runningTask.query}>

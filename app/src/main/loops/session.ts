@@ -12,7 +12,6 @@ import { projectionFrom } from '../brain/projection';
 export interface SessionDeps {
   db?: Database.Database;
   complete?: ModelCompletion | undefined;
-  onDelta?: ((chunk: string) => void) | undefined;
 }
 
 const REF_RE = /\[ref:([^\]]+)\]/g;
@@ -68,7 +67,6 @@ export async function runSessionTurn(
   let result = await complete({
     messages,
     tools: READONLY_TOOL_DEFS,
-    onDelta: deps.onDelta,
   });
 
   for (let i = 0; i < 4 && result.toolCalls.length > 0; i += 1) {

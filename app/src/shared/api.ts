@@ -32,7 +32,11 @@ export interface StaffdeskApi {
   retryIngest: (jobId: string) => Promise<State>;
   runExtract: (sourceId: string) => Promise<State>;
   testProvider: (providerId: string, modelId: string) => Promise<State>;
-  startResearch: (objectId: string, gear?: BudgetGear) => Promise<State>;
+  startResearch: (
+    objectId: string,
+    gear?: BudgetGear,
+    options?: { kind?: '调研' | '再搜一轮'; fromTaskId?: string },
+  ) => Promise<State>;
   stopTask: (taskId: string) => Promise<State>;
   createRadar: (objectId: string) => Promise<State>;
   runRadar: (radarTaskId: string) => Promise<State>;

@@ -3,6 +3,7 @@ import { StoreProvider, useStore } from './store';
 import { ChatTopbar, IconRail, SessionList, ThemeSync, TitleBar, Toast } from './components/Chrome';
 import { InboxView } from './components/InboxView';
 import { ReplayView } from './components/ReplayView';
+import { TasksView } from './components/TasksView';
 import { PendingView } from './components/PendingView';
 import { AllObjectsView } from './components/AllObjects';
 import { ChatPane } from './components/ChatPane';
@@ -175,6 +176,7 @@ function Workspace() {
             {view.kind === 'inbox' && <InboxView />}
             {view.kind === 'pending' && <PendingView />}
             {view.kind === 'all' && <AllObjectsView />}
+            {view.kind === 'tasks' && <TasksView />}
             {view.kind === 'replay' && <ReplayView taskId={view.taskId} />}
             {view.kind === 'object' && (
               <>
