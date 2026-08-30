@@ -1,6 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 import type { QualityQualificationRecord } from '@shared/types';
+import { safeDetail } from '../redact';
 
 interface QualificationHistoryFile {
   version: 1;
@@ -107,13 +108,6 @@ function sanitizeRecord(record: QualityQualificationRecord): QualityQualificatio
     ...(record.report ? { report: structuredClone(record.report) } : {}),
     ...(record.detail ? { detail: safeDetail(record.detail) } : {}),
   };
-}
-
-function safeDetail(raw: string): string {
-  return raw
-    .replace(/Bearer\s+\S+/gi, 'Bearer ***')
-    .replace(/sk-[A-Za-z0-9_-]+/g, 'sk-***')
-    .slice(0, 180);
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

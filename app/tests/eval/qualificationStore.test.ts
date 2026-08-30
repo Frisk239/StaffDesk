@@ -48,6 +48,8 @@ function record(): QualityQualificationRecord {
         unknownAdherence: 100,
         conflictDetection: 100,
         correctionRecurrence: 100,
+        uncatDiscipline: 100,
+        undoCompensation: 100,
         fabrication: 0,
       },
       packResults: [],

@@ -1,12 +1,33 @@
 import { createHash } from 'node:crypto';
-import type { LlmProvider, ThinkingEffort } from '@shared/types';
+import type { LlmProvider, QualityMetricSet, ThinkingEffort } from '@shared/types';
 
 export const QUALITY_SUITE_VERSION = 'staffdesk-quality-v1';
+// 0045：出站策略新增未编目纪律（0037 降级句）与撤销补偿（0034 takeover 回退）两条出站规则，
+// 换政策版本即让旧资格认证回落「未认证」——这是设计内行为，不许为兼容旧记录而保留 v1。
 export const QUALITY_POLICY_VERSIONS = {
   extraction: 'extract-v1',
   recall: 'fts-trigram-bm25-v1',
-  outbound: 'ledger-outbound-v1',
+  outbound: 'ledger-outbound-v2',
 } as const;
+
+/**
+ * 0045 合格分数线的「政策」面：指标低于下限即对应 stage 失败，认证报告不再只看异常。
+ * fabrication 是「越低越好」，其 floor 语义为上限（编造率超过即失败，与 0039 的 5% 强警告并存）。
+ */
+export const QUALITY_METRIC_FLOORS: Record<keyof QualityMetricSet, number> = {
+  extractionRecall: 70,
+  spanHit: 60,
+  ftsRecallAtK: 60,
+  ftsPrecisionAtK: 60,
+  mrr: 0.5,
+  briefFaithfulness: 90,
+  unknownAdherence: 90,
+  conflictDetection: 80,
+  correctionRecurrence: 90,
+  uncatDiscipline: 90,
+  undoCompensation: 90,
+  fabrication: 10,
+};
 
 export interface QualificationTarget {
   endpoint: string;

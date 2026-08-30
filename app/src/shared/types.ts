@@ -408,6 +408,8 @@ export interface QualityMetricSet {
   unknownAdherence: number;
   conflictDetection: number;
   correctionRecurrence: number;
+  uncatDiscipline: number;
+  undoCompensation: number;
   fabrication: number;
 }
 
