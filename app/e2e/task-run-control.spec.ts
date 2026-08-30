@@ -197,18 +197,7 @@ test('调研抽取结束后出现本任务批量晋升或保持入口', async ()
         ],
       });
       if (!afterExtraction.writeQueue.some((write) => write.taskId === task.id)) {
-        await api.dispatch({
-          type: 'ENQUEUE_WRITE',
-          draft: {
-            objectId: object.id,
-            taskId: task.id,
-            kind: '批量晋升',
-            claimIds: ['cl-review-e2e'],
-            headline: '本次调研新增未核 1 条：全部晋升，还是全部保持？',
-            evidence: '· 主栈是 Rust',
-            outbound: true,
-          },
-        });
+        throw new Error('EXTRACT_DONE 没有入队本任务批量晋升');
       }
       await api.dispatch({ type: 'SET_VIEW', view: { kind: 'object', objectId: object.id } });
     });
