@@ -80,5 +80,8 @@ job package（仅 main / tag 触发，windows-latest）：
 ## 7. 安全
 
 - API 密钥只进 safeStorage（0040）：不入 SQLite、不入日志、不入 git。日志打印请求时必须掩码 `sk-***`。
+- Electron runtime boundary 见 0047：主窗口启用 sandbox / contextIsolation / no nodeIntegration；顶层导航和新窗口
+  离开 StaffDesk 页面时必须拦截，只有 http/https 外链可交给系统浏览器；webview 与页面权限默认拒绝。
+- privileged IPC handler 必须校验 sender frame 来自主窗口可信 StaffDesk 页面，再读写大脑、密钥、文件或外部工具。
 - `.gitignore` 覆盖：`app/data/*.db`（用户大脑文件）、`*.log`、`dist/`、`node_modules/`、`.env*`。
 - 锁文件提交；每批次收尾跑一次 `npm audit`，high 以上当日修。

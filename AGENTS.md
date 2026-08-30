@@ -4,9 +4,9 @@
 
 ## 必读文档（动手前先看）
 
-- `CONTEXT.md` — 领域语言（词条 + 每条的 Avoid 列表）。**与其他一切文档冲突时以它为准**；UI 文案与术语逐字对齐词条。「Current implementation」一节是最新进度（M1–M12 已完成）。
+- `CONTEXT.md` — 领域语言（词条 + 每条的 Avoid 列表）。**与其他一切文档冲突时以它为准**；UI 文案与术语逐字对齐词条。「Current implementation」一节是最新进度（M1–M13 已完成）。
 - `docs/engineering.md` — 工程规范全文（Git / 代码 / 测试 / CI / 安全）。
-- `docs/adr/` — 0001–0046 架构决策。新决策**先落 ADR（0047 起顺延）再写代码**；发现设计矛盾停下问用户，禁止口头裁决。
+- `docs/adr/` — 0001–0047 架构决策。新决策**先落 ADR（0048 起顺延）再写代码**；发现设计矛盾停下问用户，禁止口头裁决。
 - `docs/dev-logs/` — 各里程碑验收记录；新批次完成要写对应的 MX.md。
 - `docs/reference.md` — `reference/` 对照仓索引与产品边界。
 
@@ -60,6 +60,8 @@ npm run rebuild:force # 有 C++ 工具链时强制源码重编 better-sqlite3
 
 - API 密钥只进 safeStorage（0040）：不入 SQLite、不入日志、不入 git；日志打印请求必须掩码 `sk-***`。
 - `app/data/*.db` 是用户大脑文件（已 gitignore），不得提交。
+- Electron 运行时边界见 0047：主窗口 sandbox / contextIsolation / no nodeIntegration；外链只允许 http/https
+  交给系统浏览器；顶层导航、新窗口、webview、权限请求和 privileged IPC sender 都要被显式守住。
 
 ## 视觉规则
 
