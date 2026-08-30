@@ -1,6 +1,6 @@
 # StaffDesk Phase 2：从功能齐备走向可信日用
 
-> 状态：执行中（2026-08-30）。M0–M8 已完成；下一阶段为 M9 真实进料。本计划承接 `docs/implementation-plan.md`，不改变既有账本语义。
+> 状态：执行中（2026-08-30）。M0–M8 已完成；M9 真实进料已在 `codex/m9-real-ingestion` 完成返修与自测，等待 M8 先合入后再合 M9；M10 尚未启动。本计划承接 `docs/implementation-plan.md`，不改变既有账本语义。
 
 ## 目标
 
