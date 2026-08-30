@@ -29,6 +29,8 @@ const api: StaffdeskApi = {
   testProvider: (id) => ipcRenderer.invoke('settings:testProvider', id) as Promise<State>,
   startResearch: (objectId, gear) =>
     ipcRenderer.invoke('task:startResearch', { objectId, gear }) as Promise<State>,
+  createRadar: (objectId) => ipcRenderer.invoke('task:createRadar', { objectId }) as Promise<State>,
+  runRadar: (radarTaskId) => ipcRenderer.invoke('task:runRadar', { radarTaskId }) as Promise<State>,
   generateBrief: (objectId) => ipcRenderer.invoke('brief:generate', objectId) as Promise<State>,
   exportBrain: () => ipcRenderer.invoke('brain:export') as Promise<string | null>,
   onStateChanged: (cb) => {

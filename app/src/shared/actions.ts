@@ -18,6 +18,8 @@ import type {
   View,
   WriteProposal,
   ExtractionOutcomeKind,
+  BudgetGear,
+  CandidatePayload,
 } from './types';
 
 type ExtractDoneBase = {
@@ -63,6 +65,8 @@ export type Action =
   | { type: 'CHAT_SEND'; objectId: string; text: string }
   | { type: 'CHAT_USER_ONLY'; objectId: string; text: string }
   | { type: 'CHAT_APPEND_DESK'; objectId: string; text: string; claimRefs?: string[] | undefined }
+  | { type: 'ADD_CANDIDATE_MEMORIES'; objectId: string; candidates: CandidatePayload[] }
+  | { type: 'RUN_MEMORY_DREAM' }
   | {
       type: 'SELF_CHECK';
       id: string;
@@ -75,6 +79,13 @@ export type Action =
       task: DeskTask;
       audits: TaskAudit[];
       sources: Source[];
+    }
+  | {
+      type: 'CREATE_RADAR';
+      objectId: string;
+      query?: string | undefined;
+      intervalDays?: number | undefined;
+      budgetGear?: BudgetGear | undefined;
     }
   | {
       type: 'PROPOSAL_DECIDE';

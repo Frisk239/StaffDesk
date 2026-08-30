@@ -31,6 +31,9 @@ export function migrate(db: Database.Database): void {
   if (current < 3) {
     migrateToV3(db);
   }
+  if (current < 4) {
+    migrateToV4(db);
+  }
   if (current < SCHEMA_VERSION) {
     db.prepare('INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)').run(
       SCHEMA_VERSION,
@@ -48,6 +51,15 @@ function migrateToV3(db: Database.Database): void {
   addColumn(db, 'claims', 'source_start', 'INTEGER');
   addColumn(db, 'claims', 'source_end', 'INTEGER');
   addColumn(db, 'claims', 'source_locator', 'TEXT');
+}
+
+function migrateToV4(db: Database.Database): void {
+  addColumn(db, 'tasks', 'query', 'TEXT');
+  addColumn(db, 'tasks', 'interval_days', 'INTEGER');
+  addColumn(db, 'tasks', 'next_due_at', 'TEXT');
+  addColumn(db, 'tasks', 'last_run_at', 'TEXT');
+  addColumn(db, 'tasks', 'parent_task_id', 'TEXT');
+  addColumn(db, 'tasks', 'due_at', 'TEXT');
 }
 
 function addColumn(db: Database.Database, table: string, column: string, definition: string): void {

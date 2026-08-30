@@ -1,5 +1,5 @@
 /** M1 schema。新版本走 schema_migrations，禁止裸改历史。 */
-export const SCHEMA_VERSION = 3;
+export const SCHEMA_VERSION = 4;
 
 export const SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -112,6 +112,12 @@ CREATE TABLE IF NOT EXISTS tasks (
   status TEXT NOT NULL CHECK (status IN ('待启动', '进行中', '已完成', '已停止')),
   stop_reason TEXT CHECK (stop_reason IN ('手动', '触顶', '失败')),
   budget_gear TEXT CHECK (budget_gear IN ('快搜', '深挖')),
+  query TEXT,
+  interval_days INTEGER,
+  next_due_at TEXT,
+  last_run_at TEXT,
+  parent_task_id TEXT,
+  due_at TEXT,
   created_at TEXT NOT NULL,
   finished_at TEXT
 );

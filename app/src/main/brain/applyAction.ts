@@ -6,6 +6,7 @@ import type {
   Claim,
   ExtractionOutcomeKind,
   IngestJob,
+  CandidatePayload,
   RightTab,
   Predicate,
   RightTabKind,
@@ -19,6 +20,7 @@ import { proposeDropUnverified } from '../loops/tidy';
 import { deriveConflicts } from '@shared/scenario';
 import { scriptReply } from '@shared/chat';
 import { attachTurn } from '@shared/turn';
+import { dreamMemoryProposals } from '../loops/memoryDream';
 
 // · 账本规则（必须落在 reducer / 纯函数里，不是画在 UI 上） ·
 // 1. 未绑定来源不投影、不进对象对话默认语境：投影与对话都只读 claims，
@@ -283,6 +285,51 @@ function proposalObjectId(state: State, proposalId: string): string | null {
     state.pendingClaims.find((c) => c.id === claimId)?.objectId ??
     null
   );
+}
+
+function normalizeMemoryCandidateKey(payload: CandidatePayload): string {
+  return [
+    payload.scope,
+    payload.memoryKind,
+    payload.scope === '对象' ? (payload.fromObjectId ?? '') : '',
+    payload.text.replace(/\s+/g, ' ').trim().toLowerCase(),
+  ].join('\0');
+}
+
+function addDaysIso(iso: string, days: number): string {
+  const parsed = parseStamp(iso);
+  const base = Number.isNaN(parsed) ? Date.now() : parsed;
+  return formatStamp(base + days * 24 * 60 * 60 * 1000);
+}
+
+function parseStamp(stamp: string): number {
+  const match = stamp.match(/^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2})/);
+  if (!match) return Date.parse(stamp.replace(' ', 'T'));
+  const [, y, m, d, h, min] = match;
+  return new Date(Number(y), Number(m) - 1, Number(d), Number(h), Number(min)).getTime();
+}
+
+function formatStamp(ms: number): string {
+  const d = new Date(ms);
+  const pad = (value: number) => String(value).padStart(2, '0');
+  return [
+    `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`,
+    `${pad(d.getHours())}:${pad(d.getMinutes())}`,
+  ].join(' ');
+}
+
+function nextRadarDueAfter(
+  task: { nextDueAt?: string | undefined; intervalDays?: number | undefined },
+  afterIso: string,
+): string {
+  const interval = Math.max(1, task.intervalDays ?? 1);
+  let due = task.nextDueAt ?? afterIso;
+  let guard = 0;
+  while (parseStamp(due) <= parseStamp(afterIso) && guard < 370) {
+    due = addDaysIso(due, interval);
+    guard += 1;
+  }
+  return due;
 }
 
 export function reducer(state: State, action: Action): State {
@@ -1878,6 +1925,69 @@ export function reducer(state: State, action: Action): State {
       };
     }
 
+    case 'ADD_CANDIDATE_MEMORIES': {
+      if (!state.objects.some((object) => object.id === action.objectId)) return state;
+      const existing = new Set(
+        state.proposals
+          .filter((proposal) => proposal.payload.kind === '候选记忆')
+          .map((proposal) => normalizeMemoryCandidateKey(proposal.payload as CandidatePayload)),
+      );
+      for (const memory of state.memories) {
+        existing.add(
+          [
+            memory.scope,
+            memory.kind,
+            memory.scope === '对象' ? (memory.objectId ?? '') : '',
+            memory.text.replace(/\s+/g, ' ').trim().toLowerCase(),
+          ].join('\0'),
+        );
+      }
+      let seq = state.seq;
+      const proposals = [...state.proposals];
+      for (const raw of action.candidates) {
+        const text = raw.text.trim();
+        const sourceExcerpt = raw.sourceExcerpt.trim();
+        if (!text || !sourceExcerpt || raw.fromMessageIds.length === 0) continue;
+        const payload: CandidatePayload = {
+          ...raw,
+          text,
+          sourceExcerpt,
+          fromObjectId: raw.fromObjectId ?? action.objectId,
+          fromMessageIds: [...new Set(raw.fromMessageIds)],
+        };
+        const key = normalizeMemoryCandidateKey(payload);
+        if (existing.has(key)) continue;
+        existing.add(key);
+        const [id, nextSeq] = nextId({ ...state, seq }, 'prop');
+        seq = nextSeq;
+        proposals.push({
+          id,
+          type: '候选记忆',
+          title: `${payload.memoryKind}候选`,
+          detail: [
+            payload.text,
+            '',
+            `来自会话消息：${payload.fromMessageIds.join('、')}`,
+            `原文摘录：${payload.sourceExcerpt}`,
+          ].join('\n'),
+          payload,
+          pending: true,
+        });
+      }
+      if (proposals.length === state.proposals.length) return state;
+      return {
+        ...state,
+        seq,
+        proposals,
+        toast: { text: `新增 ${proposals.length - state.proposals.length} 条候选记忆`, id: seq },
+      };
+    }
+
+    case 'RUN_MEMORY_DREAM': {
+      const result = dreamMemoryProposals(state);
+      return result.changed ? { ...state, proposals: result.proposals } : state;
+    }
+
     case 'SELF_CHECK': {
       const prev = state.certByProvider[action.id] ?? { status: '未认证' as const };
       const failed = action.connect === 'fail' || action.capability === 'fail';
@@ -1902,12 +2012,74 @@ export function reducer(state: State, action: Action): State {
       };
     }
 
+    case 'CREATE_RADAR': {
+      const object = state.objects.find((item) => item.id === action.objectId);
+      if (!object) return state;
+      const existing = state.tasks.find(
+        (task) =>
+          task.objectId === action.objectId &&
+          task.kind === '周期性雷达' &&
+          task.status !== '已停止',
+      );
+      if (existing) {
+        return {
+          ...state,
+          toast: { text: '这个对象已有每日雷达', id: state.seq },
+          seq: state.seq + 1,
+        };
+      }
+      const [taskId, seq] = nextId(state, 'task');
+      const now = new Date();
+      const createdAt = now.toISOString().replace('T', ' ').slice(0, 16);
+      const intervalDays = Math.max(1, action.intervalDays ?? 1);
+      const nextDueAt = addDaysIso(createdAt, intervalDays);
+      const task = {
+        id: taskId,
+        objectId: action.objectId,
+        kind: '周期性雷达' as const,
+        status: '待启动' as const,
+        budgetGear: action.budgetGear ?? '快搜',
+        query: action.query?.trim() || `${object.name} 官方 介绍`,
+        intervalDays,
+        nextDueAt,
+        createdAt,
+      };
+      return {
+        ...state,
+        seq,
+        tasks: [...state.tasks, task],
+        taskAudits: [
+          ...state.taskAudits,
+          {
+            taskId,
+            seq: 1,
+            kind: '计划',
+            payload: { intervalDays, nextDueAt, query: task.query },
+            ts: new Date().toISOString(),
+          },
+        ],
+        toast: { text: `已创建每日雷达，下次 ${nextDueAt}`, id: seq },
+      };
+    }
+
     case 'APPLY_RESEARCH': {
       const existingIds = new Set(state.sources.map((s) => s.id));
       const incoming = action.sources.filter((s) => !existingIds.has(s.id));
+      const parentTaskId = action.task.parentTaskId;
+      const tasks = [...state.tasks.filter((t) => t.id !== action.task.id), action.task].map(
+        (task) =>
+          parentTaskId && task.id === parentTaskId && task.kind === '周期性雷达'
+            ? {
+                ...task,
+                status: '待启动' as const,
+                lastRunAt: action.task.createdAt,
+                nextDueAt: nextRadarDueAfter(task, action.task.createdAt),
+              }
+            : task,
+      );
       return {
         ...state,
-        tasks: [...state.tasks.filter((t) => t.id !== action.task.id), action.task],
+        tasks,
         taskAudits: [
           ...(state.taskAudits ?? []).filter((a) => a.taskId !== action.task.id),
           ...action.audits,
@@ -1915,9 +2087,11 @@ export function reducer(state: State, action: Action): State {
         sources: [...state.sources, ...incoming],
         toast: {
           text:
-            action.task.stopReason === '触顶'
-              ? `调研触顶：已打开 ${incoming.length} 条来源入库`
-              : `调研完成：写入 ${incoming.length} 条来源`,
+            action.task.status === '已停止'
+              ? `调研停止：${action.task.stopReason ?? '失败'}，写入 ${incoming.length} 条来源`
+              : action.task.stopReason === '触顶'
+                ? `调研触顶：已打开 ${incoming.length} 条来源入库`
+                : `调研完成：写入 ${incoming.length} 条来源`,
           id: state.seq,
         },
         seq: state.seq + 1,

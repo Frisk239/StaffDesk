@@ -10,7 +10,9 @@ export interface OpenResult {
   url: string;
   ok: boolean;
   body: string;
-  error?: string;
+  finalUrl?: string | undefined;
+  title?: string | undefined;
+  error?: string | undefined;
 }
 
 export interface DoctorResult {
@@ -26,9 +28,24 @@ export interface ReachAdapter {
 }
 
 export type SpawnFn = typeof spawn;
+export type FetchFn = typeof fetch;
+
+export class ReachError extends Error {
+  readonly hint?: string | undefined;
+
+  constructor(message: string, hint?: string | undefined) {
+    super(message);
+    this.name = 'ReachError';
+    this.hint = hint;
+  }
+}
 
 const INSTALL_HINT =
-  '本机没有可用的检索适配。请安装 Agent Reach（agent-reach / mcporter），然后重试。';
+  '本机没有可用的检索适配。请安装 Agent Reach（agent-reach / mcporter），然后重试；也可以先手动导入 URL 或文本作为降级路径。';
+
+function executable(name: string): string {
+  return name;
+}
 
 function runCommand(
   spawnFn: SpawnFn,
@@ -37,12 +54,12 @@ function runCommand(
   timeoutMs = 20_000,
 ): Promise<{ code: number | null; stdout: string; stderr: string }> {
   return new Promise((resolve, reject) => {
-    const child = spawnFn(command, args, { shell: true });
+    const child = spawnFn(command, args, { windowsHide: true });
     let stdout = '';
     let stderr = '';
     const timer = setTimeout(() => {
       child.kill();
-      reject(new Error('超时'));
+      reject(new ReachError('检索适配超时', INSTALL_HINT));
     }, timeoutMs);
     child.stdout?.on('data', (d: Buffer) => {
       stdout += d.toString();
@@ -52,7 +69,7 @@ function runCommand(
     });
     child.on('error', (err) => {
       clearTimeout(timer);
-      reject(err);
+      reject(new ReachError(err.message, INSTALL_HINT));
     });
     child.on('close', (code) => {
       clearTimeout(timer);
@@ -61,75 +78,108 @@ function runCommand(
   });
 }
 
-export function createReachAdapter(spawnFn: SpawnFn = spawn): ReachAdapter {
+export function createReachAdapter(
+  spawnFn: SpawnFn = spawn,
+  fetchFn: FetchFn = fetch,
+): ReachAdapter {
   return {
     async doctor() {
       try {
-        const r = await runCommand(spawnFn, 'agent-reach', ['doctor', '--json'], 8000);
+        const r = await runCommand(spawnFn, executable('agent-reach'), ['doctor', '--json'], 8000);
         if (r.code === 0) {
           return { ok: true, detail: r.stdout.trim() || 'agent-reach 可用' };
         }
-        return { ok: false, detail: r.stderr || r.stdout, hint: INSTALL_HINT };
+        return {
+          ok: false,
+          detail: compact(r.stderr || r.stdout || 'agent-reach doctor 失败'),
+          hint: INSTALL_HINT,
+        };
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
-        return { ok: false, detail: msg, hint: INSTALL_HINT };
+        return { ok: false, detail: compact(msg), hint: INSTALL_HINT };
       }
     },
     async search(query: string) {
       try {
-        const r = await runCommand(spawnFn, 'mcporter', ['call', 'exa.web_search_exa', query], 25_000);
-        const parsed = parseHits(r.stdout);
-        if (parsed.length > 0) return parsed;
-        throw new Error(r.stderr || '没有检索命中');
-      } catch {
-        const fallback = await openViaJinaSearch(query);
-        return fallback;
+        const r = await runCommand(
+          spawnFn,
+          executable('mcporter'),
+          ['call', 'exa.web_search_exa', query],
+          25_000,
+        );
+        if (r.code !== 0) {
+          throw new ReachError(
+            compact(r.stderr || r.stdout || `mcporter 退出 ${r.code}`),
+            INSTALL_HINT,
+          );
+        }
+        return parseHitsOrThrow(r.stdout);
+      } catch (err) {
+        const detail = compact(err instanceof Error ? err.message : String(err));
+        throw new ReachError(detail || '检索适配不可用', INSTALL_HINT);
       }
     },
     async open(url: string) {
-      try {
-        const reader = `https://r.jina.ai/${url}`;
-        const res = await fetch(reader, { headers: { Accept: 'text/plain' } });
-        if (!res.ok) {
-          return { url, ok: false, body: '', error: `打开失败 HTTP ${res.status}` };
-        }
-        const body = (await res.text()).slice(0, 20_000);
-        return { url, ok: true, body };
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        return { url, ok: false, body: '', error: msg };
-      }
+      return openViaJinaReader(fetchFn, url);
     },
   };
 }
 
-function parseHits(stdout: string): SearchHit[] {
+async function openViaJinaReader(fetchFn: FetchFn, url: string): Promise<OpenResult> {
   try {
-    const json: unknown = JSON.parse(stdout);
-    const rows = Array.isArray(json)
-      ? json
-      : typeof json === 'object' && json && 'results' in json
-        ? (json as { results: unknown }).results
-        : [];
-    if (!Array.isArray(rows)) return [];
-    return rows
-      .map((row) => {
-        const r = row as { title?: string; url?: string; snippet?: string; text?: string };
-        return {
-          title: r.title ?? r.url ?? '',
-          url: r.url ?? '',
-          snippet: r.snippet ?? r.text ?? '',
-        };
-      })
-      .filter((h) => Boolean(h.url));
-  } catch {
-    return [];
+    const reader = `https://r.jina.ai/${url}`;
+    const res = await fetchFn(reader, {
+      headers: { Accept: 'text/plain' },
+    });
+    if (!res.ok) {
+      return { url, ok: false, body: '', error: `打开失败 HTTP ${res.status}` };
+    }
+    const body = (await res.text()).trim().slice(0, 40_000);
+    if (!body) return { url, ok: false, body: '', error: '打开后正文为空' };
+    return { url, ok: true, body, finalUrl: url };
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    return { url, ok: false, body: '', error: compact(msg) };
   }
 }
 
-async function openViaJinaSearch(query: string): Promise<SearchHit[]> {
-  void query;
-  return [];
+function parseHitsOrThrow(stdout: string): SearchHit[] {
+  let json: unknown;
+  try {
+    json = JSON.parse(stdout);
+  } catch {
+    throw new ReachError('检索返回不是 JSON', INSTALL_HINT);
+  }
+  const rows = Array.isArray(json)
+    ? json
+    : typeof json === 'object' && json && 'results' in json
+      ? (json as { results: unknown }).results
+      : typeof json === 'object' && json && 'data' in json
+        ? (json as { data: unknown }).data
+        : [];
+  if (!Array.isArray(rows)) throw new ReachError('检索返回缺少 results 数组', INSTALL_HINT);
+  return rows
+    .map((row) => {
+      const r = row as {
+        title?: string;
+        url?: string;
+        link?: string;
+        snippet?: string;
+        text?: string;
+        content?: string;
+      };
+      const url = r.url ?? r.link ?? '';
+      return {
+        title: r.title ?? url,
+        url,
+        snippet: r.snippet ?? r.text ?? r.content ?? '',
+      };
+    })
+    .filter((h) => Boolean(h.url));
+}
+
+function compact(text: string): string {
+  return text.replace(/\s+/g, ' ').trim().slice(0, 240);
 }
 
 export const UNAVAILABLE_ADAPTER: ReachAdapter = {
@@ -137,7 +187,7 @@ export const UNAVAILABLE_ADAPTER: ReachAdapter = {
     return { ok: false, detail: '未配置检索适配', hint: INSTALL_HINT };
   },
   async search() {
-    return [];
+    throw new ReachError('未配置检索适配', INSTALL_HINT);
   },
   async open(url: string) {
     return { url, ok: false, body: '', error: INSTALL_HINT };

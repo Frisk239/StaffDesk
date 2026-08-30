@@ -64,6 +64,26 @@ describe('建库与迁移', () => {
     brain.close();
   });
 
+  it('v4 迁移提供周期性雷达计划字段', () => {
+    const brain = openBrain(tmpBrain());
+    const taskColumns = columnNames(brain.db, 'tasks');
+    expect(taskColumns).toEqual(
+      expect.arrayContaining([
+        'query',
+        'interval_days',
+        'next_due_at',
+        'last_run_at',
+        'parent_task_id',
+        'due_at',
+      ]),
+    );
+    const row = brain.db.prepare('SELECT MAX(version) AS version FROM schema_migrations').get() as {
+      version: number;
+    };
+    expect(row.version).toBeGreaterThanOrEqual(4);
+    brain.close();
+  });
+
   it('旧版 unparsed 来源迁移后保留但不会被绑定抽取', () => {
     const brain = openBrain(tmpBrain());
     brain.dispatch({ type: 'ADD_WORKSPACE', name: '旧库', scenario: '求职面试' });

@@ -275,6 +275,40 @@ describe('账本动作覆盖', () => {
     });
     brain.dispatch({ type: 'SET_VIEW', view: { kind: 'replay', taskId: 'task-test' } });
     expect(brain.snapshot().taskAudits.length).toBeGreaterThan(0);
+
+    brain.dispatch({ type: 'CREATE_RADAR', objectId: obj.id, query: '甲组织 官方' });
+    const radar = brain.snapshot().tasks.find((t) => t.kind === '周期性雷达');
+    expect(radar?.nextDueAt).toBeTruthy();
+    if (radar?.nextDueAt) {
+      const runAt = radar.nextDueAt;
+      brain.dispatch({
+        type: 'APPLY_RESEARCH',
+        task: {
+          id: 'task-radar-run',
+          objectId: obj.id,
+          kind: '再搜一轮',
+          status: '已完成',
+          createdAt: runAt,
+          budgetGear: '快搜',
+          parentTaskId: radar.id,
+          dueAt: runAt,
+          query: radar.query,
+        },
+        audits: [
+          {
+            taskId: 'task-radar-run',
+            seq: 1,
+            kind: '迟跑',
+            payload: { parentTaskId: radar.id },
+            ts: '2026-08-31',
+          },
+        ],
+        sources: [],
+      });
+      const updatedRadar = brain.snapshot().tasks.find((t) => t.id === radar.id);
+      expect(updatedRadar?.lastRunAt).toBe(runAt);
+      expect(updatedRadar?.nextDueAt).not.toBe(radar.nextDueAt);
+    }
     expect(listUserTables(brain.db).length).toBeGreaterThan(5);
   });
 
@@ -328,6 +362,8 @@ describe('账本动作覆盖', () => {
           text: '回复偏短',
           memoryKind: '偏好',
           fromObjectId: obj.id,
+          fromMessageIds: ['msg-old'],
+          sourceExcerpt: '回复偏短',
           scope: '全局',
         }),
         new Date().toISOString(),
@@ -345,6 +381,8 @@ describe('账本动作覆盖', () => {
           text: '另一条',
           memoryKind: '偏好',
           fromObjectId: obj.id,
+          fromMessageIds: ['msg-old-2'],
+          sourceExcerpt: '另一条',
           scope: '对象',
         }),
         new Date().toISOString(),

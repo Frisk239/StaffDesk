@@ -36,5 +36,7 @@ Desktop.ini
 .DS_Store
 
 # Playwright 测试产物
+test-results/
+playwright-report/
 app/test-results/
 app/playwright-report/

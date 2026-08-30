@@ -10,7 +10,9 @@ import { activeModelCompletion, completionForProvider } from './llm/runtime';
 import { createExtractionJobExecutor } from './extraction';
 import { generateBrief } from './loops/briefGen';
 import { isWriteIntent, runSessionTurn } from './loops/session';
+import { extractCandidateMemories } from './loops/memoryExtract';
 import { defaultQuery, runResearchTask, type BudgetGear } from './tasks/engine';
+import { planRadarRun } from './tasks/radar';
 import { runLiveCertForScenario } from './eval/cert';
 import { exportBrainZip } from './exportZip';
 import { scenarioOfWorkspace } from '@shared/scenario';
@@ -24,6 +26,42 @@ function broadcast(next: unknown): void {
 export function registerIpc(brain: Brain): void {
   const executeExtractionJob = createExtractionJobExecutor({ brain, publish: broadcast });
   const executeIngest = createIngestionExecutor({ brain, publish: broadcast });
+  const runResearchAndApply = async (
+    objectId: string,
+    gear: BudgetGear,
+    options: Parameters<typeof runResearchTask>[4] = {},
+  ) => {
+    const state = brain.snapshot();
+    const reach = createReachAdapter();
+    const result = await runResearchTask(
+      state,
+      objectId,
+      gear,
+      {
+        reach,
+        queryFor: defaultQuery,
+      },
+      options,
+    );
+    let next = brain.dispatch({
+      type: 'APPLY_RESEARCH',
+      task: result.task,
+      audits: result.audits,
+      sources: result.sources,
+    });
+    for (const src of result.sources) {
+      if (src.boundObjectIds.length === 0) continue;
+      next = brain.dispatch({
+        type: 'BIND_CONFIRMED',
+        sourceId: src.id,
+        objectIds: src.boundObjectIds,
+      });
+      next = await executeExtractionJob(src.id);
+    }
+    broadcast(next);
+    return next;
+  };
+
   ipcMain.handle('brain:snapshot', () => brain.snapshot());
   ipcMain.handle('brain:dispatch', (_event, action: Action) => {
     const next = brain.dispatch(action);
@@ -41,6 +79,9 @@ export function registerIpc(brain: Brain): void {
     }
     brain.dispatch({ type: 'CHAT_USER_ONLY', objectId: payload.objectId, text });
     const state = brain.snapshot();
+    const userMessage = [...(state.chatByObject[payload.objectId] ?? [])]
+      .reverse()
+      .find((message) => message.role === 'user' && message.text === text);
     const complete = activeModelCompletion(state);
     const reply = await runSessionTurn(state, payload.objectId, text, {
       db: brain.db,
@@ -67,8 +108,33 @@ export function registerIpc(brain: Brain): void {
       text: desk.text,
       claimRefs: reply.claimRefs,
     });
-    broadcast(next);
-    return next;
+    let finalState = next;
+    const memoryResult = await extractCandidateMemories({
+      state: finalState,
+      objectId: payload.objectId,
+      userMessages: userMessage ? [userMessage] : [],
+      complete,
+    });
+    if (memoryResult.candidates.length > 0) {
+      finalState = brain.dispatch({
+        type: 'ADD_CANDIDATE_MEMORIES',
+        objectId: payload.objectId,
+        candidates: memoryResult.candidates,
+      });
+      finalState = brain.dispatch({ type: 'RUN_MEMORY_DREAM' });
+    } else if (memoryResult.status === 'unconfigured' && memoryResult.detail) {
+      finalState = brain.dispatch({ type: 'TOAST', text: memoryResult.detail });
+    } else if (
+      (memoryResult.status === 'invalid-output' || memoryResult.status === 'failed') &&
+      memoryResult.detail
+    ) {
+      finalState = brain.dispatch({
+        type: 'TOAST',
+        text: `候选记忆抽取未完成：${memoryResult.detail}`,
+      });
+    }
+    broadcast(finalState);
+    return finalState;
   });
 
   ipcMain.handle(
@@ -229,31 +295,35 @@ export function registerIpc(brain: Brain): void {
   ipcMain.handle(
     'task:startResearch',
     async (_event, payload: { objectId: string; gear?: BudgetGear }) => {
-      const state = brain.snapshot();
-      const reach = createReachAdapter();
-      const result = await runResearchTask(state, payload.objectId, payload.gear ?? '快搜', {
-        reach,
-        queryFor: defaultQuery,
-      });
-      let next = brain.dispatch({
-        type: 'APPLY_RESEARCH',
-        task: result.task,
-        audits: result.audits,
-        sources: result.sources,
-      });
-      for (const src of result.sources) {
-        if (src.boundObjectIds.length === 0) continue;
-        next = brain.dispatch({
-          type: 'BIND_CONFIRMED',
-          sourceId: src.id,
-          objectIds: src.boundObjectIds,
-        });
-        next = await executeExtractionJob(src.id);
-      }
-      broadcast(next);
-      return next;
+      return runResearchAndApply(payload.objectId, payload.gear ?? '快搜');
     },
   );
+
+  ipcMain.handle('task:createRadar', async (_event, payload: { objectId: string }) => {
+    const state = brain.snapshot();
+    const query = defaultQuery(state, payload.objectId);
+    const next = brain.dispatch({
+      type: 'CREATE_RADAR',
+      objectId: payload.objectId,
+      query,
+      intervalDays: 1,
+      budgetGear: '快搜',
+    });
+    broadcast(next);
+    return next;
+  });
+
+  ipcMain.handle('task:runRadar', async (_event, payload: { radarTaskId: string }) => {
+    const state = brain.snapshot();
+    const radar = state.tasks.find((task) => task.id === payload.radarTaskId);
+    if (!radar || radar.kind !== '周期性雷达') {
+      const next = brain.dispatch({ type: 'TOAST', text: '没有这条雷达计划' });
+      broadcast(next);
+      return next;
+    }
+    const plan = planRadarRun(radar);
+    return runResearchAndApply(radar.objectId, radar.budgetGear ?? '快搜', plan.options);
+  });
 }
 
 export function unregisterIpc(): void {
@@ -268,6 +338,8 @@ export function unregisterIpc(): void {
   ipcMain.removeHandler('extract:run');
   ipcMain.removeHandler('settings:testProvider');
   ipcMain.removeHandler('task:startResearch');
+  ipcMain.removeHandler('task:createRadar');
+  ipcMain.removeHandler('task:runRadar');
   ipcMain.removeHandler('brief:generate');
   ipcMain.removeHandler('brain:export');
 }

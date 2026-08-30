@@ -1,5 +1,5 @@
 import type { Action } from './actions';
-import type { State } from './types';
+import type { BudgetGear, State } from './types';
 
 export interface StaffdeskApi {
   snapshot: () => Promise<State>;
@@ -13,7 +13,9 @@ export interface StaffdeskApi {
   retryIngest: (jobId: string) => Promise<State>;
   runExtract: (sourceId: string) => Promise<State>;
   testProvider: (id: string) => Promise<State>;
-  startResearch: (objectId: string, gear?: '快搜' | '深挖') => Promise<State>;
+  startResearch: (objectId: string, gear?: BudgetGear) => Promise<State>;
+  createRadar: (objectId: string) => Promise<State>;
+  runRadar: (radarTaskId: string) => Promise<State>;
   generateBrief: (objectId: string) => Promise<State>;
   exportBrain: () => Promise<string | null>;
 }

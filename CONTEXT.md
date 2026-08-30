@@ -9,7 +9,9 @@
 - Sources now carry origin, content hash, fetched time, and locatable segments. Claims can carry absolute source ranges and a segment/page locator while preserving legacy `span`.
 - Extraction now runs over stable source chunks instead of the first 8000 characters only. A technical failure in a chunk keeps the whole extraction attempt terminal without writing partial new claims.
 - Legacy `unparsed` sources are preserved for migration visibility, but they cannot be newly created through `ADD_SOURCE` and cannot be bound for extraction; users should re-import them through the real ingestion path.
-- Current working branch for this cut: `codex/m9-real-ingestion`. Previous stacked branch: `codex/m8-trustworthiness-closeout`.
+- M10 added the memory/research/radar completion slice: candidate memories now come from traceable user-message excerpts and require confirmation; research tasks run doctor/search/open through the real reach adapter and record replayable failures; radar plans can be created and run through the same research path.
+- Research Sources now carry `origin.kind=research`, final locator/hash/fetched metadata, and a body segment. Search failures, empty results, failed URLs, hard caps, late runs, and missed radar cycles stay in task audit rather than becoming Sources or Claims.
+- Current working branch for this cut: `codex/m10-memory-research-radar`. Previous stacked branch: `codex/m9-real-ingestion`.
 
 ## Language
 
