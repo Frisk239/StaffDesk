@@ -78,17 +78,7 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
                   ))}
                 </div>
               </div>
-              <div className="settings-block">
-                <div className="settings-label">大脑文件</div>
-                <p className="dim">导出 zip 不含密钥。换机器后重新填 Key。</p>
-                <button
-                  type="button"
-                  className="primary small"
-                  onClick={() => void window.staffdesk.exportBrain()}
-                >
-                  导出大脑
-                </button>
-              </div>
+              <BrainFilePanel />
               <DeletedSourceRecoveryPanel />
             </div>
           )}
@@ -98,6 +88,102 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
       </div>
     </div>
   );
+}
+
+function BrainFilePanel() {
+  const [status, setStatus] = useState<string | null>(null);
+  const [busy, setBusy] = useState<'export' | 'restore' | null>(null);
+  const [confirmRestore, setConfirmRestore] = useState(false);
+
+  const exportBackup = async () => {
+    setBusy('export');
+    try {
+      const result = await window.staffdesk.exportBrain();
+      setStatus(result ? `已导出大脑备份：${result.filePath}` : '已取消导出');
+    } catch (error) {
+      setStatus(`导出失败：${errorMessage(error)}`);
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const restoreBackup = async () => {
+    if (!confirmRestore) {
+      setConfirmRestore(true);
+      setStatus(null);
+      return;
+    }
+    setBusy('restore');
+    try {
+      const result = await window.staffdesk.restoreBrain();
+      setStatus(result ? `已恢复大脑备份；恢复前副本：${result.safetyCopyPath}` : '已取消恢复');
+      setConfirmRestore(false);
+    } catch (error) {
+      setStatus(`恢复失败：${errorMessage(error)}`);
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  return (
+    <div className="settings-block brain-file-card">
+      <div>
+        <div className="settings-label">大脑文件</div>
+        <p className="dim">
+          备份只包含对象、来源、主张、记忆、任务、简报与操作账本。不包含模型端点、API
+          Key、资格认证或构建产物。
+        </p>
+      </div>
+      <div className="brain-file-rules">
+        <span>换机器后在「模型」页重新配置端点。</span>
+        <span>恢复前自动保留当前大脑副本。</span>
+        <span>只接受 StaffDesk 生成并校验通过的备份 zip。</span>
+      </div>
+      <div className="brain-file-actions">
+        <button
+          type="button"
+          className="primary small"
+          disabled={busy !== null}
+          onClick={() => void exportBackup()}
+        >
+          {busy === 'export' ? '导出中…' : '导出大脑备份'}
+        </button>
+        <button
+          type="button"
+          className={confirmRestore ? 'primary danger small' : 'ghost small'}
+          disabled={busy !== null}
+          onClick={() => void restoreBackup()}
+        >
+          {busy === 'restore' ? '恢复中…' : confirmRestore ? '确认恢复并替换' : '恢复大脑备份'}
+        </button>
+        {confirmRestore && (
+          <button
+            type="button"
+            className="ghost small"
+            disabled={busy !== null}
+            onClick={() => {
+              setConfirmRestore(false);
+              setStatus('已取消恢复');
+            }}
+          >
+            取消
+          </button>
+        )}
+      </div>
+      {confirmRestore && (
+        <div className="restore-confirm" role="alert">
+          <strong>恢复会替换当前大脑文件。</strong>
+          <span>系统会先导出当前大脑安全副本；模型端点、API Key 和资格认证不会被备份覆盖。</span>
+        </div>
+      )}
+      {status && <p className="backup-status">{status}</p>}
+    </div>
+  );
+}
+
+function errorMessage(error: unknown): string {
+  const raw = error instanceof Error ? error.message : String(error);
+  return raw.replace(/^Error invoking remote method '[^']+':\s*/, '').slice(0, 180);
 }
 
 function DeletedSourceRecoveryPanel() {

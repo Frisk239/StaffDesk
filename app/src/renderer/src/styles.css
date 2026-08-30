@@ -3027,6 +3027,63 @@ textarea {
   font-size: 14px;
   line-height: 22px;
 }
+.brain-file-card {
+  padding: 14px;
+  border: 1px solid var(--line-2);
+  border-radius: 16px;
+  background: var(--bg-50);
+}
+.brain-file-rules {
+  display: grid;
+  gap: 6px;
+  color: var(--ink-3);
+  font-size: 12px;
+}
+.brain-file-rules span {
+  position: relative;
+  padding-left: 14px;
+}
+.brain-file-rules span::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 8px;
+  width: 5px;
+  height: 5px;
+  border-radius: 999px;
+  background: var(--ink-caption);
+}
+.brain-file-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.backup-status {
+  margin: 0;
+  padding: 8px 10px;
+  border: 1px solid var(--line-1);
+  border-radius: var(--radius);
+  background: var(--bg);
+  color: var(--ink-2);
+  font-size: 12px;
+  word-break: break-all;
+}
+.restore-confirm {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 10px 12px;
+  border: 1px solid var(--line-2);
+  border-left: 3px solid var(--error);
+  border-radius: var(--radius);
+  background: var(--danger-surface);
+  color: var(--ink-2);
+  font-size: 12px;
+}
+.restore-confirm strong {
+  color: var(--error);
+  font-weight: 600;
+}
 .source-recovery-list {
   display: flex;
   flex-direction: column;

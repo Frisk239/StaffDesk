@@ -1,6 +1,25 @@
 import type { Action } from './actions';
 import type { BudgetGear, State } from './types';
 
+export interface BrainBackupInfo {
+  createdAt: string;
+  schemaVersion: number;
+  sizeBytes: number;
+  sha256: string;
+}
+
+export interface BrainBackupExportResult {
+  filePath: string;
+  backup: BrainBackupInfo;
+}
+
+export interface BrainRestoreResult {
+  filePath: string;
+  safetyCopyPath: string;
+  backup: BrainBackupInfo;
+  state: State;
+}
+
 export interface StaffdeskApi {
   snapshot: () => Promise<State>;
   dispatch: (action: Action) => Promise<State>;
@@ -17,5 +36,6 @@ export interface StaffdeskApi {
   createRadar: (objectId: string) => Promise<State>;
   runRadar: (radarTaskId: string) => Promise<State>;
   generateBrief: (objectId: string) => Promise<State>;
-  exportBrain: () => Promise<string | null>;
+  exportBrain: () => Promise<BrainBackupExportResult | null>;
+  restoreBrain: () => Promise<BrainRestoreResult | null>;
 }

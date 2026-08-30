@@ -33,7 +33,9 @@ const api: StaffdeskApi = {
   createRadar: (objectId) => ipcRenderer.invoke('task:createRadar', { objectId }) as Promise<State>,
   runRadar: (radarTaskId) => ipcRenderer.invoke('task:runRadar', { radarTaskId }) as Promise<State>,
   generateBrief: (objectId) => ipcRenderer.invoke('brief:generate', objectId) as Promise<State>,
-  exportBrain: () => ipcRenderer.invoke('brain:export') as Promise<string | null>,
+  exportBrain: () => ipcRenderer.invoke('brain:export') as ReturnType<StaffdeskApi['exportBrain']>,
+  restoreBrain: () =>
+    ipcRenderer.invoke('brain:restore') as ReturnType<StaffdeskApi['restoreBrain']>,
   onStateChanged: (cb) => {
     const listener = (_event: unknown, state: State) => {
       cb(state);
