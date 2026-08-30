@@ -27,6 +27,7 @@ export type SourceOriginKind = 'text' | 'url' | 'file' | 'research' | 'legacy';
 
 export interface SourceOrigin {
   kind: SourceOriginKind;
+  taskId?: string | undefined;
   locator?: string | undefined;
   finalUrl?: string | undefined;
   fileName?: string | undefined;
@@ -261,6 +262,7 @@ export type UndoPayload =
 
 export interface ChatCard {
   kind: ChatCardKind;
+  taskId?: string | undefined;
   claimId?: string | undefined;
   claimIds?: string[] | undefined;
   proposalId?: string | undefined;
@@ -310,6 +312,7 @@ export interface WriteProposal {
   id: string;
   objectId: string;
   kind: WriteKind;
+  taskId?: string | undefined;
   headline: string;
   evidence: string;
   claimId?: string | undefined;

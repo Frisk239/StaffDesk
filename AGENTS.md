@@ -4,9 +4,9 @@
 
 ## 必读文档（动手前先看）
 
-- `CONTEXT.md` — 领域语言（词条 + 每条的 Avoid 列表）。**与其他一切文档冲突时以它为准**；UI 文案与术语逐字对齐词条。「Current implementation」一节是最新进度（M1–M15 已完成）。
+- `CONTEXT.md` — 领域语言（词条 + 每条的 Avoid 列表）。**与其他一切文档冲突时以它为准**；UI 文案与术语逐字对齐词条。「Current implementation」一节是最新进度（M1–M16 已完成）。
 - `docs/engineering.md` — 工程规范全文（Git / 代码 / 测试 / CI / 安全）。
-- `docs/adr/` — 0001–0049 架构决策。新决策**先落 ADR（0050 起顺延）再写代码**；发现设计矛盾停下问用户，禁止口头裁决。
+- `docs/adr/` — 0001–0050 架构决策。新决策**先落 ADR（0051 起顺延）再写代码**；发现设计矛盾停下问用户，禁止口头裁决。
 - `docs/dev-logs/` — 各里程碑验收记录；新批次完成要写对应的 MX.md。
 - `docs/reference.md` — `reference/` 对照仓索引与产品边界。
 

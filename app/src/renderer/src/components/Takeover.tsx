@@ -81,6 +81,10 @@ export function Takeover({ objectId }: { objectId: string }) {
     dispatch({ type: 'CONFIRM_WRITE', writeId: head.id });
   };
 
+  const rejectLabel = head.kind === '批量晋升' ? '全部保持' : '拒绝';
+  const confirmLabel =
+    head.kind === '批量晋升' ? '全部晋升' : head.kind === '批量回退' ? '确认回退' : '确认';
+
   return (
     // 只拦裸 Enter（提交语义）；Shift+Enter 在 textarea 里保留换行，与 composer 行为一致。
     <div
@@ -115,9 +119,14 @@ export function Takeover({ objectId }: { objectId: string }) {
             <div className="takeover-warn">通过后可出站当定论</div>
           )}
           {head.kind === '批量晋升' && (
-            <div className="takeover-warn">
-              拒绝后，本任务中的未核内容会原样保留，不会批量写入。
-            </div>
+            <>
+              <div className="takeover-warn">
+                全部晋升后可出站当定论；若有冲突，仍会并排展示，不自动裁决。
+              </div>
+              <div className="takeover-warn">
+                选择保持后，本任务中的未核内容会原样保留，不会批量写入。
+              </div>
+            </>
           )}
           {head.kind === '批量回退' && (
             <div className="takeover-warn">确认后整批回到未核（补偿写，可再晋升）</div>
@@ -175,10 +184,10 @@ export function Takeover({ objectId }: { objectId: string }) {
             className="btn outline danger-hover"
             onClick={() => dispatch({ type: 'REJECT_WRITE', writeId: head.id })}
           >
-            拒绝
+            {rejectLabel}
           </button>
           <button type="button" className="btn primary" onClick={confirm}>
-            确认
+            {confirmLabel}
           </button>
         </div>
       </div>

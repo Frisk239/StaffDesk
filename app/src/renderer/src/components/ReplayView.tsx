@@ -1,4 +1,5 @@
 import { useStore } from '../store';
+import { pendingTaskClaimReview, unverifiedClaimIdsForTask } from '@shared/taskClaims';
 
 function payloadText(payload: unknown): string {
   return typeof payload === 'string' ? payload : JSON.stringify(payload, null, 2);
@@ -15,6 +16,8 @@ export function ReplayView({ taskId }: { taskId: string }) {
   const task = state.tasks.find((t) => t.id === taskId);
   const object = task ? state.objects.find((item) => item.id === task.objectId) : null;
   const rows = state.taskAudits.filter((a) => a.taskId === taskId).sort((a, b) => a.seq - b.seq);
+  const pendingReview = pendingTaskClaimReview(state, taskId);
+  const unverifiedClaimIds = unverifiedClaimIdsForTask(state, taskId);
   return (
     <div className="replay-page">
       <div className="inbox-head">
@@ -59,6 +62,28 @@ export function ReplayView({ taskId }: { taskId: string }) {
           {task.parentTaskId && <span className="tag grey">父雷达 {task.parentTaskId}</span>}
           {task.dueAt && <span className="tag grey">应跑 {task.dueAt}</span>}
           {task.nextDueAt && <span className="tag grey">下次 {task.nextDueAt}</span>}
+        </div>
+      )}
+      {task && pendingReview && (
+        <div className="replay-review-card">
+          <div>
+            <strong>本任务有 {pendingReview.claimIds?.length ?? 0} 条未核等待处理</strong>
+            <p>返回对象页后，在输入区选择“全部晋升”或“全部保持”。</p>
+          </div>
+          <button
+            type="button"
+            className="btn primary sm"
+            onClick={() =>
+              dispatch({ type: 'SET_VIEW', view: { kind: 'object', objectId: task.objectId } })
+            }
+          >
+            去处理
+          </button>
+        </div>
+      )}
+      {task && !pendingReview && unverifiedClaimIds.length > 0 && (
+        <div className="replay-review-card muted">
+          本任务仍有 {unverifiedClaimIds.length} 条主张保持未核。
         </div>
       )}
       <ol className="replay-timeline">

@@ -1044,6 +1044,30 @@ textarea {
   color: var(--ink-2);
   font-size: 13px;
 }
+.replay-review-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 0 0 14px;
+  padding: 12px 14px;
+  border: 1px solid var(--warn);
+  border-radius: var(--radius-m);
+  background: var(--warn-bg);
+  color: var(--ink);
+}
+.replay-review-card p {
+  margin: 3px 0 0;
+  color: var(--ink-3);
+  font-size: 13px;
+}
+.replay-review-card.muted {
+  display: block;
+  border-color: var(--line-1);
+  background: var(--bg);
+  color: var(--ink-3);
+  font-size: 13px;
+}
 .replay-timeline {
   display: grid;
   gap: 8px;
