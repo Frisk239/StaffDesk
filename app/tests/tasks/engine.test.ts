@@ -99,8 +99,40 @@ describe('调研任务引擎', () => {
     });
     expect(result.task.status).toBe('已停止');
     expect(result.task.stopReason).toBe('失败');
-    expect(result.audits.map((audit) => audit.kind)).toEqual(['体检', '停止']);
+    expect(result.audits.map((audit) => audit.kind)).toEqual(['开始', '体检', '停止']);
     expect(JSON.stringify(result.audits)).toMatch(/install Agent Reach/);
+  });
+
+  it('收到手动停止后不再打开搜索命中，过程审计可增量观察', async () => {
+    let stop = false;
+    let opens = 0;
+    const streamed: string[] = [];
+    const reach: ReachAdapter = {
+      doctor: async () => ({ ok: true, detail: 'ok' }),
+      search: async () => [
+        { title: 'A', url: 'https://a.example/doc', snippet: 'ok' },
+        { title: 'B', url: 'https://b.example/doc', snippet: 'ok' },
+      ],
+      open: async (url) => {
+        opens += 1;
+        return { url, ok: true, body: '不应写入' };
+      },
+    };
+    const result = await runResearchTask(baseState(), 'org-1', '快搜', {
+      reach,
+      now: () => Date.parse('2026-08-30T00:00:00.000Z'),
+      queryFor: () => '验收组织',
+      onAudit: (audit) => {
+        streamed.push(audit.kind);
+        if (audit.kind === '搜索结果') stop = true;
+      },
+      shouldStop: () => stop,
+    });
+    expect(opens).toBe(0);
+    expect(result.task.status).toBe('已停止');
+    expect(result.task.stopReason).toBe('手动');
+    expect(result.sources).toEqual([]);
+    expect(streamed).toEqual(['开始', '体检', '搜索', '搜索结果', '停止']);
   });
 
   it('雷达补跑走同一调研路径并记录迟跑', async () => {
@@ -137,8 +169,9 @@ describe('调研任务引擎', () => {
     expect(result.task.parentTaskId).toBe('radar-1');
     expect(result.task.dueAt).toBe('2026-08-30 00:00');
     expect(result.task.query).toBe('验收组织 官方');
-    expect(result.audits[0]?.kind).toBe('未跑');
-    expect(result.audits[1]?.kind).toBe('迟跑');
+    expect(result.audits[0]?.kind).toBe('开始');
+    expect(result.audits[1]?.kind).toBe('未跑');
+    expect(result.audits[2]?.kind).toBe('迟跑');
     expect(result.sources).toHaveLength(1);
   });
 });

@@ -303,6 +303,52 @@ describe('账本动作覆盖', () => {
     expect(listUserTables(brain.db).length).toBeGreaterThan(5);
   });
 
+  it('调研任务先落账，审计增量追加，手动停止不被最终写回覆盖', () => {
+    const { brain, obj } = setup();
+    const task = {
+      id: 'task-live',
+      objectId: obj.id,
+      kind: '调研' as const,
+      status: '进行中' as const,
+      createdAt: '2026-08-30 12:00',
+      budgetGear: '快搜' as const,
+      query: '甲组织 官方',
+    };
+    const searchAudit = {
+      taskId: task.id,
+      seq: 1,
+      kind: '搜索',
+      payload: { query: task.query },
+      ts: '2026-08-30T12:00:01.000Z',
+    };
+    const stopAudit = {
+      taskId: task.id,
+      seq: 2,
+      kind: '停止',
+      payload: { reason: '手动', opened: 0, failed: 0 },
+      ts: '2026-08-30T12:00:02.000Z',
+    };
+
+    brain.dispatch({ type: 'TASK_RUN_STARTED', task });
+    brain.dispatch({ type: 'TASK_AUDIT_APPENDED', taskId: task.id, audits: [searchAudit] });
+    brain.dispatch({ type: 'TASK_AUDIT_APPENDED', taskId: task.id, audits: [searchAudit] });
+    brain.dispatch({ type: 'TASK_STOP_REQUESTED', taskId: task.id });
+    brain.dispatch({ type: 'SET_VIEW', view: { kind: 'replay', taskId: task.id } });
+    brain.dispatch({
+      type: 'APPLY_RESEARCH',
+      task: { ...task, status: '已完成' },
+      audits: [searchAudit, stopAudit],
+      sources: [],
+    });
+
+    const snapshot = brain.snapshot();
+    const saved = snapshot.tasks.find((item) => item.id === task.id);
+    expect(saved?.status).toBe('已停止');
+    expect(saved?.stopReason).toBe('手动');
+    expect(snapshot.taskAudits.filter((audit) => audit.taskId === task.id)).toHaveLength(2);
+    expect(snapshot.view).toEqual({ kind: 'replay', taskId: task.id });
+  });
+
   it('整理提议并入与丢弃、候选记忆、解绑撤销', () => {
     const { brain, obj } = setup();
     const uncat = brain.snapshot().claims.find((c) => c.predicate === '未编目');

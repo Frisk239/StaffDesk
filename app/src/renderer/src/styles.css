@@ -1015,6 +1015,69 @@ textarea {
   margin-top: 8px;
 }
 
+/* ============ 任务回放 ============ */
+.replay-page {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 24px;
+  background: var(--bg-50);
+}
+.replay-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+.replay-summary {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin: 12px 0 14px;
+}
+.replay-query {
+  min-width: 160px;
+  max-width: min(560px, 100%);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--ink-2);
+  font-size: 13px;
+}
+.replay-timeline {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.replay-card {
+  background: var(--bg);
+  border: 1px solid var(--line-1);
+  border-radius: var(--radius-m);
+  padding: 10px 12px;
+}
+.replay-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 13px;
+}
+.replay-card-head time {
+  color: var(--ink-caption);
+  font-size: 11px;
+}
+.replay-payload {
+  margin: 8px 0 0;
+  color: var(--ink-2);
+  white-space: pre-wrap;
+  overflow-x: auto;
+  font-family: var(--font-code);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
 /* ============ 对话（A：底部 / B：右侧全高） ============ */
 /* 排版对齐 DSH：用户 22px 淡蓝气泡（约 70% 宽），assistant 无气泡叙述流
    14/24，块间 16px；思考/工具是 24px DisclosureRow；composer 是 22px 卡。 */

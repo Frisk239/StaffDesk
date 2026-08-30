@@ -39,6 +39,8 @@ export interface ResearchDeps {
   reach: ReachAdapter;
   now?: () => number;
   queryFor: (state: State, objectId: string) => string;
+  onAudit?: ((audit: TaskAuditRow) => void) | undefined;
+  shouldStop?: (() => boolean) | undefined;
 }
 
 export interface ResearchRunOptions {
@@ -48,6 +50,33 @@ export interface ResearchRunOptions {
   dueAt?: string | undefined;
   late?: boolean | undefined;
   missedRuns?: number | undefined;
+  task?: DeskTask | undefined;
+}
+
+export function createResearchTask(
+  state: State,
+  objectId: string,
+  gear: BudgetGear,
+  deps: ResearchDeps,
+  options: ResearchRunOptions = {},
+): DeskTask {
+  const obj = state.objects.find((o) => o.id === objectId);
+  const started = deps.now?.() ?? Date.now();
+  const createdAt = new Date(started).toISOString().replace('T', ' ').slice(0, 16);
+  const task: DeskTask = {
+    id: `task-${state.seq}-${started}`,
+    objectId,
+    kind: options.kind ?? '调研',
+    status: '进行中',
+    createdAt,
+    budgetGear: gear,
+  };
+  const query =
+    options.query?.trim() || deps.queryFor(state, objectId) || `${obj?.name ?? ''} 官方`;
+  task.query = query;
+  if (options.parentTaskId) task.parentTaskId = options.parentTaskId;
+  if (options.dueAt) task.dueAt = options.dueAt;
+  return task;
 }
 
 /** 调研循环：顶过程不顶写入条数。触顶后已打开的照写，失败 URL 记审计。不编负事实。 */
@@ -61,21 +90,11 @@ export async function runResearchTask(
   const obj = state.objects.find((o) => o.id === objectId);
   const budget = BUDGETS[gear];
   const started = deps.now?.() ?? Date.now();
-  const createdAt = new Date(started).toISOString().replace('T', ' ').slice(0, 16);
-  const task: DeskTask = {
-    id: `task-${started}`,
-    objectId,
-    kind: options.kind ?? '调研',
-    status: '进行中',
-    createdAt,
-    budgetGear: gear,
-  };
-  const query =
-    options.query?.trim() || deps.queryFor(state, objectId) || `${obj?.name ?? ''} 官方`;
+  const task = runningTask(
+    options.task ?? createResearchTask(state, objectId, gear, deps, options),
+  );
+  const query = task.query?.trim() || deps.queryFor(state, objectId) || `${obj?.name ?? ''} 官方`;
   task.query = query;
-  if (options.parentTaskId) task.parentTaskId = options.parentTaskId;
-  if (options.dueAt) task.dueAt = options.dueAt;
-
   const audits: TaskAuditRow[] = [];
   const opened: { url: string; body: string }[] = [];
   const failedUrls: string[] = [];
@@ -88,14 +107,49 @@ export async function runResearchTask(
 
   const log = (kind: string, payload: unknown) => {
     seq += 1;
-    audits.push({
+    const audit = {
       taskId: task.id,
       seq,
       kind,
       payload,
       ts: new Date().toISOString(),
-    });
+    };
+    audits.push(audit);
+    deps.onAudit?.(audit);
   };
+
+  const finish = (
+    reason: TaskStopReason | undefined,
+    forcedStatus?: DeskTask['status'] | undefined,
+    detail?: Record<string, unknown> | undefined,
+  ): ResearchResult => {
+    stopReason = reason;
+    task.status =
+      forcedStatus ??
+      (reason === '手动' || (reason === '失败' && opened.length === 0) ? '已停止' : '已完成');
+    if (reason) task.stopReason = reason;
+    log('停止', {
+      reason: reason ?? '完成',
+      opened: opened.length,
+      failed: failedUrls.length,
+      ...(detail ?? {}),
+    });
+    return { task, audits, sources, opened, failedUrls, stopReason };
+  };
+
+  const manualStop = () => deps.shouldStop?.() ?? false;
+  const finishIfManuallyStopped = () => {
+    if (!manualStop()) return null;
+    return finish('手动', '已停止');
+  };
+
+  log('开始', {
+    kind: task.kind,
+    query: task.query,
+    budgetGear: task.budgetGear,
+    parentTaskId: task.parentTaskId,
+    dueAt: task.dueAt,
+  });
 
   if ((options.missedRuns ?? 0) > 0) {
     log('未跑', {
@@ -115,6 +169,9 @@ export async function runResearchTask(
     });
   }
 
+  const stoppedBeforeDoctor = finishIfManuallyStopped();
+  if (stoppedBeforeDoctor) return stoppedBeforeDoctor;
+
   const hitCap = () => {
     const elapsed = (deps.now?.() ?? Date.now()) - started;
     return (
@@ -127,23 +184,20 @@ export async function runResearchTask(
 
   const doctor = await deps.reach.doctor();
   log('体检', doctor);
+  const stoppedAfterDoctor = finishIfManuallyStopped();
+  if (stoppedAfterDoctor) return stoppedAfterDoctor;
   if (!doctor.ok) {
-    stopReason = '失败';
-    task.status = '已停止';
-    task.stopReason = stopReason;
-    log('停止', {
-      reason: stopReason,
+    return finish('失败', '已停止', {
       detail: doctor.detail,
       hint: doctor.hint,
-      opened: 0,
-      failed: 0,
     });
-    return { task, audits, sources, opened, failedUrls, stopReason };
   }
 
   steps += 1;
   searches += 1;
   log('搜索', { query, platform: 'Agent Reach' });
+  const stoppedBeforeSearch = finishIfManuallyStopped();
+  if (stoppedBeforeSearch) return stoppedBeforeSearch;
   let hits: SearchHit[] = [];
   try {
     hits = await deps.reach.search(query);
@@ -169,7 +223,12 @@ export async function runResearchTask(
     stopReason = '失败';
   }
 
+  const stoppedAfterSearch = finishIfManuallyStopped();
+  if (stoppedAfterSearch) return stoppedAfterSearch;
+
   for (const hit of hits) {
+    const stoppedBeforeOpen = finishIfManuallyStopped();
+    if (stoppedBeforeOpen) return stoppedBeforeOpen;
     if (hitCap()) {
       stopReason = '触顶';
       log('触顶', { searches, opens, steps });
@@ -182,6 +241,8 @@ export async function runResearchTask(
     if (!page.ok) {
       failedUrls.push(hit.url);
       log('打开失败', { url: hit.url, error: page.error ?? '打开失败' });
+      const stoppedAfterFailedOpen = finishIfManuallyStopped();
+      if (stoppedAfterFailedOpen) return stoppedAfterFailedOpen;
       continue;
     }
     opened.push({ url: hit.url, body: page.body });
@@ -192,16 +253,23 @@ export async function runResearchTask(
       chars: page.body.length,
     });
     sources.push(sourceFromPage(task, objectId, hit, page, obj?.workspaceId, opens));
+    const stoppedAfterOpen = finishIfManuallyStopped();
+    if (stoppedAfterOpen) return stoppedAfterOpen;
   }
 
   if (!stopReason && hitCap()) {
     stopReason = '触顶';
     log('触顶', { searches, opens, steps });
   }
-  task.status = stopReason === '失败' && opened.length === 0 ? '已停止' : '已完成';
-  if (stopReason) task.stopReason = stopReason;
-  log('停止', { reason: stopReason ?? '完成', opened: opened.length, failed: failedUrls.length });
-  return { task, audits, sources, opened, failedUrls, stopReason };
+  const stoppedBeforeFinish = finishIfManuallyStopped();
+  if (stoppedBeforeFinish) return stoppedBeforeFinish;
+  return finish(stopReason);
+}
+
+function runningTask(task: DeskTask): DeskTask {
+  const next: DeskTask = { ...task, status: '进行中' };
+  delete next.stopReason;
+  return next;
 }
 
 async function safeOpen(reach: ReachAdapter, url: string): Promise<OpenResult> {

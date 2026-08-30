@@ -11,6 +11,7 @@ import type {
   Predicate,
   RightTabKind,
   State,
+  TaskAudit,
   WriteProposal,
 } from '@shared/types';
 import { bannedHit } from '@shared/brief';
@@ -287,6 +288,21 @@ function nextRadarDueAfter(
     guard += 1;
   }
   return due;
+}
+
+function taskAuditKey(audit: TaskAudit): string {
+  return `${audit.taskId}\0${audit.seq}`;
+}
+
+function appendTaskAudits(existing: TaskAudit[], incoming: TaskAudit[]): TaskAudit[] {
+  const seen = new Set(existing.map(taskAuditKey));
+  const fresh = incoming.filter((audit) => {
+    const key = taskAuditKey(audit);
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+  return fresh.length > 0 ? [...existing, ...fresh] : existing;
 }
 
 export function reducer(state: State, action: Action): State {
@@ -1875,6 +1891,61 @@ export function reducer(state: State, action: Action): State {
       return result.changed ? { ...state, proposals: result.proposals } : state;
     }
 
+    case 'TASK_RUN_STARTED': {
+      const object = state.objects.find((item) => item.id === action.task.objectId);
+      if (!object) return state;
+      const task = { ...action.task, status: '进行中' as const };
+      delete task.stopReason;
+      const exists = state.tasks.some((item) => item.id === task.id);
+      const tasks = exists
+        ? state.tasks.map((item) => (item.id === task.id ? task : item))
+        : [...state.tasks, task];
+      return {
+        ...state,
+        seq: state.seq + 1,
+        tasks,
+        toast: {
+          text: task.kind === '再搜一轮' ? '再搜一轮已开始' : '调研已开始',
+          id: state.seq + 1,
+        },
+      };
+    }
+
+    case 'TASK_AUDIT_APPENDED': {
+      if (!state.tasks.some((task) => task.id === action.taskId)) return state;
+      const incoming = action.audits.filter((audit) => audit.taskId === action.taskId);
+      const taskAudits = appendTaskAudits(state.taskAudits, incoming);
+      return taskAudits === state.taskAudits ? state : { ...state, taskAudits };
+    }
+
+    case 'TASK_STOP_REQUESTED': {
+      const task = state.tasks.find((item) => item.id === action.taskId);
+      if (!task) {
+        return {
+          ...state,
+          seq: state.seq + 1,
+          toast: { text: '没有这条任务', id: state.seq + 1 },
+        };
+      }
+      if (task.status !== '进行中') {
+        return {
+          ...state,
+          seq: state.seq + 1,
+          toast: { text: '任务已经结束', id: state.seq + 1 },
+        };
+      }
+      return {
+        ...state,
+        seq: state.seq + 1,
+        tasks: state.tasks.map((item) =>
+          item.id === action.taskId
+            ? { ...item, status: '已停止' as const, stopReason: '手动' as const }
+            : item,
+        ),
+        toast: { text: '正在停止任务', id: state.seq + 1 },
+      };
+    }
+
     case 'CREATE_RADAR': {
       const object = state.objects.find((item) => item.id === action.objectId);
       if (!object) return state;
@@ -1929,16 +2000,20 @@ export function reducer(state: State, action: Action): State {
       const existingIds = new Set(state.sources.map((s) => s.id));
       const incoming = action.sources.filter((s) => !existingIds.has(s.id));
       const parentTaskId = action.task.parentTaskId;
-      const tasks = [...state.tasks.filter((t) => t.id !== action.task.id), action.task].map(
-        (task) =>
-          parentTaskId && task.id === parentTaskId && task.kind === '周期性雷达'
-            ? {
-                ...task,
-                status: '待启动' as const,
-                lastRunAt: action.task.createdAt,
-                nextDueAt: nextRadarDueAfter(task, action.task.createdAt),
-              }
-            : task,
+      const existingTask = state.tasks.find((task) => task.id === action.task.id);
+      const task =
+        existingTask?.status === '已停止' && existingTask.stopReason === '手动'
+          ? { ...action.task, status: '已停止' as const, stopReason: '手动' as const }
+          : action.task;
+      const tasks = [...state.tasks.filter((t) => t.id !== task.id), task].map((item) =>
+        parentTaskId && item.id === parentTaskId && item.kind === '周期性雷达'
+          ? {
+              ...item,
+              status: '待启动' as const,
+              lastRunAt: action.task.createdAt,
+              nextDueAt: nextRadarDueAfter(item, action.task.createdAt),
+            }
+          : item,
       );
       return {
         ...state,
@@ -1950,15 +2025,18 @@ export function reducer(state: State, action: Action): State {
         sources: [...state.sources, ...incoming],
         toast: {
           text:
-            action.task.status === '已停止'
-              ? `调研停止：${action.task.stopReason ?? '失败'}，写入 ${incoming.length} 条来源`
-              : action.task.stopReason === '触顶'
+            task.status === '已停止'
+              ? `调研停止：${task.stopReason ?? '失败'}，写入 ${incoming.length} 条来源`
+              : task.stopReason === '触顶'
                 ? `调研触顶：已打开 ${incoming.length} 条来源入库`
                 : `调研完成：写入 ${incoming.length} 条来源`,
           id: state.seq,
         },
         seq: state.seq + 1,
-        view: { kind: 'object', objectId: action.task.objectId },
+        view:
+          state.view.kind === 'replay' && state.view.taskId === task.id
+            ? state.view
+            : { kind: 'object', objectId: task.objectId },
       };
     }
 

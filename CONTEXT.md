@@ -17,7 +17,8 @@
 - M13 added the Electron runtime security boundary: sandboxed main window, explicit app-page URL policy, http/https-only external opens, denied in-app navigation/new windows/webviews/permission requests, and trusted-frame checks for privileged IPC.
 - M14 added the data-safety backup/restore path: Settings can export a manifest-backed StaffDesk brain zip and restore it after inline confirmation; restore validates zip/hash/SQLite/schema, saves a pre-restore safety backup, removes stale WAL/SHM sidecars, and keeps product-global model settings/keychain/qualification outside the brain file.
 - Model configuration actions are product-global only and no longer persist into the brain operation log; legacy model-setting operation rows are cleared when a brain opens.
-- Current working branch for this cut: `codex/m14-brain-backup-restore`. Previous merged branch: `codex/m13-runtime-security-hardening`.
+- M15 added task run control: research/radar runs first create a visible `进行中` task, append process audit rows while running, can be manually stopped as `已停止 · 手动`, and can be opened from the object page replay surface during or after the run.
+- Current working branch for this cut: `codex/m15-task-run-control`. Previous merged branch: `codex/m14-brain-backup-restore`.
 
 ## Language
 

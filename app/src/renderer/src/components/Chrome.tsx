@@ -11,6 +11,7 @@ import {
   Plus,
   SidebarSimple,
   Stack,
+  StopCircle,
   Tray,
   Trash,
   Users,
@@ -419,7 +420,13 @@ export function ChatTopbar({
   if (view.kind !== 'object') return null;
   const obj = state.objects.find((o) => o.id === view.objectId);
   if (!obj) return null;
-  const disabled = state.briefDraftingFor !== null;
+  const briefDisabled = state.briefDraftingFor !== null;
+  const objectTasks = state.tasks.filter((task) => task.objectId === obj.id);
+  const runningTask = [...objectTasks]
+    .reverse()
+    .find((task) => task.status === '进行中' && (task.kind === '调研' || task.kind === '再搜一轮'));
+  const replayTarget =
+    runningTask ?? [...objectTasks].reverse().find((task) => task.kind !== '周期性雷达');
   const radar = state.tasks.find(
     (task) => task.objectId === obj.id && task.kind === '周期性雷达' && task.status !== '已停止',
   );
@@ -434,10 +441,27 @@ export function ChatTopbar({
         <button
           type="button"
           className="btn outline sm"
+          disabled={Boolean(runningTask)}
           onClick={() => void window.staffdesk.startResearch(obj.id, '快搜')}
         >
-          调研
+          {runningTask ? '调研中' : '调研'}
         </button>
+        {runningTask && (
+          <>
+            <span className="tag grey" title={runningTask.query}>
+              {runningTask.kind} · {runningTask.budgetGear ?? '快搜'}
+            </span>
+            <button
+              type="button"
+              className="btn outline sm danger-hover"
+              aria-label="停止任务"
+              onClick={() => void window.staffdesk.stopTask(runningTask.id)}
+            >
+              <StopCircle size={14} />
+              停止
+            </button>
+          </>
+        )}
         {radar ? (
           <>
             <span className="tag grey" title={radar.query}>
@@ -464,12 +488,11 @@ export function ChatTopbar({
           type="button"
           className="btn outline sm"
           onClick={() => {
-            const last = [...state.tasks].reverse().find((t) => t.objectId === obj.id);
-            if (!last) {
+            if (!replayTarget) {
               dispatch({ type: 'TOAST', text: '还没有可回放的任务' });
               return;
             }
-            dispatch({ type: 'SET_VIEW', view: { kind: 'replay', taskId: last.id } });
+            dispatch({ type: 'SET_VIEW', view: { kind: 'replay', taskId: replayTarget.id } });
           }}
         >
           回放
@@ -477,7 +500,7 @@ export function ChatTopbar({
         <button
           type="button"
           className="btn primary sm"
-          disabled={disabled}
+          disabled={briefDisabled}
           onClick={() => dispatch({ type: 'GENERATE_BRIEF_START', objectId: obj.id })}
         >
           {state.briefDraftingFor ? <span className="shimmer-text">组装中</span> : '出简报'}

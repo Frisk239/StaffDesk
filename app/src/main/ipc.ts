@@ -11,7 +11,7 @@ import { createExtractionJobExecutor } from './extraction';
 import { generateBrief } from './loops/briefGen';
 import { isWriteIntent, runSessionTurn } from './loops/session';
 import { extractCandidateMemories } from './loops/memoryExtract';
-import { defaultQuery, runResearchTask, type BudgetGear } from './tasks/engine';
+import { createResearchTask, defaultQuery, runResearchTask, type BudgetGear } from './tasks/engine';
 import { planRadarRun } from './tasks/radar';
 import { createBrainBackupArchive, writeBrainBackupFile } from './brainBackup';
 import { GOLD_PACKS } from './eval/goldPacks';
@@ -46,6 +46,7 @@ export function registerIpc(
 ): void {
   const getBrain = typeof brainHandle === 'function' ? brainHandle : () => brainHandle;
   const assertTrustedSender = security?.assertTrustedSender ?? (() => undefined);
+  const runningResearchByObject = new Map<string, string>();
   const handleTrusted = <Args extends unknown[], Result>(
     channel: string,
     handler: (event: IpcMainInvokeEvent, ...args: Args) => Result,
@@ -61,10 +62,15 @@ export function registerIpc(
     options: Parameters<typeof runResearchTask>[4] = {},
   ) => {
     const brain = getBrain();
+    if (runningResearchByObject.has(objectId)) {
+      const next = brain.dispatch({ type: 'TOAST', text: '这个对象已有调研正在收口' });
+      broadcast(next);
+      return next;
+    }
     const executeExtractionJob = createExtractionJobExecutor({ brain, publish: broadcast });
     const state = brain.snapshot();
     const reach = createReachAdapter();
-    const result = await runResearchTask(
+    const task = createResearchTask(
       state,
       objectId,
       gear,
@@ -74,23 +80,54 @@ export function registerIpc(
       },
       options,
     );
-    let next = brain.dispatch({
-      type: 'APPLY_RESEARCH',
-      task: result.task,
-      audits: result.audits,
-      sources: result.sources,
-    });
-    for (const src of result.sources) {
-      if (src.boundObjectIds.length === 0) continue;
-      next = brain.dispatch({
-        type: 'BIND_CONFIRMED',
-        sourceId: src.id,
-        objectIds: src.boundObjectIds,
-      });
-      next = await executeExtractionJob(src.id);
-    }
+    runningResearchByObject.set(objectId, task.id);
+    let next = brain.dispatch({ type: 'TASK_RUN_STARTED', task });
     broadcast(next);
-    return next;
+    try {
+      const result = await runResearchTask(
+        brain.snapshot(),
+        objectId,
+        gear,
+        {
+          reach,
+          queryFor: defaultQuery,
+          onAudit: (audit) => {
+            const updated = brain.dispatch({
+              type: 'TASK_AUDIT_APPENDED',
+              taskId: task.id,
+              audits: [audit],
+            });
+            broadcast(updated);
+          },
+          shouldStop: () => {
+            const current = brain.snapshot().tasks.find((item) => item.id === task.id);
+            return current?.status === '已停止' && current.stopReason === '手动';
+          },
+        },
+        { ...options, task },
+      );
+      next = brain.dispatch({
+        type: 'APPLY_RESEARCH',
+        task: result.task,
+        audits: result.audits,
+        sources: result.sources,
+      });
+      for (const src of result.sources) {
+        if (src.boundObjectIds.length === 0) continue;
+        next = brain.dispatch({
+          type: 'BIND_CONFIRMED',
+          sourceId: src.id,
+          objectIds: src.boundObjectIds,
+        });
+        next = await executeExtractionJob(src.id);
+      }
+      broadcast(next);
+      return next;
+    } finally {
+      if (runningResearchByObject.get(objectId) === task.id) {
+        runningResearchByObject.delete(objectId);
+      }
+    }
   };
 
   handleTrusted('brain:snapshot', () => getBrain().snapshot());
@@ -392,6 +429,13 @@ export function registerIpc(
     },
   );
 
+  handleTrusted('task:stop', (_event, payload: { taskId: string }) => {
+    const brain = getBrain();
+    const next = brain.dispatch({ type: 'TASK_STOP_REQUESTED', taskId: payload.taskId });
+    broadcast(next);
+    return next;
+  });
+
   handleTrusted('task:createRadar', async (_event, payload: { objectId: string }) => {
     const brain = getBrain();
     const state = brain.snapshot();
@@ -456,6 +500,7 @@ export function unregisterIpc(): void {
   ipcMain.removeHandler('extract:run');
   ipcMain.removeHandler('settings:testProvider');
   ipcMain.removeHandler('task:startResearch');
+  ipcMain.removeHandler('task:stop');
   ipcMain.removeHandler('task:createRadar');
   ipcMain.removeHandler('task:runRadar');
   ipcMain.removeHandler('brief:generate');

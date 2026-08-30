@@ -15,7 +15,7 @@ import { destroyTray, installTray, isQuitting, markQuitting } from './tray';
 import { latestDueRadar, planRadarRun } from './tasks/radar';
 import { createReachAdapter } from './adapters/reach';
 import { createExtractionJobExecutor } from './extraction';
-import { defaultQuery, runResearchTask } from './tasks/engine';
+import { createResearchTask, defaultQuery, runResearchTask } from './tasks/engine';
 import { createJsonModelSettingsStore } from './llm/settings';
 import { createJsonQualificationStore } from './eval/qualificationStore';
 import {
@@ -249,17 +249,43 @@ async function runDueRadarCatchup(
 ): Promise<void> {
   if (!brain) return;
   const plan = planRadarRun(due);
+  const reach = createReachAdapter();
+  const task = createResearchTask(
+    brain.snapshot(),
+    due.objectId,
+    due.budgetGear ?? '快搜',
+    {
+      reach,
+      queryFor: defaultQuery,
+    },
+    plan.options,
+  );
+  let next = brain.dispatch({ type: 'TASK_RUN_STARTED', task });
+  broadcastState(next);
   const result = await runResearchTask(
     brain.snapshot(),
     due.objectId,
     due.budgetGear ?? '快搜',
     {
-      reach: createReachAdapter(),
+      reach,
       queryFor: defaultQuery,
+      onAudit: (audit) => {
+        if (!brain) return;
+        const updated = brain.dispatch({
+          type: 'TASK_AUDIT_APPENDED',
+          taskId: task.id,
+          audits: [audit],
+        });
+        broadcastState(updated);
+      },
+      shouldStop: () => {
+        const current = brain?.snapshot().tasks.find((item) => item.id === task.id);
+        return current?.status === '已停止' && current.stopReason === '手动';
+      },
     },
-    plan.options,
+    { ...plan.options, task },
   );
-  let next = brain.dispatch({
+  next = brain.dispatch({
     type: 'APPLY_RESEARCH',
     task: result.task,
     audits: result.audits,
