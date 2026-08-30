@@ -12,6 +12,7 @@ import { openDatabase } from './migrate';
 import {
   appendOperation,
   clearLegacyModelMeta,
+  clearModelSettingsOperations,
   interruptActiveIngestJobs,
   listDeletedSourceRecoveries,
   loadLedger,
@@ -80,6 +81,7 @@ export class Brain {
     const configured = shouldMigrateLegacy ? legacyConfigured : stored;
     if (shouldMigrateLegacy) modelSettings.save(configured);
     clearLegacyModelMeta(this.db);
+    clearModelSettingsOperations(this.db);
     interruptActiveIngestJobs(this.db);
     this.ui = { ...emptyUiFields(), ...hydrateModelSettings(configured, secrets) };
   }
@@ -150,12 +152,14 @@ export class Brain {
       this.modelSettings.save(modelSettingsFromState(next));
     }
     persistLedger(this.db, next);
-    appendOperation(
-      this.db,
-      loggedAction.type,
-      loggedAction,
-      loggedAction.type === 'UNDO_RESULT' ? 'compensating' : null,
-    );
+    if (!isModelSettingsAction(loggedAction)) {
+      appendOperation(
+        this.db,
+        loggedAction.type,
+        loggedAction,
+        loggedAction.type === 'UNDO_RESULT' ? 'compensating' : null,
+      );
+    }
     this.ui = {
       view: next.view,
       selectedClaimId: next.selectedClaimId,

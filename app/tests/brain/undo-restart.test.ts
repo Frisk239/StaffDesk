@@ -6,7 +6,7 @@ import { openBrain, type Brain } from '../../src/main/brain';
 import { listOperations } from '../../src/main/brain/persist';
 import { createMemorySecrets } from '../../src/main/keychain';
 import { createMemoryModelSettingsStore } from '../../src/main/llm/settings';
-import { exportBrainZip } from '../../src/main/exportZip';
+import { createBrainBackupArchive, readBrainBackupArchive } from '../../src/main/brainBackup';
 import { latestDueRadar } from '../../src/main/tasks/radar';
 import { completeExtraction } from '../helpers/extraction';
 
@@ -81,7 +81,7 @@ describe('撤销补偿与重启', () => {
     expect(cards.every((m) => m.card?.undo === undefined)).toBe(true);
   });
 
-  it('密钥不进导出包', () => {
+  it('密钥和全局模型配置不进大脑备份包', async () => {
     const secrets = createMemorySecrets();
     const modelSettings = createMemoryModelSettingsStore();
     const file = tmp();
@@ -98,10 +98,16 @@ describe('撤销补偿与重启', () => {
         models: [{ id: 'test-model', name: 'test-model', contextWindow: 1, maxOutput: 1 }],
       },
     });
+    const archive = await createBrainBackupArchive(brain, {
+      createdAt: '2026-08-30T00:00:00.000Z',
+    });
+    const restored = readBrainBackupArchive(archive.buffer);
+    expect(archive.buffer.subarray(0, 2).toString()).toBe('PK');
+    expect(restored.manifest.excludes).toContain('apiKeys');
+    expect(restored.manifest.excludes).toContain('modelSettings');
+    expect(restored.database.toString('utf8')).not.toContain('sk-should-not-leak');
+    expect(restored.database.toString('utf8')).not.toContain('https://models.example.test/v1');
     brain.close();
-    const zip = exportBrainZip(file);
-    expect(zip.subarray(0, 2).toString()).toBe('PK');
-    expect(zip.toString('utf8')).not.toContain('sk-should-not-leak');
     const again = openBrain(file, secrets, modelSettings);
     brains.push(again);
     expect(again.snapshot().providers.find((p) => p.id === 'p-test')?.apiKey).toBe(

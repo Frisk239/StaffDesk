@@ -29,12 +29,27 @@ const LEGACY_MODEL_META_KEYS = [
   'activeModelId',
   'thinkingEffort',
 ] as const;
+const MODEL_SETTINGS_ACTIONS = [
+  'UPSERT_PROVIDER',
+  'REMOVE_PROVIDER',
+  'SET_ACTIVE_PROVIDER',
+  'SET_ACTIVE_MODEL',
+  'SET_THINKING',
+] as const;
 
 /** 模型配置已经提升为产品级设置；迁移完成后移除业务库中的旧副本。 */
 export function clearLegacyModelMeta(db: Database.Database): void {
   const remove = db.prepare('DELETE FROM app_meta WHERE key = ?');
   db.transaction(() => {
     for (const key of LEGACY_MODEL_META_KEYS) remove.run(key);
+  })();
+}
+
+/** 模型配置是产品级设置（0043/0048），历史上误进 brain 操作日志的配置动作要清掉。 */
+export function clearModelSettingsOperations(db: Database.Database): void {
+  const remove = db.prepare('DELETE FROM operations WHERE action = ?');
+  db.transaction(() => {
+    for (const action of MODEL_SETTINGS_ACTIONS) remove.run(action);
   })();
 }
 

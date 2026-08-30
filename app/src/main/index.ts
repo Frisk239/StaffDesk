@@ -1,6 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { app, BrowserWindow, safeStorage } from 'electron';
+import type { BrainRestoreResult } from '@shared/api';
 import { openBrain, type Brain } from './brain';
 import { registerIpc, unregisterIpc } from './ipc';
 import { createSafeStorageSecrets } from './keychain';
@@ -17,6 +18,13 @@ import { createExtractionJobExecutor } from './extraction';
 import { defaultQuery, runResearchTask } from './tasks/engine';
 import { createJsonModelSettingsStore } from './llm/settings';
 import { createJsonQualificationStore } from './eval/qualificationStore';
+import {
+  backupInfoFromManifest,
+  createBrainBackupArchive,
+  readBrainBackupArchive,
+  replaceBrainDatabaseFile,
+  writeBrainBackupFile,
+} from './brainBackup';
 
 let mainWindow: BrowserWindow | null = null;
 let brain: Brain | null = null;
@@ -39,6 +47,12 @@ function brainPath(): string {
 
 function secretsDir(): string {
   const dir = join(app.getPath('userData'), 'secrets');
+  mkdirSync(dir, { recursive: true });
+  return dir;
+}
+
+function brainBackupsDir(): string {
+  const dir = join(app.getPath('userData'), 'brain-backups');
   mkdirSync(dir, { recursive: true });
   return dir;
 }
@@ -85,6 +99,70 @@ function createWindow(securityPolicy: RuntimeSecurityPolicy): void {
   }
 }
 
+function requireBrain(): Brain {
+  if (!brain) throw new Error('大脑文件尚未打开');
+  return brain;
+}
+
+async function writeBeforeRestoreBackup(current: Brain): Promise<string> {
+  const archive = await createBrainBackupArchive(current);
+  const stamp = archive.manifest.createdAt.replace(/[:.]/g, '-');
+  const filePath = join(brainBackupsDir(), `staffdesk-before-restore-${stamp}.zip`);
+  writeBrainBackupFile(filePath, archive);
+  return filePath;
+}
+
+async function restoreBrainBackup(archivePath: string): Promise<BrainRestoreResult> {
+  const restored = readBrainBackupArchive(readFileSync(archivePath));
+  const current = requireBrain();
+  const targetPath = current.filePath;
+  const stores = {
+    secrets: current.secrets,
+    modelSettings: current.modelSettings,
+    qualificationStore: current.qualificationStore,
+  };
+  const safetyCopyPath = await writeBeforeRestoreBackup(current);
+  current.close();
+  brain = null;
+  try {
+    replaceBrainDatabaseFile(targetPath, restored.database);
+    brain = openBrain(targetPath, stores.secrets, stores.modelSettings, stores.qualificationStore);
+    return {
+      filePath: archivePath,
+      safetyCopyPath,
+      backup: backupInfoFromManifest(restored.manifest),
+      state: brain.snapshot(),
+    };
+  } catch (error) {
+    try {
+      const fallback = readBrainBackupArchive(readFileSync(safetyCopyPath));
+      replaceBrainDatabaseFile(targetPath, fallback.database);
+      brain = openBrain(
+        targetPath,
+        stores.secrets,
+        stores.modelSettings,
+        stores.qualificationStore,
+      );
+      broadcastState(brain.snapshot());
+    } catch (rollbackError) {
+      throw new Error(
+        `恢复失败，且无法自动回滚；恢复前安全副本仍在 ${safetyCopyPath}。原因：${safeErrorMessage(
+          error,
+        )}；回滚失败：${safeErrorMessage(rollbackError)}`,
+      );
+    }
+    throw error;
+  }
+}
+
+function safeErrorMessage(error: unknown): string {
+  const raw = error instanceof Error ? error.message : String(error);
+  return raw
+    .replace(/Bearer\s+\S+/gi, 'Bearer ***')
+    .replace(/sk-[A-Za-z0-9_-]+/g, 'sk-***')
+    .slice(0, 160);
+}
+
 app.whenReady().then(() => {
   try {
     const Database = require('better-sqlite3') as unknown;
@@ -123,9 +201,13 @@ app.whenReady().then(() => {
     rendererFilePath: rendererFilePath(),
     devServerUrl: process.env.ELECTRON_RENDERER_URL,
   });
-  registerIpc(brain, {
-    assertTrustedSender: (event) => assertTrustedIpcSender(event, mainWindow, securityPolicy),
-  });
+  registerIpc(
+    requireBrain,
+    {
+      assertTrustedSender: (event) => assertTrustedIpcSender(event, mainWindow, securityPolicy),
+    },
+    { restoreBrainBackup },
+  );
   createWindow(securityPolicy);
   installTray(
     () => mainWindow,

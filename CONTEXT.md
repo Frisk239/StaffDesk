@@ -15,7 +15,9 @@
 - Model qualification is product-global and fingerprinted by normalized endpoint, model, thinking effort, effective model parameters, and suite/policy versions. Records live in `userData/quality-qualification.json`, never in the brain file; changing the target immediately returns the current configuration to unqualified without deleting old history.
 - M12 upgraded the desktop runtime security floor to Electron 44 and moved SQLite native validation to `native:check`: `better-sqlite3` 13 N-API prebuilds must load inside Electron before lint/typecheck/test/build. electron-builder packaging no longer forces local source rebuilds.
 - M13 added the Electron runtime security boundary: sandboxed main window, explicit app-page URL policy, http/https-only external opens, denied in-app navigation/new windows/webviews/permission requests, and trusted-frame checks for privileged IPC.
-- Current working branch for this cut: `codex/m13-runtime-security-hardening`. Previous merged branch: `codex/m12-electron-security`.
+- M14 added the data-safety backup/restore path: Settings can export a manifest-backed StaffDesk brain zip and restore it after inline confirmation; restore validates zip/hash/SQLite/schema, saves a pre-restore safety backup, removes stale WAL/SHM sidecars, and keeps product-global model settings/keychain/qualification outside the brain file.
+- Model configuration actions are product-global only and no longer persist into the brain operation log; legacy model-setting operation rows are cleared when a brain opens.
+- Current working branch for this cut: `codex/m14-brain-backup-restore`. Previous merged branch: `codex/m13-runtime-security-hardening`.
 
 ## Language
 

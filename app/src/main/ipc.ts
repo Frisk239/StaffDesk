@@ -1,5 +1,5 @@
-import { writeFileSync } from 'node:fs';
 import { BrowserWindow, dialog, ipcMain, type IpcMainInvokeEvent } from 'electron';
+import type { BrainBackupExportResult, BrainRestoreResult } from '@shared/api';
 import type { Action } from '@shared/actions';
 import { attachTurn } from '@shared/turn';
 import { createReachAdapter } from './adapters/reach';
@@ -13,7 +13,7 @@ import { isWriteIntent, runSessionTurn } from './loops/session';
 import { extractCandidateMemories } from './loops/memoryExtract';
 import { defaultQuery, runResearchTask, type BudgetGear } from './tasks/engine';
 import { planRadarRun } from './tasks/radar';
-import { exportBrainZip } from './exportZip';
+import { createBrainBackupArchive, writeBrainBackupFile } from './brainBackup';
 import { GOLD_PACKS } from './eval/goldPacks';
 import { runQualityRegression } from './eval/runner';
 import {
@@ -27,13 +27,24 @@ type IpcSecurity = {
   assertTrustedSender: (event: IpcMainInvokeEvent) => void;
 };
 
+type BrainHandle = Brain | (() => Brain);
+
+type BrainLifecycle = {
+  restoreBrainBackup: (archivePath: string) => Promise<BrainRestoreResult>;
+};
+
 function broadcast(next: unknown): void {
   for (const win of BrowserWindow.getAllWindows()) {
     win.webContents.send('state:changed', next);
   }
 }
 
-export function registerIpc(brain: Brain, security?: IpcSecurity): void {
+export function registerIpc(
+  brainHandle: BrainHandle,
+  security?: IpcSecurity,
+  lifecycle?: BrainLifecycle,
+): void {
+  const getBrain = typeof brainHandle === 'function' ? brainHandle : () => brainHandle;
   const assertTrustedSender = security?.assertTrustedSender ?? (() => undefined);
   const handleTrusted = <Args extends unknown[], Result>(
     channel: string,
@@ -44,13 +55,13 @@ export function registerIpc(brain: Brain, security?: IpcSecurity): void {
       return handler(event, ...(args as Args));
     });
   };
-  const executeExtractionJob = createExtractionJobExecutor({ brain, publish: broadcast });
-  const executeIngest = createIngestionExecutor({ brain, publish: broadcast });
   const runResearchAndApply = async (
     objectId: string,
     gear: BudgetGear,
     options: Parameters<typeof runResearchTask>[4] = {},
   ) => {
+    const brain = getBrain();
+    const executeExtractionJob = createExtractionJobExecutor({ brain, publish: broadcast });
     const state = brain.snapshot();
     const reach = createReachAdapter();
     const result = await runResearchTask(
@@ -82,8 +93,9 @@ export function registerIpc(brain: Brain, security?: IpcSecurity): void {
     return next;
   };
 
-  handleTrusted('brain:snapshot', () => brain.snapshot());
+  handleTrusted('brain:snapshot', () => getBrain().snapshot());
   handleTrusted('brain:dispatch', (_event, action: Action) => {
+    const brain = getBrain();
     const next = brain.dispatch(action);
     broadcast(next);
     return next;
@@ -91,6 +103,7 @@ export function registerIpc(brain: Brain, security?: IpcSecurity): void {
 
   handleTrusted('chat:send', async (event, payload: { objectId: string; text: string }) => {
     const text = payload.text.trim();
+    const brain = getBrain();
     if (!text) return brain.snapshot();
     if (isWriteIntent(text)) {
       const next = brain.dispatch({ type: 'CHAT_SEND', objectId: payload.objectId, text });
@@ -160,6 +173,8 @@ export function registerIpc(brain: Brain, security?: IpcSecurity): void {
   handleTrusted(
     'ingest:text',
     async (_event, payload: { text: string; suggestedTitle?: string }) => {
+      const brain = getBrain();
+      const executeIngest = createIngestionExecutor({ brain, publish: broadcast });
       return executeIngest({
         kind: 'text',
         text: payload.text,
@@ -169,10 +184,14 @@ export function registerIpc(brain: Brain, security?: IpcSecurity): void {
   );
 
   handleTrusted('ingest:url', async (_event, payload: { url: string }) => {
+    const brain = getBrain();
+    const executeIngest = createIngestionExecutor({ brain, publish: broadcast });
     return executeIngest({ kind: 'url', url: payload.url });
   });
 
   const ingestFilePaths = async (filePaths: string[]) => {
+    const brain = getBrain();
+    const executeIngest = createIngestionExecutor({ brain, publish: broadcast });
     let next = brain.snapshot();
     for (const filePath of filePaths) {
       next = await executeIngest({ kind: 'file', filePath });
@@ -205,7 +224,7 @@ export function registerIpc(brain: Brain, security?: IpcSecurity): void {
         { name: '所有文件', extensions: ['*'] },
       ],
     });
-    if (picked.canceled || picked.filePaths.length === 0) return brain.snapshot();
+    if (picked.canceled || picked.filePaths.length === 0) return getBrain().snapshot();
     return ingestFilePaths(picked.filePaths);
   });
 
@@ -213,23 +232,28 @@ export function registerIpc(brain: Brain, security?: IpcSecurity): void {
     const filePaths = Array.isArray(payload.filePaths)
       ? payload.filePaths.filter((filePath): filePath is string => typeof filePath === 'string')
       : [];
-    if (filePaths.length === 0) return brain.snapshot();
+    if (filePaths.length === 0) return getBrain().snapshot();
     return ingestFilePaths(filePaths);
   });
 
   handleTrusted('ingest:retry', async (_event, jobId: string) => {
+    const brain = getBrain();
+    const executeIngest = createIngestionExecutor({ brain, publish: broadcast });
     const job = brain.snapshot().ingestJobs.find((item) => item.id === jobId);
     if (!job?.input) return brain.snapshot();
     return executeIngest(job.input, job.id);
   });
 
   handleTrusted('extract:run', async (_event, sourceId: string) => {
+    const brain = getBrain();
+    const executeExtractionJob = createExtractionJobExecutor({ brain, publish: broadcast });
     return executeExtractionJob(sourceId);
   });
 
   handleTrusted(
     'settings:testProvider',
     async (_event, payload: { providerId: string; modelId: string }) => {
+      const brain = getBrain();
       const frozen = brain.snapshot();
       const provider = frozen.providers.find((item) => item.id === payload.providerId);
       if (!provider?.enabled || !provider.models.some((model) => model.id === payload.modelId)) {
@@ -313,6 +337,7 @@ export function registerIpc(brain: Brain, security?: IpcSecurity): void {
   );
 
   handleTrusted('brief:generate', async (_event, objectId: string) => {
+    const brain = getBrain();
     let state = brain.snapshot();
     if (!state.briefDraftingFor) {
       state = brain.dispatch({ type: 'GENERATE_BRIEF_START', objectId });
@@ -332,15 +357,32 @@ export function registerIpc(brain: Brain, security?: IpcSecurity): void {
     return next;
   });
 
-  handleTrusted('brain:export', async () => {
+  handleTrusted('brain:export', async (): Promise<BrainBackupExportResult | null> => {
     const picked = await dialog.showSaveDialog({
-      title: '导出大脑',
-      defaultPath: 'staffdesk-brain.zip',
-      filters: [{ name: 'Zip', extensions: ['zip'] }],
+      title: '导出大脑备份',
+      defaultPath: 'staffdesk-brain-backup.zip',
+      filters: [{ name: 'StaffDesk 大脑备份', extensions: ['zip'] }],
     });
     if (picked.canceled || !picked.filePath) return null;
-    writeFileSync(picked.filePath, exportBrainZip(brain.filePath));
-    return picked.filePath;
+    const backup = await createBrainBackupArchive(getBrain());
+    return { filePath: picked.filePath, backup: writeBrainBackupFile(picked.filePath, backup) };
+  });
+
+  handleTrusted('brain:restore', async (): Promise<BrainRestoreResult | null> => {
+    if (!lifecycle?.restoreBrainBackup) {
+      const next = getBrain().dispatch({ type: 'TOAST', text: '当前版本不能恢复大脑备份' });
+      broadcast(next);
+      return null;
+    }
+    const picked = await dialog.showOpenDialog({
+      title: '恢复大脑备份',
+      properties: ['openFile'],
+      filters: [{ name: 'StaffDesk 大脑备份', extensions: ['zip'] }],
+    });
+    if (picked.canceled || picked.filePaths.length === 0) return null;
+    const result = await lifecycle.restoreBrainBackup(picked.filePaths[0]!);
+    broadcast(result.state);
+    return result;
   });
 
   handleTrusted(
@@ -351,6 +393,7 @@ export function registerIpc(brain: Brain, security?: IpcSecurity): void {
   );
 
   handleTrusted('task:createRadar', async (_event, payload: { objectId: string }) => {
+    const brain = getBrain();
     const state = brain.snapshot();
     const query = defaultQuery(state, payload.objectId);
     const next = brain.dispatch({
@@ -365,6 +408,7 @@ export function registerIpc(brain: Brain, security?: IpcSecurity): void {
   });
 
   handleTrusted('task:runRadar', async (_event, payload: { radarTaskId: string }) => {
+    const brain = getBrain();
     const state = brain.snapshot();
     const radar = state.tasks.find((task) => task.id === payload.radarTaskId);
     if (!radar || radar.kind !== '周期性雷达') {
@@ -416,4 +460,5 @@ export function unregisterIpc(): void {
   ipcMain.removeHandler('task:runRadar');
   ipcMain.removeHandler('brief:generate');
   ipcMain.removeHandler('brain:export');
+  ipcMain.removeHandler('brain:restore');
 }
