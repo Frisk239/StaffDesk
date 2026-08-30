@@ -21,7 +21,7 @@
     "lint-staged": "^16.1.0"
   },
   "lint-staged": {
-    "app/**/*.{ts,tsx,js,cjs,mjs,css,json,yml,md}": "prettier --write",
-    "app/**/*.{ts,tsx}": "eslint --fix"
+    "app/**/*.{ts,tsx,js,cjs,mjs,css,json,yml,md}": "npm run format --prefix app --",
+    "app/**/*.{ts,tsx}": "npm run lint:fix --prefix app --"
   }
 }

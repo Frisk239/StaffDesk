@@ -3,7 +3,16 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { BRIEF_SPECS, DEFAULT_SLOT_DEFS } from '@shared/scenario';
-import { ftsExists, listBriefSpecs, listSlotDefs, openBrain, tableNames, REQUIRED_TABLES } from '../../src/main/brain';
+import {
+  ftsExists,
+  listBriefSpecs,
+  listSlotDefs,
+  openBrain,
+  tableNames,
+  REQUIRED_TABLES,
+} from '../../src/main/brain';
+import { createMemorySecrets } from '../../src/main/keychain';
+import { createMemoryModelSettingsStore } from '../../src/main/llm/settings';
 
 const dirs: string[] = [];
 
@@ -29,7 +38,9 @@ describe('建库与迁移', () => {
     }
     expect(names).toContain('schema_migrations');
     expect(ftsExists(brain)).toBe(true);
-    const row = brain.db.prepare('SELECT version FROM schema_migrations').get() as { version: number };
+    const row = brain.db.prepare('SELECT version FROM schema_migrations').get() as {
+      version: number;
+    };
     expect(row.version).toBeGreaterThanOrEqual(1);
     brain.close();
   });
@@ -41,6 +52,9 @@ describe('建库与迁移', () => {
     expect(snap.sources.filter((s) => !s.virtual)).toHaveLength(0);
     expect(snap.claims).toHaveLength(0);
     expect(snap.workspaces).toHaveLength(0);
+    expect(snap.providers).toHaveLength(0);
+    expect(snap.activeProviderId).toBe('');
+    expect(snap.activeModelId).toBe('');
 
     const slots = listSlotDefs(brain.db);
     expect(slots.map((s) => `${s.kind}:${s.name}`).sort()).toEqual(
@@ -61,5 +75,52 @@ describe('建库与迁移', () => {
     const dump = JSON.stringify(snap);
     expect(dump).not.toMatch(/栈桥科技|周若水|NordStream|LuftData/);
     brain.close();
+  });
+
+  it('旧业务库的真实模型配置迁移到产品级设置，并删除库内副本', () => {
+    const file = tmpBrain();
+    const legacy = openBrain(file);
+    legacy.db.prepare('INSERT INTO app_meta (key, value) VALUES (?, ?)').run(
+      'providers',
+      JSON.stringify([
+        {
+          id: 'p-real',
+          name: '真实端点',
+          baseUrl: 'https://models.example.test/v1',
+          apiKey: '',
+          enabled: true,
+          models: [{ id: 'model-a', name: 'model-a', contextWindow: 128000, maxOutput: 8192 }],
+        },
+      ]),
+    );
+    legacy.db
+      .prepare('INSERT INTO app_meta (key, value) VALUES (?, ?)')
+      .run('activeProviderId', 'p-real');
+    legacy.db
+      .prepare('INSERT INTO app_meta (key, value) VALUES (?, ?)')
+      .run('activeModelId', 'model-a');
+    legacy.db
+      .prepare('INSERT INTO app_meta (key, value) VALUES (?, ?)')
+      .run('thinkingEffort', '高');
+    legacy.close();
+
+    const secrets = createMemorySecrets();
+    secrets.set('p-real', 'secret-for-test');
+    const settings = createMemoryModelSettingsStore();
+    const migrated = openBrain(file, secrets, settings);
+    const snap = migrated.snapshot();
+    expect(snap.providers).toHaveLength(1);
+    expect(snap.providers[0]?.apiKey).toBe('secret-for-test');
+    expect(snap.activeProviderId).toBe('p-real');
+    expect(snap.activeModelId).toBe('model-a');
+    expect(snap.thinkingEffort).toBe('高');
+    const remaining = migrated.db
+      .prepare(
+        "SELECT key FROM app_meta WHERE key IN ('providers','activeProviderId','activeModelId','thinkingEffort')",
+      )
+      .all();
+    expect(remaining).toEqual([]);
+    expect(settings.load()?.providers[0]?.apiKey).toBe('');
+    migrated.close();
   });
 });

@@ -6,6 +6,7 @@ import { registerIpc, unregisterIpc } from './ipc';
 import { createSafeStorageSecrets } from './keychain';
 import { destroyTray, installTray, isQuitting, markQuitting } from './tray';
 import { lateAuditPayload, latestDueRadar } from './tasks/radar';
+import { createJsonModelSettingsStore } from './llm/settings';
 
 let mainWindow: BrowserWindow | null = null;
 let brain: Brain | null = null;
@@ -27,8 +28,9 @@ function secretsDir(): string {
 }
 
 function createWindow(): void {
+  const e2eWidth = Number(process.env.STAFFDESK_E2E_WINDOW_WIDTH);
   mainWindow = new BrowserWindow({
-    width: 1280,
+    width: Number.isFinite(e2eWidth) && e2eWidth >= 900 ? e2eWidth : 1280,
     height: 800,
     minWidth: 900,
     minHeight: 600,
@@ -86,23 +88,35 @@ app.whenReady().then(() => {
 
   const path = brainPath();
   console.log('brain file', path, 'exists_before', existsSync(path));
-  brain = openBrain(path, secrets);
+  const modelSettings = createJsonModelSettingsStore(
+    join(app.getPath('userData'), 'model-settings.json'),
+  );
+  brain = openBrain(path, secrets, modelSettings);
   console.log('brain file created', existsSync(path));
   registerIpc(brain);
   createWindow();
-  installTray(() => mainWindow, () => {
-    brain?.dispatch({
-      type: 'TOAST',
-      text: '已最小化到托盘，右键托盘图标可彻底退出',
-    });
-  });
+  installTray(
+    () => mainWindow,
+    () => {
+      brain?.dispatch({
+        type: 'TOAST',
+        text: '已最小化到托盘，右键托盘图标可彻底退出',
+      });
+    },
+  );
 
   const due = latestDueRadar(brain.snapshot().tasks);
   if (due) {
     const payload = lateAuditPayload(due.id);
     brain.dispatch({
       type: 'APPLY_RESEARCH',
-      task: { id: due.id, objectId: due.objectId, kind: due.kind, status: '已完成', createdAt: due.createdAt },
+      task: {
+        id: due.id,
+        objectId: due.objectId,
+        kind: due.kind,
+        status: '已完成',
+        createdAt: due.createdAt,
+      },
       audits: [
         {
           taskId: due.id,

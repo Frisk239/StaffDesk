@@ -1,11 +1,12 @@
 import { useEffect, useRef, useState } from 'react';
 import { UploadSimple } from '@phosphor-icons/react';
 import { useStore } from '../store';
+import { SourceDeleteDialog } from './SourceDeleteDialog';
 
 // Inbox：未绑定来源的进料口。上页必须走绑定，且必须人点「确认绑定」。
 // 未绑定来源不投影、不进对象对话默认语境（reducer 保证）。
 // 进料三路：粘贴文本/URL、拖入文件、选择文件。文本文件直接读正文；
-// PDF/二进制收下但诚实标注「成品才解析」（与 URL 的「成品才抓」同构，不假装解析）。
+// PDF/二进制收下但诚实标注当前版本暂不解析；URL 同样不假装已经抓取正文。
 
 const TEXT_FILE_RE = /\.(txt|md|markdown|csv|json|html?|htm|log|ya?ml|xml|ts|tsx|js|jsx)$/i;
 
@@ -22,6 +23,7 @@ export function InboxView() {
   const [checked, setChecked] = useState<Set<string>>(new Set());
   const [draft, setDraft] = useState('');
   const [dragOver, setDragOver] = useState(false);
+  const [deleteSourceId, setDeleteSourceId] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const looksUrl = /^https?:\/\//i.test(draft.trim());
 
@@ -53,10 +55,10 @@ export function InboxView() {
           continue; // 空文本文件：没有可指向的原文，不写来源
         }
       } else if (f.type === 'application/pdf' || /\.pdf$/i.test(f.name)) {
-        body = `（PDF「${f.name}」已收下。原型不解析 PDF，成品才解析并抽取；此处暂存文件名。）`;
+        body = `（PDF「${f.name}」已收下。当前版本暂不解析 PDF，此处只保留文件名。）`;
         unparsed = true;
       } else {
-        body = `（文件「${f.name}」已收下。原型不解析该格式，成品才解析；此处暂存文件名。）`;
+        body = `（文件「${f.name}」已收下。当前版本暂不解析该格式，此处只保留文件名。）`;
         unparsed = true;
       }
       dispatch({ type: 'ADD_SOURCE', title: f.name, body, unparsed });
@@ -114,7 +116,7 @@ export function InboxView() {
         >
           <UploadSimple size={18} />
           <span>拖文件到这里，或点击选择文件</span>
-          <span className="dim">文本文件直接读入 · PDF / 其他格式收下待成品解析</span>
+          <span className="dim">文本文件直接读入，其他格式先收下并标记待解析</span>
         </div>
         <input
           ref={fileInputRef}
@@ -150,7 +152,7 @@ export function InboxView() {
             onChange={(e) => setDraft(e.target.value)}
           />
           <button type="submit" className="primary" disabled={!draft.trim()}>
-            {looksUrl ? '收下（成品才抓）' : '加入 Inbox'}
+            {looksUrl ? '收下链接' : '加入 Inbox'}
           </button>
         </form>
         {sources.length === 0 ? (
@@ -173,8 +175,10 @@ export function InboxView() {
                 <span className="tag">未绑定</span>
                 <span className="tag path">{s.path}</span>
                 {s.role && <span className="tag role">{s.role}</span>}
-                {s.unparsed && <span className="tag grey">成品才解析</span>}
-                {!s.unparsed && /^https?:\/\//i.test(s.body.trim()) && <span className="tag grey">成品才抓</span>}
+                {s.unparsed && <span className="tag grey">待解析</span>}
+                {!s.unparsed && /^https?:\/\//i.test(s.body.trim()) && (
+                  <span className="tag grey">待抓取</span>
+                )}
               </div>
             </button>
           ))
@@ -192,7 +196,7 @@ export function InboxView() {
               <span>{selected.title}</span>
               <span className="tag path">{selected.path}</span>
               {selected.role && <span className="tag role">{selected.role}</span>}
-              {selected.unparsed && <span className="tag grey">成品才解析</span>}
+              {selected.unparsed && <span className="tag grey">待解析</span>}
             </div>
             <pre className="source-body">{selected.body}</pre>
 
@@ -200,6 +204,13 @@ export function InboxView() {
               <div className="bind-entry">
                 <button className="primary" onClick={() => setBindOpen(true)}>
                   绑定
+                </button>
+                <button
+                  type="button"
+                  className="btn outline sm danger-hover"
+                  onClick={() => setDeleteSourceId(selected.id)}
+                >
+                  删除来源
                 </button>
               </div>
             ) : (
@@ -209,14 +220,23 @@ export function InboxView() {
                   <div className="bind-group" key={k}>
                     <div className="bind-group-title">{k}</div>
                     {state.objects
-                      .filter((o) => o.workspaceId === state.currentWorkspaceId && !o.archived && o.kind === k)
+                      .filter(
+                        (o) =>
+                          o.workspaceId === state.currentWorkspaceId && !o.archived && o.kind === k,
+                      )
                       .map((o) => {
                         const suggest =
-                          selected.id === 'src-jd' &&
-                          ((k === '组织' && o.id === 'org-zhanqiao') || (k === '项目' && o.id === 'proj-2026-autumn'));
+                          selected.body.includes(o.name) || selected.title.includes(o.name);
                         return (
-                          <label key={o.id} className={`bind-option${checked.has(o.id) ? ' on' : ''}`}>
-                            <input type="checkbox" checked={checked.has(o.id)} onChange={() => toggle(o.id)} />
+                          <label
+                            key={o.id}
+                            className={`bind-option${checked.has(o.id) ? ' on' : ''}`}
+                          >
+                            <input
+                              type="checkbox"
+                              checked={checked.has(o.id)}
+                              onChange={() => toggle(o.id)}
+                            />
                             <span>{o.name}</span>
                             {o.note && <span className="dim">{o.note}</span>}
                             {suggest && <span className="tag suggest">系统建议</span>}
@@ -239,6 +259,9 @@ export function InboxView() {
           </>
         )}
       </div>
+      {deleteSourceId && (
+        <SourceDeleteDialog sourceId={deleteSourceId} onClose={() => setDeleteSourceId(null)} />
+      )}
     </div>
   );
 }

@@ -3,6 +3,7 @@ import type { ReactElement } from 'react';
 import { closedClaims, conflictsOf, isExtracting, projectionClaims, useStore } from '../store';
 import { scenarioOfWorkspace, slotsForScene } from '@shared/scenario';
 import type { Claim, Predicate } from '@shared/types';
+import { SourceDeleteDialog } from './SourceDeleteDialog';
 
 // 0033：谓词槽表是数据（state.slotDefs），按对象种类分区，再按对象所在工作区的场景过滤；通用槽恒显示。
 
@@ -81,9 +82,7 @@ export function Projection({ objectId }: { objectId: string }) {
 
       {uncataloged.length > 0 && (
         <div className="slot-card full uncat">
-          <div className="slot-title">
-            未编目
-          </div>
+          <div className="slot-title">未编目</div>
           {uncataloged.map((c) => (
             <ClaimCard key={c.id} claim={c} onClick={open} />
           ))}
@@ -117,7 +116,9 @@ function ClaimCard({ claim, onClick }: { claim: Claim; onClick: (id: string) => 
       <span className="claim-text">{claim.text}</span>
       <span className="claim-meta">
         <UnverifiedTag claim={claim} />
-        <span className="tag grey">{src ? (src.virtual ? '使用者陈述' : src.title) : claim.sourceId}</span>
+        <span className="tag grey">
+          {src ? (src.virtual ? '使用者陈述' : src.title) : claim.sourceId}
+        </span>
       </span>
     </button>
   );
@@ -126,6 +127,7 @@ function ClaimCard({ claim, onClick }: { claim: Claim; onClick: (id: string) => 
 export function SourcesPane({ objectId }: { objectId: string }) {
   const { state, dispatch } = useStore();
   const [openIds, setOpenIds] = useState<Set<string>>(new Set());
+  const [deleteSourceId, setDeleteSourceId] = useState<string | null>(null);
   const cardRefs = useRef<Record<string, HTMLDivElement | null>>({});
   const sources = state.sources.filter((s) => !s.virtual && s.boundObjectIds.includes(objectId));
 
@@ -157,7 +159,13 @@ export function SourcesPane({ objectId }: { objectId: string }) {
       });
     }
     return parts.map((p, i) =>
-      typeof p === 'string' ? <span key={i}>{p}</span> : <mark className="span-mark" key={i}>{p.span}</mark>,
+      typeof p === 'string' ? (
+        <span key={i}>{p}</span>
+      ) : (
+        <mark className="span-mark" key={i}>
+          {p.span}
+        </mark>
+      ),
     );
   };
 
@@ -167,9 +175,16 @@ export function SourcesPane({ objectId }: { objectId: string }) {
       {sources.length === 0 && <div className="dim pad">暂无</div>}
       {sources.map((s) => {
         const job = state.extractJobs.find((j) => j.sourceId === s.id);
+        const claimCount = state.claims.filter((claim) => claim.sourceId === s.id).length;
         const isOpen = openIds.has(s.id);
         return (
-          <div className="source-card" key={s.id} ref={(el) => { cardRefs.current[s.id] = el; }}>
+          <div
+            className="source-card"
+            key={s.id}
+            ref={(el) => {
+              cardRefs.current[s.id] = el;
+            }}
+          >
             <button className="source-head" onClick={() => toggle(s.id)}>
               <span className={`tri${isOpen ? ' open' : ''}`}>▸</span>
               <span className="source-title">{s.title}</span>
@@ -177,34 +192,78 @@ export function SourcesPane({ objectId }: { objectId: string }) {
             <div className="source-meta">
               <span className="tag path">{s.path}</span>
               {s.role && <span className="tag role">{s.role}</span>}
-              {job?.status === '抽取中' ? (
+              {job?.status === '抽取中' && (
                 <span className="tag amber">
                   <span className="pulse-dot inline" /> 抽取中
                 </span>
-              ) : (
-                <span className="tag grey">抽取完成</span>
+              )}
+              {job?.status === '失败' && (
+                <span className="tag red" title={job.detail}>
+                  抽取失败
+                </span>
+              )}
+              {job?.status === '未配置' && <span className="tag grey">未配置模型</span>}
+              {job?.status === '完成' && (
+                <span className="tag grey">
+                  {claimCount > 0 ? `已抽取 ${claimCount} 条` : '无可核对主张'}
+                </span>
+              )}
+              {!job && (
+                <span className="tag grey">
+                  {claimCount > 0 ? `已有 ${claimCount} 条主张` : '尚未运行'}
+                </span>
+              )}
+              {job?.status !== '抽取中' && (
+                <button
+                  type="button"
+                  className="source-retry"
+                  onClick={() => dispatch({ type: 'RETRY_EXTRACTION', sourceId: s.id })}
+                >
+                  重试
+                </button>
               )}
             </div>
-            {isOpen && (
-              <pre className="source-body small">
-                {renderBody(s.id, s.body)}
-              </pre>
-            )}
+            {isOpen && <pre className="source-body small">{renderBody(s.id, s.body)}</pre>}
             {isOpen && (
               <div className="source-bind dim">
-                绑定对象：{s.boundObjectIds.map((id) => state.objects.find((o) => o.id === id)?.name).join('、')}
+                绑定对象：
+                {s.boundObjectIds
+                  .map((id) => state.objects.find((o) => o.id === id)?.name)
+                  .join('、')}
+              </div>
+            )}
+            {isOpen && (
+              <div className="source-actions">
+                <button
+                  type="button"
+                  className="btn outline sm"
+                  onClick={() => dispatch({ type: 'UNBIND_SOURCE', sourceId: s.id, objectId })}
+                >
+                  解绑当前对象
+                </button>
+                <button
+                  type="button"
+                  className="btn outline sm danger-hover"
+                  onClick={() => setDeleteSourceId(s.id)}
+                >
+                  删除来源
+                </button>
               </div>
             )}
           </div>
         );
       })}
       {sources.length > 0 && (
-        <button className="link pad" onClick={() => dispatch({ type: 'SET_VIEW', view: { kind: 'inbox' } })}>
+        <button
+          className="link pad"
+          onClick={() => dispatch({ type: 'SET_VIEW', view: { kind: 'inbox' } })}
+        >
           Inbox
         </button>
+      )}
+      {deleteSourceId && (
+        <SourceDeleteDialog sourceId={deleteSourceId} onClose={() => setDeleteSourceId(null)} />
       )}
     </aside>
   );
 }
-
-

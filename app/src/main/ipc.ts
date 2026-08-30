@@ -4,13 +4,13 @@ import type { Action } from '@shared/actions';
 import { attachTurn } from '@shared/turn';
 import { createReachAdapter } from './adapters/reach';
 import type { Brain } from './brain';
-import { chatComplete } from './llm/chatCompletions';
 import { checkCapability, checkConnect } from './llm/selfCheck';
-import { runExtractLoop } from './loops/extract';
+import { activeModelCompletion, completionForProvider } from './llm/runtime';
+import { createExtractionJobExecutor } from './extraction';
 import { generateBrief } from './loops/briefGen';
 import { isWriteIntent, runSessionTurn } from './loops/session';
 import { defaultQuery, runResearchTask, type BudgetGear } from './tasks/engine';
-import { runCertForScenario } from './eval/cert';
+import { runLiveCertForScenario } from './eval/cert';
 import { exportBrainZip } from './exportZip';
 import { scenarioOfWorkspace } from '@shared/scenario';
 
@@ -21,6 +21,7 @@ function broadcast(next: unknown): void {
 }
 
 export function registerIpc(brain: Brain): void {
+  const executeExtractionJob = createExtractionJobExecutor({ brain, publish: broadcast });
   ipcMain.handle('brain:snapshot', () => brain.snapshot());
   ipcMain.handle('brain:dispatch', (_event, action: Action) => {
     const next = brain.dispatch(action);
@@ -38,8 +39,10 @@ export function registerIpc(brain: Brain): void {
     }
     brain.dispatch({ type: 'CHAT_USER_ONLY', objectId: payload.objectId, text });
     const state = brain.snapshot();
+    const complete = activeModelCompletion(state);
     const reply = await runSessionTurn(state, payload.objectId, text, {
       db: brain.db,
+      complete,
       onDelta: (chunk) => event.sender.send('chat:delta', { objectId: payload.objectId, chunk }),
     });
     const st = brain.snapshot();
@@ -67,43 +70,23 @@ export function registerIpc(brain: Brain): void {
   });
 
   ipcMain.handle('extract:run', async (_event, sourceId: string) => {
-    const state = brain.snapshot();
-    const source = state.sources.find((s) => s.id === sourceId);
-    if (!source || source.boundObjectIds.length === 0) {
-      const next = brain.dispatch({ type: 'EXTRACT_DONE', sourceId });
-      broadcast(next);
-      return next;
-    }
-    const provider = state.providers.find((p) => p.id === state.activeProviderId);
-    const complete = provider?.apiKey
-      ? (req: { messages: Parameters<typeof chatComplete>[0]['messages']; jsonMode?: boolean | undefined }) =>
-          chatComplete({
-            baseUrl: provider.baseUrl,
-            apiKey: provider.apiKey,
-            model: state.activeModelId,
-            messages: req.messages,
-            jsonMode: req.jsonMode,
-          })
-      : undefined;
-    const claims = await runExtractLoop({
-      source,
-      objects: state.objects,
-      slotDefs: state.slotDefs,
-      existing: state.claims,
-      complete,
-    });
-    const next = brain.dispatch({ type: 'EXTRACT_DONE', sourceId, claims });
-    broadcast(next);
-    return next;
+    return executeExtractionJob(sourceId);
   });
 
   ipcMain.handle('settings:testProvider', async (_event, id: string) => {
     const state = brain.snapshot();
     const provider = state.providers.find((p) => p.id === id);
-    const model = provider?.models[0]?.id ?? state.activeModelId;
+    const model =
+      (state.activeProviderId === id
+        ? provider?.models.find((m) => m.id === state.activeModelId)?.id
+        : undefined) ??
+      provider?.models[0]?.id ??
+      '';
     if (!provider) return brain.snapshot();
+    let next = brain.dispatch({ type: 'TEST_PROVIDER', id });
+    broadcast(next);
     const c1 = await checkConnect({ baseUrl: provider.baseUrl, apiKey: provider.apiKey });
-    let next = brain.dispatch({
+    next = brain.dispatch({
       type: 'SELF_CHECK',
       id,
       connect: c1.ok ? 'ok' : 'fail',
@@ -127,8 +110,19 @@ export function registerIpc(brain: Brain): void {
     if (!c2.ok) return next;
     const ws = next.workspaces.find((w) => w.id === next.currentWorkspaceId);
     const scenario = ws?.scenario ?? scenarioOfWorkspace(next.workspaces, next.currentWorkspaceId);
-    const scores = runCertForScenario(scenario);
-    next = brain.dispatch({ type: 'CERT_DONE', id, scores });
+    try {
+      const complete = completionForProvider(provider, model);
+      if (!complete) throw new Error('模型配置不完整');
+      const scores = await runLiveCertForScenario(scenario, complete);
+      next = brain.dispatch({ type: 'CERT_DONE', id, scores });
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      next = brain.dispatch({
+        type: 'CERT_FAILED',
+        id,
+        detail: `隔离样本检查失败：${detail.slice(0, 120)}`,
+      });
+    }
     broadcast(next);
     return next;
   });
@@ -139,17 +133,7 @@ export function registerIpc(brain: Brain): void {
       state = brain.dispatch({ type: 'GENERATE_BRIEF_START', objectId });
       broadcast(state);
     }
-    const provider = state.providers.find((p) => p.id === state.activeProviderId);
-    const complete = provider?.apiKey
-      ? (req: { messages: Parameters<typeof chatComplete>[0]['messages']; jsonMode?: boolean | undefined }) =>
-          chatComplete({
-            baseUrl: provider.baseUrl,
-            apiKey: provider.apiKey,
-            model: state.activeModelId,
-            messages: req.messages,
-            jsonMode: req.jsonMode,
-          })
-      : undefined;
+    const complete = activeModelCompletion(state);
     const [taskId, briefId] = [`task-${state.seq + 1}`, `brief-${state.seq + 2}`];
     const brief = await generateBrief({
       state,
@@ -174,37 +158,34 @@ export function registerIpc(brain: Brain): void {
     return picked.filePath;
   });
 
-  ipcMain.handle('task:startResearch', async (_event, payload: { objectId: string; gear?: BudgetGear }) => {
-    const state = brain.snapshot();
-    const reach = createReachAdapter();
-    const result = await runResearchTask(state, payload.objectId, payload.gear ?? '快搜', {
-      reach,
-      queryFor: defaultQuery,
-    });
-    let next = brain.dispatch({
-      type: 'APPLY_RESEARCH',
-      task: result.task,
-      audits: result.audits,
-      sources: result.sources,
-    });
-    for (const src of result.sources) {
-      if (src.boundObjectIds.length === 0) continue;
-      next = brain.dispatch({
-        type: 'BIND_CONFIRMED',
-        sourceId: src.id,
-        objectIds: src.boundObjectIds,
+  ipcMain.handle(
+    'task:startResearch',
+    async (_event, payload: { objectId: string; gear?: BudgetGear }) => {
+      const state = brain.snapshot();
+      const reach = createReachAdapter();
+      const result = await runResearchTask(state, payload.objectId, payload.gear ?? '快搜', {
+        reach,
+        queryFor: defaultQuery,
       });
-      const extracted = await runExtractLoop({
-        source: next.sources.find((s) => s.id === src.id) ?? src,
-        objects: next.objects,
-        slotDefs: next.slotDefs,
-        existing: next.claims,
+      let next = brain.dispatch({
+        type: 'APPLY_RESEARCH',
+        task: result.task,
+        audits: result.audits,
+        sources: result.sources,
       });
-      next = brain.dispatch({ type: 'EXTRACT_DONE', sourceId: src.id, claims: extracted });
-    }
-    broadcast(next);
-    return next;
-  });
+      for (const src of result.sources) {
+        if (src.boundObjectIds.length === 0) continue;
+        next = brain.dispatch({
+          type: 'BIND_CONFIRMED',
+          sourceId: src.id,
+          objectIds: src.boundObjectIds,
+        });
+        next = await executeExtractionJob(src.id);
+      }
+      broadcast(next);
+      return next;
+    },
+  );
 }
 
 export function unregisterIpc(): void {

@@ -33,7 +33,7 @@ export interface Source {
   boundObjectIds: string[]; // 空 = 未绑定（在 Inbox）
   workspaceId?: string | undefined;
   virtual?: boolean | undefined; // 使用者陈述的落点：不进 Inbox、不进来源侧
-  unparsed?: boolean | undefined; // 文件收下但原型不解析（PDF/二进制），成品才解析——同 URL 的「成品才抓」
+  unparsed?: boolean | undefined; // 当前版本未解析的 PDF/二进制来源，只保留可见占位说明。
 }
 
 // 0030：主张状态收敛为成立/过时；未知只是页面语义（槽内无主张的空格子），不是账本枚举值。
@@ -74,6 +74,13 @@ export interface Claim {
   span?: string | undefined; // 来源原文片段
   supersededBy?: string | undefined;
   createdAt: string;
+}
+
+// 0035：删除来源不做一键撤销，但操作日志必须保留可显式恢复的来源、绑定与主张快照。
+export interface DeletedSourceRecovery {
+  source: Source;
+  claims: Claim[];
+  deletedAt: string;
 }
 
 // 0029：冲突是派生关系（同对象 + 同单值槽 + 有效期重叠 + 取值互斥），不存独立状态。
@@ -120,14 +127,21 @@ export interface Memory {
 
 export interface ExtractJob {
   sourceId: string;
-  status: '抽取中' | '完成';
+  status: '抽取中' | '完成' | '失败' | '未配置';
+  detail?: string | undefined;
 }
+
+export type ExtractionOutcomeKind = 'success' | 'unconfigured' | 'invalid-output' | 'failed';
 
 export type ProposalDecision = 'accept-merge' | 'accept-drop' | 'reject';
 
 export type TidyPayload = { kind: '整理'; claimId: string; targetPredicate: Predicate };
 // 0037：整理提议的「丢弃未核」类型——未核积压的兜底出口（单条起，批量留待真链）。
-export type DropUnverifiedPayload = { kind: '丢弃未核'; claimIds: string[]; reason?: string | undefined };
+export type DropUnverifiedPayload = {
+  kind: '丢弃未核';
+  claimIds: string[];
+  reason?: string | undefined;
+};
 export type CandidatePayload = {
   kind: '候选记忆';
   text: string;
@@ -151,17 +165,37 @@ export interface Proposal {
 export type ChatCardKind = '审计' | '结果' | '提议';
 // refit-3 P1-1：结果用不同图标区分；「整理」「拒绝」是新补的语义（0027 时间线要求每个已发生动作落结果卡）；
 // 「撤销」（0034）是补偿写的结果卡图标。
-export type ResultKind = '关窗' | '晋升' | '记忆' | '简报' | '绑定' | '抽取' | '整理' | '拒绝' | '批量晋升' | '撤销';
+export type ResultKind =
+  | '关窗'
+  | '晋升'
+  | '记忆'
+  | '简报'
+  | '绑定'
+  | '解绑'
+  | '删除来源'
+  | '抽取'
+  | '整理'
+  | '拒绝'
+  | '批量晋升'
+  | '撤销';
 
 // 0034：撤销 = 追加补偿写。每张可撤销的结果卡带着补偿所需的最小载荷。
 export type UndoPayload =
   | { kind: '晋升'; claimId: string }
   | { kind: '批量晋升'; claimIds: string[] }
   | { kind: '整理并入'; claimId: string; fromPredicate: string }
+  // 新写入一律用 claims；旧数据库里已持久化的 { claim } 仍可读取和补偿。
+  | { kind: '整理丢弃'; claims: Claim[] }
   | { kind: '整理丢弃'; claim: Claim }
   | { kind: '记忆'; memoryId: string }
   | { kind: '绑定'; sourceId: string }
-  | { kind: '关窗'; claimId: string; memoryId?: string | undefined; companionId?: string | undefined };
+  | { kind: '解绑'; sourceId: string; objectId: string; claims: Claim[] }
+  | {
+      kind: '关窗';
+      claimId: string;
+      memoryId?: string | undefined;
+      companionId?: string | undefined;
+    };
 
 export interface ChatCard {
   kind: ChatCardKind;
@@ -256,9 +290,6 @@ export type View =
 
 export type ThemePreference = 'light' | 'dark' | 'system';
 
-export type ProviderKind = 'deepseek' | 'openai' | 'anthropic' | 'custom';
-export type ApiProtocol = 'chat-completions' | 'anthropic-messages' | 'responses';
-
 export interface LlmModel {
   id: string;
   name: string;
@@ -268,11 +299,9 @@ export interface LlmModel {
 
 export interface LlmProvider {
   id: string;
-  kind: ProviderKind;
   name: string;
   baseUrl: string;
   apiKey: string;
-  protocol: ApiProtocol;
   enabled: boolean;
   models: LlmModel[];
 }
@@ -286,7 +315,7 @@ export interface RightTab {
   kind: RightTabKind;
 }
 
-// 0039：三级自检（连通 → 能力探测 → 资格认证）。原型模拟跑分，不真连。
+// 0039：三级自检（连通 → 能力探测 → 隔离样本验证）。样本不写入用户大脑文件。
 export interface ProviderCert {
   status: '未认证' | '认证中' | '已认证';
   startedAt?: number | undefined;
@@ -294,6 +323,7 @@ export interface ProviderCert {
   capability?: 'ok' | 'fail' | undefined;
   connectDetail?: string | undefined;
   capabilityDetail?: string | undefined;
+  certDetail?: string | undefined;
   recall?: number | undefined; // 证据召回 %
   faithful?: number | undefined; // 简报忠实 %
   unknown?: number | undefined; // 未知遵守 %
@@ -332,4 +362,5 @@ export interface State {
   writeQueue: WriteProposal[];
   certByProvider: Record<string, ProviderCert>;
   onboardingDone: boolean;
+  deletedSourceRecoveries: DeletedSourceRecovery[];
 }

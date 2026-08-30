@@ -65,4 +65,20 @@ describe('chat-completions 客户端', () => {
     });
     expect(body).toContain('json_object');
   });
+
+  it('请求超时会结束并返回可行动错误，不无限挂起', async () => {
+    await expect(
+      chatComplete({
+        baseUrl: 'https://api.example.test/v1',
+        apiKey: 'k',
+        model: 'demo',
+        timeoutMs: 10,
+        messages: [{ role: 'user', content: 'x' }],
+        fetch: async (_url, init) =>
+          new Promise<Response>((_resolve, reject) => {
+            init?.signal?.addEventListener('abort', () => reject(init.signal?.reason));
+          }),
+      }),
+    ).rejects.toThrow('请求超时');
+  });
 });

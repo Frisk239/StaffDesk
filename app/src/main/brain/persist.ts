@@ -3,6 +3,7 @@ import type {
   Brief,
   ChatMessage,
   Claim,
+  DeletedSourceRecovery,
   DeskObject,
   DeskTask,
   Memory,
@@ -19,6 +20,21 @@ function metaSet(db: Database.Database, key: string, value: string): void {
     `INSERT INTO app_meta (key, value) VALUES (?, ?)
      ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
   ).run(key, value);
+}
+
+const LEGACY_MODEL_META_KEYS = [
+  'providers',
+  'activeProviderId',
+  'activeModelId',
+  'thinkingEffort',
+] as const;
+
+/** 模型配置已经提升为产品级设置；迁移完成后移除业务库中的旧副本。 */
+export function clearLegacyModelMeta(db: Database.Database): void {
+  const remove = db.prepare('DELETE FROM app_meta WHERE key = ?');
+  db.transaction(() => {
+    for (const key of LEGACY_MODEL_META_KEYS) remove.run(key);
+  })();
 }
 
 /** 把出荷状态写入大脑文件。账本真相源是 SQLite，不是内存。 */
@@ -53,7 +69,15 @@ export function persistLedger(db: Database.Database, state: State): void {
     );
     const insRel = db.prepare(`INSERT INTO object_relations (from_id, to_id) VALUES (?, ?)`);
     for (const o of state.objects) {
-      insObj.run(o.id, o.kind, o.name, o.note ?? null, o.workspaceId, o.archived ? 1 : 0, stateStamp(state));
+      insObj.run(
+        o.id,
+        o.kind,
+        o.name,
+        o.note ?? null,
+        o.workspaceId,
+        o.archived ? 1 : 0,
+        stateStamp(state),
+      );
       for (const to of o.relationIds) {
         insRel.run(o.id, to);
       }
@@ -200,20 +224,7 @@ export function persistLedger(db: Database.Database, state: State): void {
     metaSet(db, 'seq', String(state.seq));
     metaSet(db, 'currentWorkspaceId', state.currentWorkspaceId);
     metaSet(db, 'themePreference', state.themePreference);
-    metaSet(db, 'activeProviderId', state.activeProviderId);
-    metaSet(db, 'activeModelId', state.activeModelId);
-    metaSet(db, 'thinkingEffort', state.thinkingEffort);
     metaSet(db, 'onboardingDone', state.onboardingDone ? '1' : '0');
-    metaSet(
-      db,
-      'providers',
-      JSON.stringify(
-        state.providers.map((p) => ({
-          ...p,
-          apiKey: '',
-        })),
-      ),
-    );
   });
   tx();
   rebuildFts(db);
@@ -255,10 +266,62 @@ function redactSecrets(payload: unknown): string {
   return JSON.stringify(payload).replace(/"apiKey"\s*:\s*"[^"]*"/g, '"apiKey":""');
 }
 
-export function listOperations(db: Database.Database): { action: string; undo_of: string | null }[] {
-  return db
-    .prepare('SELECT action, undo_of FROM operations ORDER BY created_at')
-    .all() as { action: string; undo_of: string | null }[];
+export function listOperations(
+  db: Database.Database,
+): { action: string; undo_of: string | null }[] {
+  return db.prepare('SELECT action, undo_of FROM operations ORDER BY created_at').all() as {
+    action: string;
+    undo_of: string | null;
+  }[];
+}
+
+export function listDeletedSourceRecoveries(
+  db: Database.Database,
+  liveSources: Source[],
+): DeletedSourceRecovery[] {
+  const liveIds = new Set(
+    liveSources.filter((source) => !source.virtual).map((source) => source.id),
+  );
+  const rows = db
+    .prepare('SELECT payload FROM operations WHERE action = ? ORDER BY created_at')
+    .all('DELETE_SOURCE') as { payload: string }[];
+  const bySource = new Map<string, DeletedSourceRecovery>();
+  for (const row of rows) {
+    try {
+      const recovery = recoveryFromPayload(JSON.parse(row.payload) as unknown);
+      if (recovery && !liveIds.has(recovery.source.id)) bySource.set(recovery.source.id, recovery);
+    } catch {
+      // Older or corrupt operation payloads are ignored; they cannot safely drive recovery.
+    }
+  }
+  return [...bySource.values()];
+}
+
+function recoveryFromPayload(payload: unknown): DeletedSourceRecovery | null {
+  if (!payload || typeof payload !== 'object') return null;
+  const recovery = (payload as { recovery?: unknown }).recovery;
+  if (!recovery || typeof recovery !== 'object') return null;
+  const source = (recovery as { source?: unknown }).source;
+  const claims = (recovery as { claims?: unknown }).claims;
+  const deletedAt = (recovery as { deletedAt?: unknown }).deletedAt;
+  if (
+    !source ||
+    typeof source !== 'object' ||
+    !Array.isArray(claims) ||
+    typeof deletedAt !== 'string'
+  ) {
+    return null;
+  }
+  const candidate = source as Source;
+  if (
+    typeof candidate.id !== 'string' ||
+    typeof candidate.title !== 'string' ||
+    typeof candidate.body !== 'string' ||
+    !Array.isArray(candidate.boundObjectIds)
+  ) {
+    return null;
+  }
+  return { source: candidate, claims: claims as Claim[], deletedAt };
 }
 
 function stateStamp(_state: State): string {
@@ -308,7 +371,9 @@ export function loadLedger(db: Database.Database): LedgerRows {
   }
   const objects = (
     db
-      .prepare('SELECT id, kind, name, note, workspace_id, archived FROM objects ORDER BY created_at')
+      .prepare(
+        'SELECT id, kind, name, note, workspace_id, archived FROM objects ORDER BY created_at',
+      )
       .all() as {
       id: string;
       kind: DeskObject['kind'];
@@ -558,9 +623,10 @@ export function loadLedger(db: Database.Database): LedgerRows {
     chatByObject,
     seq: Number(meta.get('seq') ?? '1') || 1,
     currentWorkspaceId: meta.get('currentWorkspaceId') ?? workspaces[0]?.id ?? '',
-    themePreference: (meta.get('themePreference') as State['themePreference'] | undefined) ?? 'system',
-    activeProviderId: meta.get('activeProviderId') ?? 'p-deepseek',
-    activeModelId: meta.get('activeModelId') ?? 'deepseek-chat',
+    themePreference:
+      (meta.get('themePreference') as State['themePreference'] | undefined) ?? 'system',
+    activeProviderId: meta.get('activeProviderId') ?? '',
+    activeModelId: meta.get('activeModelId') ?? '',
     thinkingEffort: (meta.get('thinkingEffort') as State['thinkingEffort'] | undefined) ?? '中',
     onboardingDone: meta.get('onboardingDone') === '1',
     providersJson: meta.get('providers') ?? '',

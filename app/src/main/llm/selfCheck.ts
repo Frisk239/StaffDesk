@@ -17,6 +17,7 @@ export async function checkConnect(args: {
   baseUrl: string;
   apiKey: string;
   fetch?: FetchFn;
+  timeoutMs?: number;
 }): Promise<CheckResult> {
   if (!args.apiKey.trim()) {
     return { level: 'connect', ok: false, detail: '密钥为空' };
@@ -26,6 +27,7 @@ export async function checkConnect(args: {
     const res = await fetchFn(joinUrl(args.baseUrl, 'models'), {
       method: 'GET',
       headers: { Authorization: `Bearer ${args.apiKey}` },
+      signal: AbortSignal.timeout(args.timeoutMs ?? 15_000),
     });
     if (res.ok || res.status === 404) {
       return { level: 'connect', ok: true, detail: `端点可达（HTTP ${res.status}）` };
@@ -46,6 +48,7 @@ export async function checkCapability(args: {
   apiKey: string;
   model: string;
   fetch?: FetchFn;
+  timeoutMs?: number;
 }): Promise<CheckResult> {
   try {
     const result = await chatComplete({
@@ -54,6 +57,7 @@ export async function checkCapability(args: {
       model: args.model,
       jsonMode: true,
       maxRetries: 2,
+      timeoutMs: args.timeoutMs ?? 60_000,
       fetch: args.fetch,
       messages: [
         { role: 'system', content: '只输出 JSON。' },

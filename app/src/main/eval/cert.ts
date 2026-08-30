@@ -3,7 +3,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { outboundBrief } from '../brain/briefOut';
 import { openBrain } from '../brain';
-import { draftsToClaims } from '../loops/extract';
+import { draftsToClaims, runExtractLoop } from '../loops/extract';
+import type { ChatMessageParam, CompleteResult } from '../llm/chatCompletions';
 import type { GoldPack } from './goldPacks';
 import { packForScenario } from './goldPacks';
 import type { ScenarioKind } from '@shared/types';
@@ -70,6 +71,71 @@ export function runCert(pack: GoldPack, extraNegatives: string[] = []): CertScor
 
 export function runCertForScenario(scenario: ScenarioKind): CertScores {
   return runCert(packForScenario(scenario));
+}
+
+/**
+ * 产品自检：测试样本只存在临时数据库中，抽取结果来自当前配置的真实模型。
+ * 与 runCert 的确定性单元测试路径分开，避免测试夹具进入产品数据或产品分数。
+ */
+export async function runLiveCert(
+  pack: GoldPack,
+  complete: (req: {
+    messages: ChatMessageParam[];
+    jsonMode?: boolean | undefined;
+  }) => Promise<CompleteResult>,
+): Promise<CertScores> {
+  const dir = mkdtempSync(join(tmpdir(), 'staffdesk-live-cert-'));
+  const brain = openBrain(join(dir, 'brain.db'));
+  try {
+    brain.dispatch({ type: 'ADD_WORKSPACE', name: '隔离检查', scenario: pack.scenario });
+    brain.dispatch({ type: 'ADD_OBJECT', kind: pack.object.kind, name: pack.object.name });
+    const obj = brain.snapshot().objects[0];
+    if (!obj) throw new Error('隔离检查对象未创建');
+    brain.dispatch({ type: 'ADD_SOURCE', title: pack.source.title, body: pack.source.body });
+    const src = brain.snapshot().sources.find((source) => !source.virtual);
+    if (!src) throw new Error('隔离检查来源未创建');
+    brain.dispatch({ type: 'BIND_CONFIRMED', sourceId: src.id, objectIds: [obj.id] });
+    const bound = brain.snapshot().sources.find((source) => source.id === src.id);
+    if (!bound) throw new Error('隔离检查来源未绑定');
+    const extraction = await runExtractLoop({
+      source: bound,
+      objects: [obj],
+      slotDefs: brain.snapshot().slotDefs,
+      existing: [],
+      complete,
+    });
+    if (extraction.status !== 'success') {
+      throw new Error(extraction.detail ?? `主张抽取未完成：${extraction.status}`);
+    }
+    brain.dispatch({
+      type: 'EXTRACT_DONE',
+      sourceId: src.id,
+      claims: extraction.claims,
+      outcome: extraction.status,
+      draftCount: extraction.draftCount,
+      rejectedCount: extraction.rejectedCount,
+    });
+    const state = brain.snapshot();
+    const brief = outboundBrief(state, obj.id, 'brief-live-cert', 'task-live-cert');
+    return scorePack(pack, state.claims, brief);
+  } finally {
+    brain.close();
+    try {
+      rmSync(dir, { recursive: true, force: true });
+    } catch {
+      /* windows lock */
+    }
+  }
+}
+
+export async function runLiveCertForScenario(
+  scenario: ScenarioKind,
+  complete: (req: {
+    messages: ChatMessageParam[];
+    jsonMode?: boolean | undefined;
+  }) => Promise<CompleteResult>,
+): Promise<CertScores> {
+  return runLiveCert(packForScenario(scenario), complete);
 }
 
 export function scorePack(

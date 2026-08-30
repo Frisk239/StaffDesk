@@ -1,7 +1,7 @@
+import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
-import type { Claim, DeskObject, SlotDef, Source } from '@shared/types';
+import type { Claim, DeskObject, ExtractionOutcomeKind, SlotDef, Source } from '@shared/types';
 import type { ChatMessageParam, CompleteResult } from '../llm/chatCompletions';
-import { stubExtract } from '../brain/extractStub';
 
 const DraftSchema = z.object({
   claims: z
@@ -18,7 +18,20 @@ const DraftSchema = z.object({
 
 export type ExtractDraft = z.infer<typeof DraftSchema>['claims'][number];
 
-export function idempotencyKey(sourceId: string, objectId: string, predicate: string, span: string): string {
+export interface ExtractionOutcome {
+  status: ExtractionOutcomeKind;
+  claims: Claim[];
+  draftCount: number;
+  rejectedCount: number;
+  detail?: string | undefined;
+}
+
+export function idempotencyKey(
+  sourceId: string,
+  objectId: string,
+  predicate: string,
+  span: string,
+): string {
   return `${sourceId}\0${objectId}\0${predicate}\0${span.trim()}`;
 }
 
@@ -44,24 +57,21 @@ export function draftsToClaims(args: {
     args.existing.map((c) => idempotencyKey(c.sourceId, c.objectId, c.predicate, c.span ?? c.text)),
   );
   const out: Claim[] = [];
-  let i = 0;
   for (const draft of args.drafts) {
     const span = draft.span.trim();
     const text = draft.text.trim();
     if (!span || !text) continue;
     if (!args.source.body.includes(span)) continue;
     const obj =
-      (draft.objectName
-        ? bound.find((o) => o.name === draft.objectName)
-        : undefined) ?? bound[0];
+      (draft.objectName ? bound.find((o) => o.name === draft.objectName) : undefined) ?? bound[0];
     if (!obj) continue;
     const predicate = mapPredicate(draft.predicate, obj.kind, args.slotDefs);
     const key = idempotencyKey(args.source.id, obj.id, predicate, span);
     if (seen.has(key)) continue;
     seen.add(key);
-    i += 1;
     out.push({
-      id: `cl-x-${args.source.id}-${obj.id}-${String(i)}`,
+      // 幂等性由 source/object/predicate/span 键承担；PK 只负责不透明唯一。
+      id: `cl-x-${randomUUID()}`,
       objectId: obj.id,
       predicate,
       text: /[。！？]$/.test(text) ? text : `${text}。`,
@@ -81,48 +91,124 @@ export async function runExtractLoop(args: {
   objects: DeskObject[];
   slotDefs: SlotDef[];
   existing: Claim[];
-  complete?: ((req: { messages: ChatMessageParam[]; jsonMode?: boolean | undefined }) => Promise<CompleteResult>) | undefined;
-}): Promise<Claim[]> {
+  complete?:
+    | ((req: {
+        messages: ChatMessageParam[];
+        jsonMode?: boolean | undefined;
+      }) => Promise<CompleteResult>)
+    | undefined;
+}): Promise<ExtractionOutcome> {
   const now = new Date().toISOString();
   if (!args.complete) {
-    return stubExtract({
-      source: args.source,
-      objects: args.objects,
-      slotDefs: args.slotDefs,
-      now,
-      existing: args.existing,
-    });
+    return outcome('unconfigured', [], 0, 0, '尚未配置可调用的模型');
   }
-  const slots = args.slotDefs.map((d) => `${d.kind}:${d.name}`).join('、');
-  const result = await args.complete({
-    jsonMode: true,
-    messages: [
-      {
-        role: 'system',
-        content: [
-          '从原文抽出可单独核对的主张。每条必须带原文片段 span。',
-          'predicate 必须是下列槽名之一，对不上就填「未编目」。不准自开槽。',
-          slots,
-          '只输出 JSON：{"claims":[{"objectName":"","predicate":"","text":"","span":""}]}',
-          '原文没说的推论不准写。',
-        ].join('\n'),
-      },
-      { role: 'user', content: args.source.body.slice(0, 8000) },
-    ],
-  });
-  let parsed: ExtractDraft[] = [];
+  const boundObjects = args.objects.filter((object) =>
+    args.source.boundObjectIds.includes(object.id),
+  );
+  const kinds = new Set(boundObjects.map((object) => object.kind));
+  const slots = [...kinds]
+    .map((kind) => {
+      const names = args.slotDefs
+        .filter((slot) => slot.kind === kind)
+        .map((slot) => slot.name)
+        .join('、');
+      return `${kind}可用槽名：${names || '无'}`;
+    })
+    .join('\n');
+  let result: CompleteResult;
   try {
-    const json: unknown = JSON.parse(result.content);
-    parsed = DraftSchema.parse(json).claims;
-  } catch {
-    return [];
+    result = await args.complete({
+      jsonMode: true,
+      messages: [
+        {
+          role: 'system',
+          content: [
+            '你是主张抽取器。从原文抽出可单独核对的原子命题。',
+            '每条 text 必须写成离开上下文仍成立的完整句子，并明确写出对象。',
+            'span 必须逐字复制原文中的一段连续文本；不要改写、不要补标点。',
+            'predicate 只能使用允许槽名；映射不上填「未编目」，不准自开槽。',
+            `允许对象：${boundObjects.map((object) => `${object.kind}「${object.name}」`).join('、') || '无'}`,
+            slots || '可用槽名：无',
+            'objectName 必须与允许对象名称完全一致。原文没说的推论不准写。',
+            '只输出一个 JSON 对象，不要 Markdown、解释或思考过程：',
+            '{"claims":[{"objectName":"对象原名","predicate":"槽名或未编目","text":"完整命题","span":"原文连续片段"}]}',
+            '没有可核对命题时输出 {"claims":[]}。',
+          ].join('\n'),
+        },
+        {
+          role: 'user',
+          content: `来源标题：${args.source.title}\n原文：\n${args.source.body.slice(0, 8000)}`,
+        },
+      ],
+    });
+  } catch (error) {
+    return outcome('failed', [], 0, 0, safeErrorDetail(error));
   }
-  return draftsToClaims({
-    drafts: parsed,
+
+  const parsed = parseDrafts(result.content);
+  if (!parsed.ok) {
+    return outcome('invalid-output', [], 0, 0, parsed.detail);
+  }
+  const claims = draftsToClaims({
+    drafts: parsed.drafts,
     source: args.source,
     objects: args.objects,
     slotDefs: args.slotDefs,
     existing: args.existing,
     now,
   });
+  return outcome(
+    'success',
+    claims,
+    parsed.drafts.length,
+    Math.max(parsed.drafts.length - claims.length, 0),
+  );
+}
+
+function outcome(
+  status: ExtractionOutcomeKind,
+  claims: Claim[],
+  draftCount: number,
+  rejectedCount: number,
+  detail?: string,
+): ExtractionOutcome {
+  return { status, claims, draftCount, rejectedCount, ...(detail ? { detail } : {}) };
+}
+
+function parseDrafts(
+  content: string,
+): { ok: true; drafts: ExtractDraft[] } | { ok: false; detail: string } {
+  const trimmed = content.trim().replace(/^\uFEFF/, '');
+  if (!trimmed) return { ok: false, detail: '模型返回了空内容' };
+  const fenced = trimmed.match(/```(?:json)?\s*([\s\S]*?)```/i)?.[1]?.trim();
+  const firstBrace = trimmed.indexOf('{');
+  const lastBrace = trimmed.lastIndexOf('}');
+  const sliced =
+    firstBrace >= 0 && lastBrace > firstBrace ? trimmed.slice(firstBrace, lastBrace + 1) : '';
+  const candidates = [trimmed, fenced, sliced].filter((candidate): candidate is string =>
+    Boolean(candidate),
+  );
+  let sawJson = false;
+  for (const candidate of candidates) {
+    try {
+      const json: unknown = JSON.parse(candidate);
+      sawJson = true;
+      const parsed = DraftSchema.safeParse(json);
+      if (parsed.success) return { ok: true, drafts: parsed.data.claims };
+    } catch {
+      // 继续尝试下一个安全截取候选。
+    }
+  }
+  return {
+    ok: false,
+    detail: sawJson ? '模型返回的 JSON 不符合主张结构' : '模型没有返回可解析的 JSON',
+  };
+}
+
+function safeErrorDetail(error: unknown): string {
+  const raw = error instanceof Error ? error.message : String(error);
+  return raw
+    .replace(/Bearer\s+\S+/gi, 'Bearer ***')
+    .replace(/sk-[A-Za-z0-9_-]+/g, 'sk-***')
+    .slice(0, 180);
 }

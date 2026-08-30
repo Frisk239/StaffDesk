@@ -15,18 +15,12 @@ import {
   X,
 } from '@phosphor-icons/react';
 import { useStore } from '../store';
-import type { ApiProtocol, LlmModel, LlmProvider, ObjectKind, ThemePreference } from '@shared/types';
+import type { LlmModel, LlmProvider, ObjectKind, ThemePreference } from '@shared/types';
 
 const CUBES: { id: ThemePreference; label: string; Icon: typeof Sun }[] = [
   { id: 'light', label: '明亮', Icon: Sun },
   { id: 'dark', label: '暗色', Icon: Moon },
   { id: 'system', label: '跟随系统', Icon: Monitor },
-];
-
-const PROTOCOLS: { id: ApiProtocol; label: string }[] = [
-  { id: 'chat-completions', label: 'Chat Completions (/chat/completions)' },
-  { id: 'anthropic-messages', label: 'Anthropic Messages (/v1/messages)' },
-  { id: 'responses', label: 'Responses (/responses)' },
 ];
 
 function fmtCtx(n: number) {
@@ -67,6 +61,7 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
         </nav>
         <div className="settings-content">
           <div className="settings-content-head">
+            {section === '通用' && <h2 className="settings-h">通用设置</h2>}
             {section === '模型' && <h2 className="settings-h">模型设置</h2>}
             {section === '谓词表' && <h2 className="settings-h">受控谓词表</h2>}
             <button className="settings-close" type="button" onClick={onClose} aria-label="关闭">
@@ -86,16 +81,53 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
               <div className="settings-block">
                 <div className="settings-label">大脑文件</div>
                 <p className="dim">导出 zip 不含密钥。换机器后重新填 Key。</p>
-                <button type="button" className="primary small" onClick={() => void window.staffdesk.exportBrain()}>
+                <button
+                  type="button"
+                  className="primary small"
+                  onClick={() => void window.staffdesk.exportBrain()}
+                >
                   导出大脑
                 </button>
               </div>
+              <DeletedSourceRecoveryPanel />
             </div>
           )}
           {section === '谓词表' && <SlotTable />}
           {section === '模型' && <ModelsWorkbench />}
         </div>
       </div>
+    </div>
+  );
+}
+
+function DeletedSourceRecoveryPanel() {
+  const { state, dispatch } = useStore();
+  return (
+    <div className="settings-block">
+      <div className="settings-label">已删除来源</div>
+      {state.deletedSourceRecoveries.length === 0 ? (
+        <p className="dim">没有可恢复的已删除来源。</p>
+      ) : (
+        <div className="source-recovery-list">
+          {state.deletedSourceRecoveries.map((recovery) => (
+            <div className="source-recovery-row" key={recovery.source.id}>
+              <span className="source-recovery-main">
+                <strong>{recovery.source.title}</strong>
+                <span className="dim">
+                  {recovery.source.boundObjectIds.length} 个绑定 · {recovery.claims.length} 条主张
+                </span>
+              </span>
+              <button
+                type="button"
+                className="ghost small"
+                onClick={() => dispatch({ type: 'RESTORE_DELETED_SOURCE', recovery })}
+              >
+                恢复来源
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
@@ -110,57 +142,86 @@ function SlotTable() {
   const scenarioLabel = (s: string[]) => (s.length === 0 ? '通用' : s.join('、'));
 
   return (
-    <div className="settings-body">
-      <p className="models-lead">
-        谓词表由人维护（0025）：抽取必须映射到表内，缺了由人加。单值槽上的不同取值才构成冲突（0029）。
-      </p>
-      {kinds.map((k) => (
-        <div className="settings-block" key={k}>
-          <div className="settings-label">{k}</div>
-          <div className="slot-table">
-            {state.slotDefs
-              .filter((d) => d.kind === k)
-              .map((d) => (
-                <div className="slot-table-row" key={`${d.kind}-${d.name}`}>
-                  <span className="slot-name">{d.name}</span>
-                  <span className="tag grey">{d.arity}</span>
-                  <span className="dim">{scenarioLabel(d.scenarios)}</span>
-                </div>
-              ))}
-          </div>
-        </div>
-      ))}
-      <div className="settings-block">
-        <div className="settings-label">加槽（新槽默认通用）</div>
-        <form
-          className="slot-add"
-          onSubmit={(e) => {
-            e.preventDefault();
-            if (!name.trim()) return;
-            dispatch({ type: 'ADD_SLOT', name, kind, arity });
-            setName('');
-          }}
-        >
-          <input value={name} placeholder="槽名，如：竞对动态" onChange={(e) => setName(e.target.value)} />
-          <div className="ws-kinds">
-            {kinds.map((k) => (
-              <button key={k} type="button" className={kind === k ? 'on' : ''} onClick={() => setKind(k)}>
-                {k}
-              </button>
-            ))}
-          </div>
-          <div className="ws-kinds">
-            {(['单值', '多值'] as const).map((a) => (
-              <button key={a} type="button" className={arity === a ? 'on' : ''} onClick={() => setArity(a)}>
-                {a}
-              </button>
-            ))}
-          </div>
-          <button type="submit" className="primary small" disabled={!name.trim()}>
-            加槽
-          </button>
-        </form>
+    <div className="slot-editor">
+      <div className="slot-scroll">
+        <p className="models-lead">抽取只使用表内字段。单值字段出现不同取值时，系统会标记冲突。</p>
+        {kinds.map((k) => (
+          <section className="slot-group" key={k}>
+            <div className="slot-group-head">
+              <span>{k}</span>
+              <span>{state.slotDefs.filter((d) => d.kind === k).length} 个字段</span>
+            </div>
+            <div className="slot-table">
+              {state.slotDefs
+                .filter((d) => d.kind === k)
+                .map((d) => (
+                  <div className="slot-table-row" key={`${d.kind}-${d.name}`}>
+                    <span className="slot-name">{d.name}</span>
+                    <span className="tag grey">{d.arity}</span>
+                    <span className="slot-scenarios">{scenarioLabel(d.scenarios)}</span>
+                  </div>
+                ))}
+            </div>
+          </section>
+        ))}
       </div>
+      <form
+        className="slot-add-panel"
+        onSubmit={(e) => {
+          e.preventDefault();
+          if (!name.trim()) return;
+          dispatch({ type: 'ADD_SLOT', name, kind, arity });
+          setName('');
+        }}
+      >
+        <div className="slot-add-copy">
+          <strong>添加字段</strong>
+          <span>新字段默认用于全部场景</span>
+        </div>
+        <div className="slot-add-controls">
+          <label className="slot-name-field">
+            <span>字段名</span>
+            <input
+              value={name}
+              placeholder="例如：竞对动态"
+              onChange={(e) => setName(e.target.value)}
+            />
+          </label>
+          <fieldset className="slot-choice">
+            <legend>归属</legend>
+            <div>
+              {kinds.map((k) => (
+                <button
+                  key={k}
+                  type="button"
+                  className={kind === k ? 'on' : ''}
+                  onClick={() => setKind(k)}
+                >
+                  {k}
+                </button>
+              ))}
+            </div>
+          </fieldset>
+          <fieldset className="slot-choice">
+            <legend>取值</legend>
+            <div>
+              {(['单值', '多值'] as const).map((a) => (
+                <button
+                  key={a}
+                  type="button"
+                  className={arity === a ? 'on' : ''}
+                  onClick={() => setArity(a)}
+                >
+                  {a}
+                </button>
+              ))}
+            </div>
+          </fieldset>
+          <button type="submit" className="primary" disabled={!name.trim()}>
+            添加
+          </button>
+        </div>
+      </form>
     </div>
   );
 }
@@ -184,11 +245,15 @@ function ModelsWorkbench() {
   const { state, dispatch } = useStore();
   const [selectedId, setSelectedId] = useState(state.activeProviderId);
   const [adding, setAdding] = useState(false);
-  const selected = adding ? null : state.providers.find((p) => p.id === selectedId) ?? state.providers[0] ?? null;
+  const selected = adding
+    ? null
+    : (state.providers.find((p) => p.id === selectedId) ?? state.providers[0] ?? null);
 
   return (
     <div className="models-work">
-      <p className="models-lead">管理模型供应商，配置后可在对话里选用。</p>
+      <p className="models-lead">
+        这里是产品唯一的模型配置入口。配置一次后，所有工作区和大脑文件共用。
+      </p>
       <div className="models-card">
         <aside className="models-rail">
           <div className="models-rail-label">供应商</div>
@@ -244,12 +309,16 @@ function ModelsWorkbench() {
   );
 }
 
-function AddProviderForm({ onCancel, onCreate }: { onCancel: () => void; onCreate: (p: LlmProvider) => void }) {
-  const { state } = useStore();
+function AddProviderForm({
+  onCancel,
+  onCreate,
+}: {
+  onCancel: () => void;
+  onCreate: (p: LlmProvider) => void;
+}) {
   const [name, setName] = useState('');
-  const [baseUrl, setBaseUrl] = useState('https://api.example.com/v1');
+  const [baseUrl, setBaseUrl] = useState('');
   const [apiKey, setApiKey] = useState('');
-  const [protocol, setProtocol] = useState<ApiProtocol>('chat-completions');
   const [models, setModels] = useState<LlmModel[]>([]);
   const [showKey, setShowKey] = useState(false);
 
@@ -265,27 +334,33 @@ function AddProviderForm({ onCancel, onCreate }: { onCancel: () => void; onCreat
       </label>
       <label className="field">
         Base URL
-        <input value={baseUrl} onChange={(e) => setBaseUrl(e.target.value)} />
+        <input
+          value={baseUrl}
+          onChange={(e) => setBaseUrl(e.target.value)}
+          placeholder="https://你的端点/v1"
+        />
       </label>
       <label className="field">
         API Key
         <span className="key-row">
-          <input type={showKey ? 'text' : 'password'} value={apiKey} onChange={(e) => setApiKey(e.target.value)} placeholder="输入 API Key" autoComplete="off" />
-          <button type="button" className="icon-ghost" onClick={() => setShowKey((v) => !v)} aria-label="显示密钥">
+          <input
+            type={showKey ? 'text' : 'password'}
+            value={apiKey}
+            onChange={(e) => setApiKey(e.target.value)}
+            placeholder="输入 API Key"
+            autoComplete="off"
+          />
+          <button
+            type="button"
+            className="icon-ghost"
+            onClick={() => setShowKey((v) => !v)}
+            aria-label="显示密钥"
+          >
             {showKey ? <EyeSlash size={16} /> : <Eye size={16} />}
           </button>
         </span>
       </label>
-      <label className="field">
-        API 格式
-        <select value={protocol} onChange={(e) => setProtocol(e.target.value as ApiProtocol)}>
-          {PROTOCOLS.map((x) => (
-            <option key={x.id} value={x.id}>
-              {x.label}
-            </option>
-          ))}
-        </select>
-      </label>
+      <p className="models-hint">当前支持 OpenAI-compatible Chat Completions 接口。</p>
       <ModelList models={models} onChange={setModels} />
       {!models.length && <p className="models-hint">添加供应商前，请至少添加一个模型。</p>}
       <div className="prov-foot">
@@ -298,12 +373,10 @@ function AddProviderForm({ onCancel, onCreate }: { onCancel: () => void; onCreat
           disabled={!ready}
           onClick={() =>
             onCreate({
-              id: `p-custom-${state.seq}`,
-              kind: 'custom',
+              id: newProviderId(),
               name: name.trim(),
               baseUrl: baseUrl.trim(),
               apiKey: apiKey.trim(),
-              protocol,
               enabled: true,
               models,
             })
@@ -314,6 +387,10 @@ function AddProviderForm({ onCancel, onCreate }: { onCancel: () => void; onCreat
       </div>
     </div>
   );
+}
+
+function newProviderId(): string {
+  return `p-${globalThis.crypto.randomUUID()}`;
 }
 
 function ProviderDetail({
@@ -348,13 +425,24 @@ function ProviderDetail({
         ) : (
           <h3>
             {provider.name}
-            <button type="button" className="icon-ghost" onClick={() => setNameEdit(true)} aria-label="改名">
+            <button
+              type="button"
+              className="icon-ghost"
+              onClick={() => setNameEdit(true)}
+              aria-label="改名"
+            >
               <PencilSimple size={14} />
             </button>
           </h3>
         )}
-        <span className={`pill ${provider.enabled ? 'on' : ''}`}>{provider.enabled ? '已启用' : '已禁用'}</span>
-        <button type="button" className="ghost small" onClick={() => onChange({ ...provider, enabled: !provider.enabled })}>
+        <span className={`pill ${provider.enabled ? 'on' : ''}`}>
+          {provider.enabled ? '已启用' : '已禁用'}
+        </span>
+        <button
+          type="button"
+          className="ghost small"
+          onClick={() => onChange({ ...provider, enabled: !provider.enabled })}
+        >
           {provider.enabled ? '禁用' : '启用'}
         </button>
         {current && <span className="tag green">当前</span>}
@@ -375,15 +463,25 @@ function ProviderDetail({
         {cert?.status === '已认证' && cert.fabrication != null && cert.fabrication > 5 && (
           <span className="tag red">编造率超标</span>
         )}
-        {provider.kind === 'custom' && (
-          <button type="button" className="icon-ghost danger" onClick={onDelete} aria-label="删除供应商" style={{ marginLeft: 'auto' }}>
-            <Trash size={16} />
-          </button>
-        )}
+        <button
+          type="button"
+          className="icon-ghost danger"
+          onClick={onDelete}
+          aria-label="删除供应商"
+          style={{ marginLeft: 'auto' }}
+        >
+          <Trash size={16} />
+        </button>
       </div>
       {cert?.status === '认证中' && (
         <div className="cert-panel">
-          <span className="pulse-dot" /> 三级自检：连通 → 能力探测 → 资格认证（原型模拟，不真连）
+          <span className="pulse-dot" /> 正在检查端点、结构化能力与隔离样本
+        </div>
+      )}
+      {cert?.status === '未认证' && cert.certDetail && (
+        <div className="cert-panel">
+          <span className="tag red">检查未完成</span>
+          <span className="dim">{cert.certDetail}</span>
         </div>
       )}
       {cert?.status === '已认证' && (
@@ -397,24 +495,20 @@ function ProviderDetail({
             </span>
           </div>
           {cert.fabrication != null && cert.fabrication > 5 && (
-            <p className="dim">该配置会系统性编造来源没说的命题，不适合跑参谋台；其余指标只展示不设闸。</p>
+            <p className="dim">
+              该配置会系统性编造来源没说的命题，不适合跑参谋台；其余指标只展示不设闸。
+            </p>
           )}
         </div>
       )}
       <label className="field">
         Base URL
-        <input value={provider.baseUrl} onChange={(e) => onChange({ ...provider, baseUrl: e.target.value })} />
+        <input
+          value={provider.baseUrl}
+          onChange={(e) => onChange({ ...provider, baseUrl: e.target.value })}
+        />
       </label>
-      <label className="field">
-        API 格式
-        <select value={provider.protocol} onChange={(e) => onChange({ ...provider, protocol: e.target.value as ApiProtocol })}>
-          {PROTOCOLS.map((x) => (
-            <option key={x.id} value={x.id}>
-              {x.label}
-            </option>
-          ))}
-        </select>
-      </label>
+      <p className="models-hint">OpenAI-compatible Chat Completions</p>
       <label className="field">
         API Key
         <span className="key-row">
@@ -425,7 +519,12 @@ function ProviderDetail({
             placeholder="输入 API Key"
             autoComplete="off"
           />
-          <button type="button" className="icon-ghost" onClick={() => setShowKey((v) => !v)} aria-label="显示密钥">
+          <button
+            type="button"
+            className="icon-ghost"
+            onClick={() => setShowKey((v) => !v)}
+            aria-label="显示密钥"
+          >
             {showKey ? <EyeSlash size={16} /> : <Eye size={16} />}
           </button>
         </span>
@@ -460,7 +559,12 @@ function ModelList({
           <div className="model-row" key={m.id}>
             <span className="model-name">{m.name}</span>
             <span className="model-ctx">{fmtCtx(m.contextWindow)}</span>
-            <button type="button" className="icon-ghost" title="三级自检（连通 / 能力探测 / 资格认证）" onClick={onTest}>
+            <button
+              type="button"
+              className="icon-ghost"
+              title="三级自检（连通 / 能力探测 / 资格认证）"
+              onClick={onTest}
+            >
               <Plugs size={14} />
             </button>
             <button type="button" className="icon-ghost" title="编辑" onClick={() => setEditing(m)}>
@@ -488,7 +592,12 @@ function ModelList({
               setAdding(false);
             }}
           >
-            <input autoFocus value={draftName} placeholder="模型 ID" onChange={(e) => setDraftName(e.target.value)} />
+            <input
+              autoFocus
+              value={draftName}
+              placeholder="模型 ID"
+              onChange={(e) => setDraftName(e.target.value)}
+            />
             <button type="submit" className="primary small" disabled={!draftName.trim()}>
               添加
             </button>
@@ -537,7 +646,10 @@ function ModelEditDialog({
         </div>
         <label className="field">
           模型 ID
-          <input value={draft.name} onChange={(e) => setDraft({ ...draft, id: e.target.value, name: e.target.value })} />
+          <input
+            value={draft.name}
+            onChange={(e) => setDraft({ ...draft, id: e.target.value, name: e.target.value })}
+          />
         </label>
         <label className="field">
           上下文窗口
@@ -549,7 +661,11 @@ function ModelEditDialog({
         </label>
         <label className="field">
           最大输出 Token
-          <input type="number" value={draft.maxOutput} onChange={(e) => setDraft({ ...draft, maxOutput: Number(e.target.value) || 0 })} />
+          <input
+            type="number"
+            value={draft.maxOutput}
+            onChange={(e) => setDraft({ ...draft, maxOutput: Number(e.target.value) || 0 })}
+          />
         </label>
         <div className="mini-foot">
           <button type="button" className="ghost" onClick={onClose}>

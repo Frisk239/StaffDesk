@@ -182,3 +182,7 @@ claims_fts USING fts5(text, object_id UNINDEXED, predicate UNINDEXED)
 1. 实现会话自测：单测绿 + 主链走查 + 截图留证（放 `docs/dev-logs/` 或验收会话指定位置）。
 2. 输出一份简短验收说明：做了什么、验收步骤、已知问题。
 3. 用户亲手验收通过 → 下一批；不通过 → 修复后重交。
+
+---
+
+M0–M7 完成后的后续路线见 [`implementation-plan-phase-2.md`](./implementation-plan-phase-2.md)。

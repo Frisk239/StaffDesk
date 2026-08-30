@@ -7,6 +7,7 @@ import {
   FileText,
   FolderOpen,
   GearSix,
+  ListChecks,
   Plus,
   SidebarSimple,
   Stack,
@@ -19,7 +20,8 @@ import { SCENARIOS, SCENARIO_HINTS } from '@shared/scenario';
 import type { ObjectKind, ScenarioKind, View } from '@shared/types';
 
 function currentTitle(view: View, objects: { id: string; name: string }[]): string {
-  if (view.kind === 'object') return objects.find((o) => o.id === view.objectId)?.name ?? 'StaffDesk';
+  if (view.kind === 'object')
+    return objects.find((o) => o.id === view.objectId)?.name ?? 'StaffDesk';
   if (view.kind === 'pending') return '待确认';
   if (view.kind === 'all') return '全部对象';
   if (view.kind === 'replay') return '任务回放';
@@ -32,7 +34,8 @@ export function ThemeSync() {
     const apply = () => {
       const dark =
         state.themePreference === 'dark' ||
-        (state.themePreference === 'system' && window.matchMedia('(prefers-color-scheme: dark)').matches);
+        (state.themePreference === 'system' &&
+          window.matchMedia('(prefers-color-scheme: dark)').matches);
       document.documentElement.dataset.theme = dark ? 'dark' : 'light';
     };
     apply();
@@ -77,7 +80,11 @@ export function IconRail({
 
   return (
     <nav className="icon-rail">
-      <button title={sessionOpen ? '收起会话栏' : '展开会话栏'} className={sessionOpen ? 'on' : ''} onClick={onToggleSession}>
+      <button
+        title={sessionOpen ? '收起会话栏' : '展开会话栏'}
+        className={sessionOpen ? 'on' : ''}
+        onClick={onToggleSession}
+      >
         <SidebarSimple size={18} />
       </button>
       <button
@@ -105,7 +112,7 @@ export function IconRail({
       </button>
       {!state.onboardingDone && (
         <button className="rail-foot" title="继续设置" onClick={onContinueSetup}>
-          <GearSix size={18} weight="fill" />
+          <ListChecks size={18} weight="bold" />
         </button>
       )}
       <button className="rail-foot" title="设置" onClick={onSettings}>
@@ -123,13 +130,23 @@ export function SessionList({ width, open }: { width: number; open: boolean }) {
   const [kind, setKind] = useState<ObjectKind>('组织');
   const [scenario, setScenario] = useState<ScenarioKind>('求职面试');
   const [showArchived, setShowArchived] = useState(false);
-  const [confirm, setConfirm] = useState<null | { kind: 'workspace' | 'object'; id: string; name: string }>(null);
+  const [confirm, setConfirm] = useState<null | {
+    kind: 'workspace' | 'object';
+    id: string;
+    name: string;
+  }>(null);
   const ws = state.workspaces.find((w) => w.id === state.currentWorkspaceId);
   const inWs = state.objects.filter((o) => o.workspaceId === state.currentWorkspaceId);
   const objects = inWs.filter((o) => !o.archived);
   const archived = inWs.filter((o) => o.archived);
   const icon = (k: ObjectKind) =>
-    k === '人' ? <Users size={14} /> : k === '组织' ? <Buildings size={14} /> : <FolderOpen size={14} />;
+    k === '人' ? (
+      <Users size={14} />
+    ) : k === '组织' ? (
+      <Buildings size={14} />
+    ) : (
+      <FolderOpen size={14} />
+    );
 
   const closeDraft = () => {
     setDraft(null);
@@ -142,20 +159,38 @@ export function SessionList({ width, open }: { width: number; open: boolean }) {
     <aside className="session-list" style={{ width: open ? width : 0 }} aria-hidden={!open}>
       <div className="session-inner" style={{ width }}>
         <div className="ws-head">
-          <button type="button" className="ws-switch" onClick={() => { setMenu((v) => !v); closeDraft(); }}>
+          <button
+            type="button"
+            className="ws-switch"
+            onClick={() => {
+              setMenu((v) => !v);
+              closeDraft();
+            }}
+          >
             <FolderOpen size={14} />
             <span>{ws?.name ?? '工作区'}</span>
             {ws && <span className="tag grey">{ws.scenario}</span>}
             <CaretDown size={10} />
           </button>
-          <button type="button" className="ws-plus" title="新建对象" onClick={() => { setDraft('object'); setMenu(false); }}>
+          <button
+            type="button"
+            className="ws-plus"
+            title="新建对象"
+            onClick={() => {
+              setDraft('object');
+              setMenu(false);
+            }}
+          >
             <Plus size={14} />
           </button>
         </div>
         {menu && (
           <div className="ws-menu">
             {state.workspaces.map((w) => (
-              <div key={w.id} className={`ws-menu-row${w.id === state.currentWorkspaceId ? ' on' : ''}`}>
+              <div
+                key={w.id}
+                className={`ws-menu-row${w.id === state.currentWorkspaceId ? ' on' : ''}`}
+              >
                 <button
                   type="button"
                   onClick={() => {
@@ -207,7 +242,12 @@ export function SessionList({ width, open }: { width: number; open: boolean }) {
             {draft === 'object' && (
               <div className="ws-kinds">
                 {(['人', '组织', '项目'] as const).map((k) => (
-                  <button key={k} type="button" className={kind === k ? 'on' : ''} onClick={() => setKind(k)}>
+                  <button
+                    key={k}
+                    type="button"
+                    className={kind === k ? 'on' : ''}
+                    onClick={() => setKind(k)}
+                  >
                     {k}
                   </button>
                 ))}
@@ -216,7 +256,12 @@ export function SessionList({ width, open }: { width: number; open: boolean }) {
             {draft === 'workspace' && (
               <div className="ws-kinds scenario-kinds">
                 {SCENARIOS.map((s) => (
-                  <button key={s} type="button" className={scenario === s ? 'on' : ''} onClick={() => setScenario(s)}>
+                  <button
+                    key={s}
+                    type="button"
+                    className={scenario === s ? 'on' : ''}
+                    onClick={() => setScenario(s)}
+                  >
                     {s}
                   </button>
                 ))}
@@ -252,7 +297,9 @@ export function SessionList({ width, open }: { width: number; open: boolean }) {
                 <button
                   type="button"
                   className="session-row-main"
-                  onClick={() => dispatch({ type: 'SET_VIEW', view: { kind: 'object', objectId: o.id } })}
+                  onClick={() =>
+                    dispatch({ type: 'SET_VIEW', view: { kind: 'object', objectId: o.id } })
+                  }
                 >
                   <span className="session-ico">{icon(o.kind)}</span>
                   <span className="session-meta">
@@ -276,8 +323,15 @@ export function SessionList({ width, open }: { width: number; open: boolean }) {
           })}
           {archived.length > 0 && (
             <div className="archived-block">
-              <button type="button" className="archived-toggle" onClick={() => setShowArchived((v) => !v)}>
-                <CaretRight size={12} style={{ transform: showArchived ? 'rotate(90deg)' : undefined }} />
+              <button
+                type="button"
+                className="archived-toggle"
+                onClick={() => setShowArchived((v) => !v)}
+              >
+                <CaretRight
+                  size={12}
+                  style={{ transform: showArchived ? 'rotate(90deg)' : undefined }}
+                />
                 已归档 {archived.length}
               </button>
               {showArchived &&
@@ -286,7 +340,9 @@ export function SessionList({ width, open }: { width: number; open: boolean }) {
                     <button
                       type="button"
                       className="session-row-main"
-                      onClick={() => dispatch({ type: 'SET_VIEW', view: { kind: 'object', objectId: o.id } })}
+                      onClick={() =>
+                        dispatch({ type: 'SET_VIEW', view: { kind: 'object', objectId: o.id } })
+                      }
                     >
                       <span className="session-ico">{icon(o.kind)}</span>
                       <span className="session-meta">
@@ -319,7 +375,9 @@ export function SessionList({ width, open }: { width: number; open: boolean }) {
       {confirm && (
         <div className="mini-overlay">
           <div className="mini-dialog">
-            <div className="mini-head">{confirm.kind === 'workspace' ? '移除工作区' : '永久删除'}</div>
+            <div className="mini-head">
+              {confirm.kind === 'workspace' ? '移除工作区' : '永久删除'}
+            </div>
             <p className="dim">
               {confirm.kind === 'workspace'
                 ? `移除「${confirm.name}」？区内未归档对象会先归档，之后不在任何工作区可见；可从图标轨「全部对象」找回。主张仍留在账本。`
@@ -333,7 +391,8 @@ export function SessionList({ width, open }: { width: number; open: boolean }) {
                 type="button"
                 className="primary danger"
                 onClick={() => {
-                  if (confirm.kind === 'workspace') dispatch({ type: 'REMOVE_WORKSPACE', id: confirm.id });
+                  if (confirm.kind === 'workspace')
+                    dispatch({ type: 'REMOVE_WORKSPACE', id: confirm.id });
                   else dispatch({ type: 'DELETE_OBJECT', id: confirm.id });
                   setConfirm(null);
                 }}
@@ -348,7 +407,13 @@ export function SessionList({ width, open }: { width: number; open: boolean }) {
   );
 }
 
-export function ChatTopbar({ rightOpen, onToggleRight }: { rightOpen: boolean; onToggleRight: () => void }) {
+export function ChatTopbar({
+  rightOpen,
+  onToggleRight,
+}: {
+  rightOpen: boolean;
+  onToggleRight: () => void;
+}) {
   const { state, dispatch } = useStore();
   const view = state.view;
   if (view.kind !== 'object') return null;

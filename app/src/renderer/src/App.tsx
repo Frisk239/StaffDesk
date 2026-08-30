@@ -10,15 +10,16 @@ import { RightPanel } from './components/RightPanel';
 import { SettingsModal } from './components/Settings';
 import { Onboarding } from './components/Onboarding';
 import { DragHandle } from './components/DragHandle';
-
-const RAIL = 56;
-const SESSION_MIN = 180;
-const SESSION_MAX = 360;
-const SESSION_DEFAULT = 232;
-const RIGHT_MIN = 280;
-const RIGHT_MAX = 560;
-const RIGHT_DEFAULT = 400;
-const CHAT_MIN = 420;
+import {
+  fitWorkspaceLayout,
+  RIGHT_DEFAULT_WIDTH,
+  RIGHT_MAX_WIDTH,
+  RIGHT_MIN_WIDTH,
+  SESSION_DEFAULT_WIDTH,
+  SESSION_MAX_WIDTH,
+  SESSION_MIN_WIDTH,
+  WORKSPACE_RAIL_WIDTH,
+} from '@shared/layout';
 
 function clamp(n: number, min: number, max: number) {
   return Math.min(max, Math.max(min, Math.round(n)));
@@ -30,12 +31,24 @@ function Effects() {
 
   useEffect(() => {
     // 调度集合与当前「抽取中」作业对齐：作业消失（如绑定被撤销）就解除占用，重新绑定能再次调度。
-    const pending = new Set(state.extractJobs.filter((j) => j.status === '抽取中').map((j) => j.sourceId));
+    const pending = new Set(
+      state.extractJobs.filter((j) => j.status === '抽取中').map((j) => j.sourceId),
+    );
     for (const id of [...scheduled.current]) if (!pending.has(id)) scheduled.current.delete(id);
     for (const id of pending) {
       if (!scheduled.current.has(id)) {
         scheduled.current.add(id);
-        void window.staffdesk.runExtract(id);
+        void window.staffdesk
+          .runExtract(id)
+          .catch(() => {
+            dispatch({
+              type: 'EXTRACT_DONE',
+              sourceId: id,
+              outcome: 'failed',
+              detail: '抽取请求意外中断，请重试',
+            });
+          })
+          .finally(() => scheduled.current.delete(id));
       }
     }
   }, [state.extractJobs, dispatch]);
@@ -60,34 +73,56 @@ function Workspace() {
   const [onboarding, setOnboarding] = useState(!state.onboardingDone);
   const [sessionOpen, setSessionOpen] = useState(true);
   const [rightOpen, setRightOpen] = useState(true);
-  const [sessionW, setSessionW] = useState(SESSION_DEFAULT);
-  const [rightW, setRightW] = useState(RIGHT_DEFAULT);
+  const [sessionW, setSessionW] = useState(SESSION_DEFAULT_WIDTH);
+  const [rightW, setRightW] = useState(RIGHT_DEFAULT_WIDTH);
   const [dragging, setDragging] = useState(false);
-  const sessionBase = useRef(SESSION_DEFAULT);
-  const rightBase = useRef(RIGHT_DEFAULT);
+  const sessionBase = useRef(SESSION_DEFAULT_WIDTH);
+  const rightBase = useRef(RIGHT_DEFAULT_WIDTH);
   const view = state.view;
+  const objectView = view.kind === 'object';
+
+  const applyFit = useCallback(
+    (desiredRightOpen = rightOpen) => {
+      const fitted = fitWorkspaceLayout(window.innerWidth, {
+        sessionOpen,
+        rightOpen: objectView && desiredRightOpen,
+        sessionWidth: sessionW,
+        rightWidth: rightW,
+      });
+      setSessionOpen(fitted.sessionOpen);
+      if (objectView) setRightOpen(fitted.rightOpen);
+      setSessionW(fitted.sessionWidth);
+      setRightW(fitted.rightWidth);
+    },
+    [objectView, rightOpen, rightW, sessionOpen, sessionW],
+  );
+
+  const toggleRight = useCallback(() => {
+    if (rightOpen) {
+      setRightOpen(false);
+      return;
+    }
+    applyFit(true);
+  }, [applyFit, rightOpen]);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.ctrlKey && e.altKey && (e.key === 'b' || e.key === 'B')) {
         e.preventDefault();
-        setRightOpen((v) => !v);
+        toggleRight();
       }
     };
     document.addEventListener('keydown', onKey);
     return () => document.removeEventListener('keydown', onKey);
-  }, []);
+  }, [toggleRight]);
 
-  // 窄窗主栏优先：resize 时若主栏会被挤到 420px 以下，自动收起右栏。不监听 rightOpen，以免挡手动展开。
+  // 首次 mount 立即 fit；随后 resize 复用同一规则。窄窗先收会话栏，保留主栏和右栏。
   useEffect(() => {
-    const fit = () => {
-      const session = sessionOpen ? sessionW : 0;
-      const chatSpace = window.innerWidth - RAIL - session - rightW;
-      if (chatSpace < CHAT_MIN) setRightOpen(false);
-    };
-    window.addEventListener('resize', fit);
-    return () => window.removeEventListener('resize', fit);
-  }, [sessionOpen, sessionW, rightW]);
+    applyFit();
+    const onResize = () => applyFit();
+    window.addEventListener('resize', onResize);
+    return () => window.removeEventListener('resize', onResize);
+  }, [applyFit]);
 
   const onSessionStart = useCallback(() => {
     sessionBase.current = sessionW;
@@ -95,7 +130,7 @@ function Workspace() {
   }, [sessionW]);
 
   const onSessionDrag = useCallback((dx: number) => {
-    setSessionW(clamp(sessionBase.current + dx, SESSION_MIN, SESSION_MAX));
+    setSessionW(clamp(sessionBase.current + dx, SESSION_MIN_WIDTH, SESSION_MAX_WIDTH));
   }, []);
 
   const onSessionEnd = useCallback(() => {
@@ -108,7 +143,7 @@ function Workspace() {
   }, [rightW]);
 
   const onRightDrag = useCallback((dx: number) => {
-    setRightW(clamp(rightBase.current - dx, RIGHT_MIN, RIGHT_MAX));
+    setRightW(clamp(rightBase.current - dx, RIGHT_MIN_WIDTH, RIGHT_MAX_WIDTH));
   }, []);
 
   const onRightEnd = useCallback(() => {
@@ -130,7 +165,7 @@ function Workspace() {
           {sessionOpen && (
             <DragHandle
               side="session"
-              style={{ left: RAIL + sessionW - 4 }}
+              style={{ left: WORKSPACE_RAIL_WIDTH + sessionW - 4 }}
               onStart={onSessionStart}
               onDrag={onSessionDrag}
               onEnd={onSessionEnd}
@@ -143,7 +178,7 @@ function Workspace() {
             {view.kind === 'replay' && <ReplayView taskId={view.taskId} />}
             {view.kind === 'object' && (
               <>
-                <ChatTopbar rightOpen={rightOpen} onToggleRight={() => setRightOpen((v) => !v)} />
+                <ChatTopbar rightOpen={rightOpen} onToggleRight={toggleRight} />
                 <div className="work-row">
                   <ChatPane objectId={view.objectId} />
                   <RightPanel objectId={view.objectId} width={rightW} open={rightOpen} />
@@ -163,7 +198,7 @@ function Workspace() {
         </div>
         <SettingsModal open={settings} onClose={() => setSettings(false)} />
       </div>
-      {(onboarding && !state.onboardingDone) && <Onboarding onClose={() => setOnboarding(false)} />}
+      {onboarding && !state.onboardingDone && <Onboarding onClose={() => setOnboarding(false)} />}
       <Toast />
     </div>
   );

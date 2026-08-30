@@ -30,6 +30,7 @@ export interface CompleteRequest {
   stream?: boolean | undefined;
   onDelta?: ((chunk: string) => void) | undefined;
   maxRetries?: number | undefined;
+  timeoutMs?: number | undefined;
   fetch?: FetchFn | undefined;
 }
 
@@ -63,6 +64,9 @@ export async function chatComplete(req: CompleteRequest): Promise<CompleteResult
       return await once(fetchFn, req);
     } catch (err) {
       lastErr = err instanceof Error ? err : new Error(String(err));
+      if (lastErr.name === 'TimeoutError' || lastErr.name === 'AbortError') {
+        throw new Error('chat-completions 请求超时');
+      }
       const retryable =
         lastErr.message.startsWith('retry:') || lastErr.message.includes('fetch failed');
       if (!retryable || attempt === maxRetries) throw lastErr;
@@ -89,6 +93,7 @@ async function once(fetchFn: FetchFn, req: CompleteRequest): Promise<CompleteRes
       'Content-Type': 'application/json',
     },
     body: JSON.stringify(body),
+    signal: AbortSignal.timeout(req.timeoutMs ?? 60_000),
   });
 
   if (RETRY_STATUS.has(res.status)) {
@@ -109,7 +114,10 @@ async function once(fetchFn: FetchFn, req: CompleteRequest): Promise<CompleteRes
   return { content: message?.content ?? '', toolCalls: message?.tool_calls ?? [] };
 }
 
-async function readStream(res: Response, onDelta?: (chunk: string) => void): Promise<CompleteResult> {
+async function readStream(
+  res: Response,
+  onDelta?: (chunk: string) => void,
+): Promise<CompleteResult> {
   const body = res.body;
   if (!body) return { content: '', toolCalls: [] };
   const reader = body.getReader();

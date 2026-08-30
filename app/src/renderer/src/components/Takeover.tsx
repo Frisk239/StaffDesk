@@ -21,7 +21,11 @@ export function Takeover({ objectId }: { objectId: string }) {
   };
 
   const otherLabel = () => {
-    const names = [...new Set(others.map((w) => state.objects.find((o) => o.id === w.objectId)?.name ?? w.objectId))];
+    const names = [
+      ...new Set(
+        others.map((w) => state.objects.find((o) => o.id === w.objectId)?.name ?? w.objectId),
+      ),
+    ];
     return names.slice(0, 2).join('、');
   };
 
@@ -32,8 +36,7 @@ export function Takeover({ objectId }: { objectId: string }) {
         <>
           {' · '}
           <button type="button" className="btn ghost sm" onClick={jumpOther}>
-            其他对象还有 {others.length} 条
-            {otherLabel() ? `（${otherLabel()}）` : ''}
+            其他对象还有 {others.length} 条{otherLabel() ? `（${otherLabel()}）` : ''}
           </button>
         </>
       )}
@@ -64,7 +67,12 @@ export function Takeover({ objectId }: { objectId: string }) {
       }
       setTouched(true);
       if (reason === '') return;
-      dispatch({ type: 'CONFIRM_WRITE', writeId: head.id, closeReason: reason, newText: newText || undefined });
+      dispatch({
+        type: 'CONFIRM_WRITE',
+        writeId: head.id,
+        closeReason: reason,
+        newText: newText || undefined,
+      });
       setReason('');
       setNewText('');
       setTouched(false);
@@ -75,7 +83,12 @@ export function Takeover({ objectId }: { objectId: string }) {
 
   return (
     // 只拦裸 Enter（提交语义）；Shift+Enter 在 textarea 里保留换行，与 composer 行为一致。
-    <div onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) e.preventDefault(); }} className="takeover">
+    <div
+      onKeyDown={(e) => {
+        if (e.key === 'Enter' && !e.shiftKey) e.preventDefault();
+      }}
+      className="takeover"
+    >
       <div className="takeover-card">
         <div className="takeover-strip">
           <span className="takeover-dot" />
@@ -102,53 +115,66 @@ export function Takeover({ objectId }: { objectId: string }) {
             <div className="takeover-warn">通过后可出站当定论</div>
           )}
           {head.kind === '批量晋升' && (
-            <div className="takeover-warn">拒绝 = 本任务未核全部保持未核（0016 的批量白名单，没有整站一键全过）</div>
+            <div className="takeover-warn">
+              拒绝后，本任务中的未核内容会原样保留，不会批量写入。
+            </div>
           )}
-          {head.kind === '批量回退' && <div className="takeover-warn">确认后整批回到未核（补偿写，可再晋升）</div>}
-          {head.kind === '纠正' && (() => {
-            const target = head.claimId ? state.claims.find((c) => c.id === head.claimId) : undefined;
-            if (target?.unverified) {
+          {head.kind === '批量回退' && (
+            <div className="takeover-warn">确认后整批回到未核（补偿写，可再晋升）</div>
+          )}
+          {head.kind === '纠正' &&
+            (() => {
+              const target = head.claimId
+                ? state.claims.find((c) => c.id === head.claimId)
+                : undefined;
+              if (target?.unverified) {
+                return (
+                  <>
+                    <div className="takeover-warn">
+                      这条内容尚未确认；纠正后会直接丢弃，不影响已经确认的结论。
+                    </div>
+                    <textarea
+                      className="takeover-new"
+                      rows={2}
+                      placeholder="新主张（可选，使用者陈述）"
+                      value={newText}
+                      onChange={(e) => setNewText(e.target.value)}
+                    />
+                  </>
+                );
+              }
               return (
                 <>
-                  <div className="takeover-warn">未核主张：纠正将直接丢弃、不写禁写（0037——禁写只保护已出过站的定论）</div>
+                  <div className="chip-row">
+                    {(['世界已变', '从未成立'] as const).map((r) => (
+                      <button
+                        key={r}
+                        type="button"
+                        className={`chip${reason === r ? ' on' : ''}`}
+                        onClick={() => setReason(r)}
+                      >
+                        {r}
+                      </button>
+                    ))}
+                  </div>
                   <textarea
                     className="takeover-new"
                     rows={2}
-                    placeholder="新主张（可选，使用者陈述）"
+                    placeholder="新主张（可选）"
                     value={newText}
                     onChange={(e) => setNewText(e.target.value)}
                   />
+                  {touched && reason === '' && <div className="bind-warn">关闭原因必填</div>}
                 </>
               );
-            }
-            return (
-              <>
-                <div className="chip-row">
-                  {(['世界已变', '从未成立'] as const).map((r) => (
-                    <button
-                      key={r}
-                      type="button"
-                      className={`chip${reason === r ? ' on' : ''}`}
-                      onClick={() => setReason(r)}
-                    >
-                      {r}
-                    </button>
-                  ))}
-                </div>
-                <textarea
-                  className="takeover-new"
-                  rows={2}
-                  placeholder="新主张（可选）"
-                  value={newText}
-                  onChange={(e) => setNewText(e.target.value)}
-                />
-                {touched && reason === '' && <div className="bind-warn">关闭原因必填</div>}
-              </>
-            );
-          })()}
+            })()}
         </div>
         <div className="takeover-actions">
-          <button type="button" className="btn outline danger-hover" onClick={() => dispatch({ type: 'REJECT_WRITE', writeId: head.id })}>
+          <button
+            type="button"
+            className="btn outline danger-hover"
+            onClick={() => dispatch({ type: 'REJECT_WRITE', writeId: head.id })}
+          >
             拒绝
           </button>
           <button type="button" className="btn primary" onClick={confirm}>

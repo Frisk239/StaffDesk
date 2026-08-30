@@ -26,6 +26,7 @@ app/data/*.db-*
 
 # Tooling caches
 .playwright-cli/
+.scratch/
 .zcode/
 *.tsbuildinfo
 
