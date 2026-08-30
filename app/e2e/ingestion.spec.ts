@@ -3,6 +3,7 @@ import { createServer, type Server } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { expect, test, _electron as electron } from '@playwright/test';
+import { simplePdf } from '../tests/helpers/pdf';
 
 const appDir = join(import.meta.dirname, '..');
 type ElectronApp = Awaited<ReturnType<typeof electron.launch>>;
@@ -10,7 +11,13 @@ type Window = Awaited<ReturnType<ElectronApp['firstWindow']>>;
 
 type StaffdeskApiForSeed = {
   snapshot: () => Promise<{
-    sources: Array<{ id: string; title: string; virtual?: boolean; boundObjectIds: string[] }>;
+    sources: Array<{
+      id: string;
+      title: string;
+      virtual?: boolean;
+      boundObjectIds: string[];
+      origin?: { kind?: string; pageCount?: number };
+    }>;
     ingestJobs: Array<{ status: string; failureKind?: string; sourceId?: string }>;
     extractJobs: Array<{ sourceId: string; status: string }>;
   }>;
@@ -144,10 +151,12 @@ test('Inbox URL 导入失败不造来源，成功后可绑定并触发抽取', a
   }
 });
 
-test('Inbox 文本和文件导入都会写入真实正文', async () => {
+test('Inbox 文本、TXT 与 PDF 导入都会写入真实正文', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'staffdesk-ingestion-e2e-'));
   const txt = join(dir, '真实材料.txt');
+  const pdf = join(dir, 'pdf-material.pdf');
   writeFileSync(txt, '真实 TXT 材料包含岗位画像。');
+  writeFileSync(pdf, simplePdf('PDF material says Acme uses Rust.'));
   const app = await electron.launch({
     args: ['.'],
     cwd: appDir,
@@ -158,9 +167,12 @@ test('Inbox 文本和文件导入都会写入真实正文', async () => {
   });
 
   try {
-    await app.evaluate(({ dialog }, filePath) => {
-      dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [filePath] });
-    }, txt);
+    await app.evaluate(
+      ({ dialog }, filePaths) => {
+        dialog.showOpenDialog = async () => ({ canceled: false, filePaths });
+      },
+      [txt, pdf],
+    );
     const win = await app.firstWindow();
     await skipWizardIfAny(win);
     await win.evaluate(async () => {
@@ -168,11 +180,13 @@ test('Inbox 文本和文件导入都会写入真实正文', async () => {
       await api.dispatch({ type: 'ADD_WORKSPACE', name: '文件进料验收区', scenario: '求职面试' });
       await api.dispatch({ type: 'SET_VIEW', view: { kind: 'inbox' } });
     });
+    await expect(win.getByText('文件进料验收区').first()).toBeVisible();
+    await expect(win.getByText('没有未绑定材料')).toBeVisible();
 
     await win.getByPlaceholder('粘贴文本或 URL').fill('真实粘贴材料包含候选人画像。');
-    await win.locator('form.inbox-drop').evaluate((form) => {
-      form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
-    });
+    const addButton = win.getByRole('button', { name: '加入 Inbox' });
+    await expect(addButton).toBeEnabled();
+    await addButton.click();
     const textCard = win.getByRole('button', { name: /真实粘贴材料/ });
     await expect(textCard).toBeVisible();
     await textCard.click();
@@ -184,11 +198,23 @@ test('Inbox 文本和文件导入都会写入真实正文', async () => {
     await fileCard.click();
     await expect(win.locator('.source-body')).toContainText('真实 TXT 材料包含岗位画像');
 
+    const pdfCard = win.getByRole('button', { name: /pdf-material.pdf/ });
+    await expect(pdfCard).toBeVisible();
+    await pdfCard.click();
+    await expect(win.locator('.source-body')).toContainText('PDF material says Acme uses Rust');
+    await expect(win.getByText('1 页')).toBeVisible();
+
     const state = await win.evaluate(async () => {
       const api = (globalThis as unknown as { staffdesk: StaffdeskApiForSeed }).staffdesk;
       return api.snapshot();
     });
-    expect(state.sources.filter((source) => !source.virtual)).toHaveLength(2);
+    expect(state.sources.filter((source) => !source.virtual)).toHaveLength(3);
+    expect(
+      state.sources.find((source) => source.title === 'pdf-material.pdf')?.origin,
+    ).toMatchObject({
+      kind: 'file',
+      pageCount: 1,
+    });
   } finally {
     await quitApp(app);
     rmSync(dir, { recursive: true, force: true });

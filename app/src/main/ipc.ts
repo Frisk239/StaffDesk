@@ -86,6 +86,14 @@ export function registerIpc(brain: Brain): void {
     return executeIngest({ kind: 'url', url: payload.url });
   });
 
+  const ingestFilePaths = async (filePaths: string[]) => {
+    let next = brain.snapshot();
+    for (const filePath of filePaths) {
+      next = await executeIngest({ kind: 'file', filePath });
+    }
+    return next;
+  };
+
   ipcMain.handle('ingest:chooseFiles', async () => {
     const picked = await dialog.showOpenDialog({
       title: '选择材料',
@@ -112,11 +120,15 @@ export function registerIpc(brain: Brain): void {
       ],
     });
     if (picked.canceled || picked.filePaths.length === 0) return brain.snapshot();
-    let next = brain.snapshot();
-    for (const filePath of picked.filePaths) {
-      next = await executeIngest({ kind: 'file', filePath });
-    }
-    return next;
+    return ingestFilePaths(picked.filePaths);
+  });
+
+  ipcMain.handle('ingest:files', async (_event, payload: { filePaths?: unknown }) => {
+    const filePaths = Array.isArray(payload.filePaths)
+      ? payload.filePaths.filter((filePath): filePath is string => typeof filePath === 'string')
+      : [];
+    if (filePaths.length === 0) return brain.snapshot();
+    return ingestFilePaths(filePaths);
   });
 
   ipcMain.handle('ingest:retry', async (_event, jobId: string) => {
@@ -251,6 +263,7 @@ export function unregisterIpc(): void {
   ipcMain.removeHandler('ingest:text');
   ipcMain.removeHandler('ingest:url');
   ipcMain.removeHandler('ingest:chooseFiles');
+  ipcMain.removeHandler('ingest:files');
   ipcMain.removeHandler('ingest:retry');
   ipcMain.removeHandler('extract:run');
   ipcMain.removeHandler('settings:testProvider');

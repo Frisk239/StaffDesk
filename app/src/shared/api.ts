@@ -9,6 +9,7 @@ export interface StaffdeskApi {
   ingestText: (text: string, suggestedTitle?: string) => Promise<State>;
   ingestUrl: (url: string) => Promise<State>;
   chooseAndIngestFiles: () => Promise<State>;
+  ingestDroppedFiles: (files: readonly unknown[]) => Promise<State>;
   retryIngest: (jobId: string) => Promise<State>;
   runExtract: (sourceId: string) => Promise<State>;
   testProvider: (id: string) => Promise<State>;

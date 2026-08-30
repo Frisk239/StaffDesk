@@ -1,6 +1,15 @@
-import { contextBridge, ipcRenderer } from 'electron';
+import { contextBridge, ipcRenderer, webUtils } from 'electron';
 import type { StaffdeskApi } from '@shared/api';
 import type { State } from '@shared/types';
+
+function pathForDroppedFile(file: unknown): string | null {
+  try {
+    const path = webUtils.getPathForFile(file as Parameters<typeof webUtils.getPathForFile>[0]);
+    return path || null;
+  } catch {
+    return null;
+  }
+}
 
 const api: StaffdeskApi = {
   snapshot: () => ipcRenderer.invoke('brain:snapshot') as Promise<State>,
@@ -11,6 +20,10 @@ const api: StaffdeskApi = {
     ipcRenderer.invoke('ingest:text', { text, suggestedTitle }) as Promise<State>,
   ingestUrl: (url) => ipcRenderer.invoke('ingest:url', { url }) as Promise<State>,
   chooseAndIngestFiles: () => ipcRenderer.invoke('ingest:chooseFiles') as Promise<State>,
+  ingestDroppedFiles: (files) => {
+    const filePaths = files.map(pathForDroppedFile).filter((path): path is string => Boolean(path));
+    return ipcRenderer.invoke('ingest:files', { filePaths }) as Promise<State>;
+  },
   retryIngest: (jobId) => ipcRenderer.invoke('ingest:retry', jobId) as Promise<State>,
   runExtract: (sourceId) => ipcRenderer.invoke('extract:run', sourceId) as Promise<State>,
   testProvider: (id) => ipcRenderer.invoke('settings:testProvider', id) as Promise<State>,

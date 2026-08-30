@@ -65,6 +65,13 @@ export function InboxView() {
     setSelectedId(latestInboxSourceId(next));
   };
 
+  const ingestDroppedFiles = async (files: FileList) => {
+    const droppedFiles = Array.from(files);
+    if (droppedFiles.length === 0) return;
+    const next = await window.staffdesk.ingestDroppedFiles(droppedFiles);
+    setSelectedId(latestInboxSourceId(next));
+  };
+
   const sources = state.sources.filter(
     (s) => state.inbox.includes(s.id) && !s.virtual && s.workspaceId === state.currentWorkspaceId,
   );
@@ -112,7 +119,7 @@ export function InboxView() {
           onDrop={(e) => {
             e.preventDefault();
             setDragOver(false);
-            void chooseFiles();
+            void ingestDroppedFiles(e.dataTransfer.files);
           }}
         >
           <UploadSimple size={18} />

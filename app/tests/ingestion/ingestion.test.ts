@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { openBrain, type Brain } from '../../src/main/brain';
 import { createIngestionExecutor, IngestFailure, parseIngestInput } from '../../src/main/ingestion';
+import { simplePdf } from '../helpers/pdf';
 
 const dirs: string[] = [];
 const brains: Brain[] = [];
@@ -145,38 +146,27 @@ describe('真实进料', () => {
     } satisfies Partial<IngestFailure>);
   });
 
+  it('超限文件和不支持的 MIME 都只报导入失败', async () => {
+    const dir = tmpDir();
+    const tooLarge = join(dir, 'too-large.txt');
+    const binary = join(dir, 'material.bin');
+    writeFileSync(tooLarge, 'Acme material is intentionally over the tiny test limit.');
+    writeFileSync(binary, Buffer.from([0, 1, 2, 3, 4]));
+
+    await expect(
+      parseIngestInput({ kind: 'file', filePath: tooLarge }, { limits: { fileBytes: 8 } }),
+    ).rejects.toMatchObject({
+      kind: 'too-large',
+    } satisfies Partial<IngestFailure>);
+
+    await expect(parseIngestInput({ kind: 'file', filePath: binary })).rejects.toMatchObject({
+      kind: 'unsupported-mime',
+    } satisfies Partial<IngestFailure>);
+  });
+
   it('空文本会报错且不生成来源材料', async () => {
     await expect(parseIngestInput({ kind: 'text', text: '   ' })).rejects.toMatchObject({
       kind: 'empty-body',
     } satisfies Partial<IngestFailure>);
   });
 });
-
-function simplePdf(text: string): Buffer {
-  const stream = `BT /F1 24 Tf 72 720 Td (${escapePdfText(text)}) Tj ET`;
-  const objects = [
-    '1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n',
-    '2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n',
-    '3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 5 0 R >> >> /Contents 4 0 R >>\nendobj\n',
-    `4 0 obj\n<< /Length ${Buffer.byteLength(stream, 'latin1')} >>\nstream\n${stream}\nendstream\nendobj\n`,
-    '5 0 obj\n<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>\nendobj\n',
-  ];
-  let body = '%PDF-1.4\n';
-  const offsets = [0];
-  for (const object of objects) {
-    offsets.push(Buffer.byteLength(body, 'latin1'));
-    body += object;
-  }
-  const xref = Buffer.byteLength(body, 'latin1');
-  body += `xref\n0 ${objects.length + 1}\n0000000000 65535 f \n`;
-  body += offsets
-    .slice(1)
-    .map((offset) => `${String(offset).padStart(10, '0')} 00000 n \n`)
-    .join('');
-  body += `trailer\n<< /Size ${objects.length + 1} /Root 1 0 R >>\nstartxref\n${xref}\n%%EOF\n`;
-  return Buffer.from(body, 'latin1');
-}
-
-function escapePdfText(text: string): string {
-  return text.replace(/[\\()]/g, (char) => `\\${char}`);
-}
