@@ -37,6 +37,10 @@ CREATE TABLE IF NOT EXISTS sources (
   role TEXT CHECK (role IN ('主键', '转述')),
   workspace_id TEXT,
   unparsed INTEGER NOT NULL DEFAULT 0,
+  origin_json TEXT,
+  segments_json TEXT,
+  content_hash TEXT,
+  fetched_at TEXT,
   created_at TEXT NOT NULL
 );
 
@@ -73,6 +77,9 @@ CREATE TABLE IF NOT EXISTS claims (
   close_reason TEXT CHECK (close_reason IN ('世界已变', '从未成立', '来源删除', '对象误建')),
   source_id TEXT NOT NULL,
   span TEXT,
+  source_start INTEGER,
+  source_end INTEGER,
+  source_locator TEXT,
   superseded_by TEXT,
   created_at TEXT NOT NULL
 );
@@ -129,6 +136,34 @@ CREATE TABLE IF NOT EXISTS operations (
   undo_of TEXT,
   chat_ref TEXT,
   created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS ingest_jobs (
+  id TEXT PRIMARY KEY,
+  input_kind TEXT NOT NULL CHECK (input_kind IN ('text', 'url', 'file')),
+  input_json TEXT,
+  status TEXT NOT NULL CHECK (status IN ('排队', '获取中', '解析中', '提交中', '完成', '失败')),
+  title TEXT,
+  locator TEXT,
+  source_id TEXT,
+  failure_kind TEXT CHECK (
+    failure_kind IN (
+      'invalid-input',
+      'unsupported-mime',
+      'too-large',
+      'too-many-pages',
+      'timeout',
+      'fetch-failed',
+      'parse-failed',
+      'empty-body',
+      'interrupted'
+    )
+  ),
+  detail TEXT,
+  attempt INTEGER NOT NULL DEFAULT 1,
+  workspace_id TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS certs (

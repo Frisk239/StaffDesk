@@ -24,9 +24,7 @@ function splitInline(text: string): ReactNode[] {
     if (m.index > last) out.push(text.slice(last, m.index));
     const tok = m[0];
     if (tok.startsWith('`')) {
-      out.push(
-        <code key={k++}>{tok.slice(1, -1)}</code>,
-      );
+      out.push(<code key={k++}>{tok.slice(1, -1)}</code>);
     } else if (tok.startsWith('**')) {
       out.push(<strong key={k++}>{tok.slice(2, -2)}</strong>);
     } else if (tok.startsWith('*')) {
@@ -52,13 +50,13 @@ function parseBlocks(src: string): Block[] {
   const blocks: Block[] = [];
   let i = 0;
   while (i < lines.length) {
-    const line = (lines[i] ?? '');
+    const line = lines[i] ?? '';
     if (line.startsWith('```')) {
       const lang = line.slice(3).trim();
       const body: string[] = [];
       i += 1;
       while (i < lines.length && !(lines[i] ?? '').startsWith('```')) {
-        body.push((lines[i] ?? ''));
+        body.push(lines[i] ?? '');
         i += 1;
       }
       if (i < lines.length) i += 1;
@@ -87,7 +85,7 @@ function parseBlocks(src: string): Block[] {
     }
     if (/^\s*[-*]\s+/.test(line)) {
       const items: string[] = [];
-      while (i < lines.length && /^\s*[-*]\s+/.test((lines[i] ?? ''))) {
+      while (i < lines.length && /^\s*[-*]\s+/.test(lines[i] ?? '')) {
         items.push((lines[i] ?? '').replace(/^\s*[-*]\s+/, ''));
         i += 1;
       }
@@ -96,14 +94,18 @@ function parseBlocks(src: string): Block[] {
     }
     if (/^\s*\d+\.\s+/.test(line)) {
       const items: string[] = [];
-      while (i < lines.length && /^\s*\d+\.\s+/.test((lines[i] ?? ''))) {
+      while (i < lines.length && /^\s*\d+\.\s+/.test(lines[i] ?? '')) {
         items.push((lines[i] ?? '').replace(/^\s*\d+\.\s+/, ''));
         i += 1;
       }
       blocks.push({ t: 'ol', items });
       continue;
     }
-    if (line.includes('|') && i + 1 < lines.length && /^\s*\|?\s*:?-+:?\s*(\|\s*:?-+:?\s*)+\|?\s*$/.test(lines[i + 1] ?? '')) {
+    if (
+      line.includes('|') &&
+      i + 1 < lines.length &&
+      /^\s*\|?\s*:?-+:?\s*(\|\s*:?-+:?\s*)+\|?\s*$/.test(lines[i + 1] ?? '')
+    ) {
       const split = (s: string) =>
         s
           .trim()
@@ -115,7 +117,7 @@ function parseBlocks(src: string): Block[] {
       i += 2;
       const rows: string[][] = [];
       while (i < lines.length && (lines[i] ?? '').includes('|')) {
-        rows.push(split((lines[i] ?? '')));
+        rows.push(split(lines[i] ?? ''));
         i += 1;
       }
       blocks.push({ t: 'table', head, rows });
@@ -126,8 +128,8 @@ function parseBlocks(src: string): Block[] {
       continue;
     }
     const para: string[] = [];
-    while (i < lines.length && (lines[i] ?? '').trim() !== '' && !isFenceStart((lines[i] ?? ''))) {
-      para.push((lines[i] ?? ''));
+    while (i < lines.length && (lines[i] ?? '').trim() !== '' && !isFenceStart(lines[i] ?? '')) {
+      para.push(lines[i] ?? '');
       i += 1;
     }
     blocks.push({ t: 'p', text: para.join('\n') });
@@ -154,7 +156,7 @@ function CodeBlock({ lang, code }: { lang: string; code: string }) {
       setCopied(true);
       window.setTimeout(() => setCopied(false), 1200);
     } catch {
-      /* 原型不处理剪贴板失败 */
+      /* 剪贴板不可用时保持原状态，不打断阅读。 */
     }
   };
   return (
@@ -182,7 +184,7 @@ export function Markdown({ text, caret }: { text: string; caret?: boolean }) {
         const mark = last && caret ? <span className="stream-caret" /> : null;
         switch (b.t) {
           case 'h': {
-            const Tag = (`h${b.level}` as 'h1' | 'h2' | 'h3' | 'h4');
+            const Tag = `h${b.level}` as 'h1' | 'h2' | 'h3' | 'h4';
             return (
               <Tag key={i}>
                 {splitInline(b.text)}

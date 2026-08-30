@@ -141,127 +141,154 @@ export function ChatPane({ objectId }: { objectId: string }) {
 
   return (
     <section className="chat-pane">
-          <div className="chat-scroll" ref={scrollRef}>
-            {messages.length === 0 && (
-              <div className="chat-empty">
-                <div className="chat-empty-name">{obj.name}</div>
-                <div className="chat-empty-questions">
-                  {suggestQuestions.map((q) => (
-                    <button key={q} type="button" className="chip" onClick={() => { setText(q); taRef.current?.focus(); }}>
-                      {q}
-                    </button>
-                  ))}
+      <div className="chat-scroll" ref={scrollRef}>
+        {messages.length === 0 && (
+          <div className="chat-empty">
+            <div className="chat-empty-name">{obj.name}</div>
+            <div className="chat-empty-questions">
+              {suggestQuestions.map((q) => (
+                <button
+                  key={q}
+                  type="button"
+                  className="chip"
+                  onClick={() => {
+                    setText(q);
+                    taRef.current?.focus();
+                  }}
+                >
+                  {q}
+                </button>
+              ))}
+            </div>
+            <div className="dim">
+              默认只问、只解释、带引用；写账本走「记下来 / 这句不对」。没材料就答未知，先去 Inbox
+              绑材料。
+            </div>
+            {selected && (
+              <div>
+                <button
+                  className="btn ghost sm"
+                  onClick={() => dispatch({ type: 'OPEN_AUDIT_CARD', claimId: selected.id })}
+                >
+                  {selected.text.slice(0, 24)}
+                </button>
+              </div>
+            )}
+          </div>
+        )}
+        {messages.map((m) => {
+          if (m.role === 'card' && m.card) {
+            return (
+              <div key={m.id} className="msg desk">
+                <div className="desk-flow">
+                  {m.card.kind === '审计' && m.card.claimId && (
+                    <AuditCard claimId={m.card.claimId} />
+                  )}
+                  {m.card.kind === '结果' && (
+                    <ResultCard card={m.card} text={m.text} objectId={objectId} messageId={m.id} />
+                  )}
                 </div>
-                <div className="dim">
-                  默认只问、只解释、带引用；写账本走「记下来 / 这句不对」。没材料就答未知，先去 Inbox 绑材料。
+              </div>
+            );
+          }
+          if (m.role !== 'desk' && m.role !== 'user') return null;
+          if (m.role === 'user') {
+            return (
+              <div key={m.id} className="msg user">
+                <div className="user-stack">
+                  <div className="bubble">{m.text}</div>
                 </div>
-                {selected && (
-                  <div>
-                    <button className="btn ghost sm" onClick={() => dispatch({ type: 'OPEN_AUDIT_CARD', claimId: selected.id })}>
-                      {selected.text.slice(0, 24)}
-                    </button>
+              </div>
+            );
+          }
+          const live = stream && stream.msgId === m.id ? stream : null;
+          const settled = m.turn;
+          const tools = live?.tools ?? settled?.tools ?? [];
+          const think = live?.think ?? settled?.think;
+          const showThink = Boolean(think?.doneTitle);
+          const thinkRunning = live?.phase === 'think';
+          const typed =
+            live && (live.phase === 'type' || live.phase === 'done')
+              ? m.text.slice(0, live.shown)
+              : live
+                ? ''
+                : m.text;
+          const showAnswer = !live || live.phase === 'type' || live.phase === 'done';
+          const showRefs = !live && m.claimRefs && m.claimRefs.length > 0;
+          return (
+            <div key={m.id} className="msg desk">
+              <div className="desk-flow">
+                {showThink && think && (
+                  <ReasoningRow
+                    running={thinkRunning}
+                    title={thinkRunning ? think.runningTitle : think.doneTitle}
+                    summary={think.summary}
+                    body={think.body}
+                  />
+                )}
+                {(live?.phase === 'tools' ||
+                  live?.phase === 'type' ||
+                  live?.phase === 'done' ||
+                  settled) &&
+                  tools.map((tool, i) => {
+                    const running = live?.phase === 'tools' && live.running === i;
+                    const visible = !live || live.phase !== 'tools' || i <= live.running;
+                    if (!visible) return null;
+                    return <ToolRowView key={tool.id} tool={tool} running={running} />;
+                  })}
+                {live?.phase === 'think' && (
+                  <div className="turn-status">
+                    正在从账本里挑主张
+                    <span className="turn-status-clock">核对中</span>
+                  </div>
+                )}
+                {showAnswer && typed && (
+                  <div className="desk-answer">
+                    <Markdown
+                      text={typed}
+                      caret={Boolean(live && live.phase === 'type' && live.shown < m.text.length)}
+                    />
+                    {m.note && !live && <div className="msg-note">{m.note}</div>}
+                    {showRefs && (
+                      <div className="msg-refs">
+                        {m.claimRefs!.map((cid, i) => {
+                          const c = state.claims.find((x) => x.id === cid);
+                          if (!c) return null;
+                          return (
+                            <span key={cid}>
+                              <button
+                                className="ref-chip"
+                                style={{ animationDelay: `${i * 60}ms` }}
+                                onClick={() => dispatch({ type: 'OPEN_AUDIT_CARD', claimId: cid })}
+                              >
+                                〔{c.predicate}〕{c.text.slice(0, 14)}…
+                              </button>
+                              <button
+                                className="ref-wrong"
+                                style={{ animationDelay: `${i * 60}ms` }}
+                                title="这句不对：走纠正"
+                                onClick={() =>
+                                  dispatch({ type: 'OPEN_CORRECT_CARD', claimId: cid })
+                                }
+                              >
+                                ✗
+                              </button>
+                            </span>
+                          );
+                        })}
+                      </div>
+                    )}
                   </div>
                 )}
               </div>
-            )}
-            {messages.map((m) => {
-              if (m.role === 'card' && m.card) {
-                return (
-                  <div key={m.id} className="msg desk">
-                    <div className="desk-flow">
-                      {m.card.kind === '审计' && m.card.claimId && <AuditCard claimId={m.card.claimId} />}
-                      {m.card.kind === '结果' && (
-                        <ResultCard card={m.card} text={m.text} objectId={objectId} messageId={m.id} />
-                      )}
-                    </div>
-                  </div>
-                );
-              }
-              if (m.role !== 'desk' && m.role !== 'user') return null;
-              if (m.role === 'user') {
-                return (
-                  <div key={m.id} className="msg user">
-                    <div className="user-stack">
-                      <div className="bubble">{m.text}</div>
-                    </div>
-                  </div>
-                );
-              }
-              const live = stream && stream.msgId === m.id ? stream : null;
-              const settled = m.turn;
-              const tools = live?.tools ?? settled?.tools ?? [];
-              const think = live?.think ?? settled?.think;
-              const showThink = Boolean(think?.doneTitle);
-              const thinkRunning = live?.phase === 'think';
-              const typed = live && (live.phase === 'type' || live.phase === 'done') ? m.text.slice(0, live.shown) : live ? '' : m.text;
-              const showAnswer = !live || live.phase === 'type' || live.phase === 'done';
-              const showRefs = !live && m.claimRefs && m.claimRefs.length > 0;
-              return (
-                <div key={m.id} className="msg desk">
-                  <div className="desk-flow">
-                    {showThink && think && (
-                      <ReasoningRow
-                        running={thinkRunning}
-                        title={thinkRunning ? think.runningTitle : think.doneTitle}
-                        summary={think.summary}
-                        body={think.body}
-                      />
-                    )}
-                    {(live?.phase === 'tools' || live?.phase === 'type' || live?.phase === 'done' || settled) &&
-                      tools.map((tool, i) => {
-                        const running = live?.phase === 'tools' && live.running === i;
-                        const visible = !live || live.phase !== 'tools' || i <= live.running;
-                        if (!visible) return null;
-                        return <ToolRowView key={tool.id} tool={tool} running={running} />;
-                      })}
-                    {live?.phase === 'think' && (
-                      <div className="turn-status">
-                        正在从账本里挑主张
-                        <span className="turn-status-clock">核对中</span>
-                      </div>
-                    )}
-                    {showAnswer && typed && (
-                      <div className="desk-answer">
-                        <Markdown text={typed} caret={Boolean(live && live.phase === 'type' && live.shown < m.text.length)} />
-                        {m.note && !live && <div className="msg-note">{m.note}</div>}
-                        {showRefs && (
-                          <div className="msg-refs">
-                            {m.claimRefs!.map((cid, i) => {
-                              const c = state.claims.find((x) => x.id === cid);
-                              if (!c) return null;
-                              return (
-                                <span key={cid}>
-                                  <button
-                                    className="ref-chip"
-                                    style={{ animationDelay: `${i * 60}ms` }}
-                                    onClick={() => dispatch({ type: 'OPEN_AUDIT_CARD', claimId: cid })}
-                                  >
-                                    〔{c.predicate}〕{c.text.slice(0, 14)}…
-                                  </button>
-                                  <button
-                                    className="ref-wrong"
-                                    style={{ animationDelay: `${i * 60}ms` }}
-                                    title="这句不对：走纠正"
-                                    onClick={() => dispatch({ type: 'OPEN_CORRECT_CARD', claimId: cid })}
-                                  >
-                                    ✗
-                                  </button>
-                                </span>
-                              );
-                            })}
-                          </div>
-                        )}
-                      </div>
-                    )}
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-          {localQueued ? (
-            <Takeover objectId={objectId} />
-          ) : (
-          <>
+            </div>
+          );
+        })}
+      </div>
+      {localQueued ? (
+        <Takeover objectId={objectId} />
+      ) : (
+        <>
           {otherQueued && <Takeover objectId={objectId} />}
           <div className="composer">
             <div className="composer-card">
@@ -286,16 +313,25 @@ export function ChatPane({ objectId }: { objectId: string }) {
                 <div className="composer-trailing">
                   <ComposerMenu
                     label="模型"
-                    value={state.activeModelId}
+                    value={
+                      state.activeProviderId && state.activeModelId
+                        ? `${state.activeProviderId}:${state.activeModelId}`
+                        : ''
+                    }
+                    placeholder="配置模型"
                     options={state.providers
                       .filter((p) => p.enabled)
-                      .flatMap((p) => p.models.map((m) => ({ id: m.id, label: m.name })))}
+                      .flatMap((p) =>
+                        p.models.map((m) => ({ id: `${p.id}:${m.id}`, label: m.name })),
+                      )}
                     onChange={(id) => {
-                      const owner = state.providers.find((p) => p.models.some((m) => m.id === id));
-                      if (owner && owner.id !== state.activeProviderId) {
-                        dispatch({ type: 'SET_ACTIVE_PROVIDER', id: owner.id });
-                      }
-                      dispatch({ type: 'SET_ACTIVE_MODEL', id });
+                      const separator = id.indexOf(':');
+                      if (separator < 1) return;
+                      dispatch({
+                        type: 'SET_ACTIVE_MODEL',
+                        providerId: id.slice(0, separator),
+                        modelId: id.slice(separator + 1),
+                      });
                     }}
                   />
                   <ComposerMenu
@@ -308,7 +344,9 @@ export function ChatPane({ objectId }: { objectId: string }) {
                       { id: '中', label: '中' },
                       { id: '高', label: '高' },
                     ]}
-                    onChange={(id) => dispatch({ type: 'SET_THINKING', effort: id as ThinkingEffort })}
+                    onChange={(id) =>
+                      dispatch({ type: 'SET_THINKING', effort: id as ThinkingEffort })
+                    }
                   />
                   <button
                     className="composer-send"
@@ -323,8 +361,8 @@ export function ChatPane({ objectId }: { objectId: string }) {
               </div>
             </div>
           </div>
-          </>
-          )}
+        </>
+      )}
     </section>
   );
 }
@@ -356,7 +394,14 @@ function toolIcon(kind: ToolCall['icon']): ReactNode {
 function StateMark({ running, done }: { running: boolean; done: boolean }) {
   if (running) {
     return (
-      <svg className="state-matrix" width="10" height="10" viewBox="0 0 10 10" shapeRendering="crispEdges" aria-hidden>
+      <svg
+        className="state-matrix"
+        width="10"
+        height="10"
+        viewBox="0 0 10 10"
+        shapeRendering="crispEdges"
+        aria-hidden
+      >
         {[
           [0, 0],
           [4, 0],
@@ -367,7 +412,15 @@ function StateMark({ running, done }: { running: boolean; done: boolean }) {
           [0, 8],
           [0, 4],
         ].map(([x, y], i) => (
-          <rect key={`${x}-${y}`} className="state-cell" x={x} y={y} width="2" height="2" style={{ animationDelay: `${(i - 8) * 125}ms` }} />
+          <rect
+            key={`${x}-${y}`}
+            className="state-cell"
+            x={x}
+            y={y}
+            width="2"
+            height="2"
+            style={{ animationDelay: `${(i - 8) * 125}ms` }}
+          />
         ))}
       </svg>
     );
@@ -411,10 +464,19 @@ function ReasoningRow({
 function ToolRowView({ tool, running }: { tool: ToolCall; running: boolean }) {
   const [open, setOpen] = useState(false);
   return (
-    <div className={`flow-row${running ? ' running' : ''}`} data-state={running ? 'running' : 'done'}>
-      <button className="flow-row-head" type="button" onClick={() => !running && setOpen((v) => !v)}>
+    <div
+      className={`flow-row${running ? ' running' : ''}`}
+      data-state={running ? 'running' : 'done'}
+    >
+      <button
+        className="flow-row-head"
+        type="button"
+        onClick={() => !running && setOpen((v) => !v)}
+      >
         <span className="flow-leading">
-          <span className="flow-icon-idle">{running ? <StateMark running done={false} /> : toolIcon(tool.icon)}</span>
+          <span className="flow-icon-idle">
+            {running ? <StateMark running done={false} /> : toolIcon(tool.icon)}
+          </span>
           <span className="flow-chevron">
             <CaretRight size={12} style={{ transform: open ? 'rotate(90deg)' : undefined }} />
           </span>

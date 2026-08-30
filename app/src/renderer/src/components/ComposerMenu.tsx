@@ -12,12 +12,14 @@ export function ComposerMenu({
   value,
   options,
   onChange,
+  placeholder = '未选择',
 }: {
   label: string;
   icon?: ReactNode;
   value: string;
   options: MenuOption[];
   onChange: (id: string) => void;
+  placeholder?: string;
 }) {
   const [open, setOpen] = useState(false);
   const root = useRef<HTMLDivElement>(null);
@@ -50,7 +52,7 @@ export function ComposerMenu({
         onClick={() => setOpen((v) => !v)}
       >
         {icon}
-        <span className="cmenu-value">{current?.label ?? value}</span>
+        <span className="cmenu-value">{(current?.label ?? value) || placeholder}</span>
         <CaretDown size={10} weight="bold" />
       </button>
       {open && (

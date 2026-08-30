@@ -3,8 +3,10 @@ import type {
   Brief,
   ChatMessage,
   Claim,
+  DeletedSourceRecovery,
   DeskObject,
   DeskTask,
+  IngestJob,
   Memory,
   Proposal,
   SlotDef,
@@ -21,6 +23,33 @@ function metaSet(db: Database.Database, key: string, value: string): void {
   ).run(key, value);
 }
 
+const LEGACY_MODEL_META_KEYS = [
+  'providers',
+  'activeProviderId',
+  'activeModelId',
+  'thinkingEffort',
+] as const;
+
+/** 模型配置已经提升为产品级设置；迁移完成后移除业务库中的旧副本。 */
+export function clearLegacyModelMeta(db: Database.Database): void {
+  const remove = db.prepare('DELETE FROM app_meta WHERE key = ?');
+  db.transaction(() => {
+    for (const key of LEGACY_MODEL_META_KEYS) remove.run(key);
+  })();
+}
+
+export function interruptActiveIngestJobs(db: Database.Database): void {
+  const now = new Date().toISOString();
+  db.prepare(
+    `UPDATE ingest_jobs
+     SET status = '失败',
+         failure_kind = 'interrupted',
+         detail = '上次导入中断，可重试',
+         updated_at = ?
+     WHERE status IN ('排队', '获取中', '解析中', '提交中')`,
+  ).run(now);
+}
+
 /** 把出荷状态写入大脑文件。账本真相源是 SQLite，不是内存。 */
 export function persistLedger(db: Database.Database, state: State): void {
   const tx = db.transaction(() => {
@@ -34,6 +63,7 @@ export function persistLedger(db: Database.Database, state: State): void {
       DELETE FROM tasks;
       DELETE FROM task_audit;
       DELETE FROM briefs;
+      DELETE FROM ingest_jobs;
       DELETE FROM objects;
       DELETE FROM sources;
       DELETE FROM workspaces;
@@ -53,15 +83,25 @@ export function persistLedger(db: Database.Database, state: State): void {
     );
     const insRel = db.prepare(`INSERT INTO object_relations (from_id, to_id) VALUES (?, ?)`);
     for (const o of state.objects) {
-      insObj.run(o.id, o.kind, o.name, o.note ?? null, o.workspaceId, o.archived ? 1 : 0, stateStamp(state));
+      insObj.run(
+        o.id,
+        o.kind,
+        o.name,
+        o.note ?? null,
+        o.workspaceId,
+        o.archived ? 1 : 0,
+        stateStamp(state),
+      );
       for (const to of o.relationIds) {
         insRel.run(o.id, to);
       }
     }
 
     const insSrc = db.prepare(
-      `INSERT INTO sources (id, title, body, path, role, workspace_id, unparsed, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO sources (
+        id, title, body, path, role, workspace_id, unparsed,
+        origin_json, segments_json, content_hash, fetched_at, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     );
     const insBind = db.prepare(`INSERT INTO source_bindings (source_id, object_id) VALUES (?, ?)`);
     for (const s of state.sources) {
@@ -74,6 +114,10 @@ export function persistLedger(db: Database.Database, state: State): void {
         s.role ?? null,
         s.workspaceId ?? null,
         s.unparsed ? 1 : 0,
+        s.origin ? JSON.stringify(s.origin) : null,
+        s.segments ? JSON.stringify(s.segments) : null,
+        s.contentHash ?? s.origin?.contentHash ?? null,
+        s.fetchedAt ?? s.origin?.fetchedAt ?? null,
         stateStamp(state),
       );
       for (const oid of s.boundObjectIds) {
@@ -99,8 +143,9 @@ export function persistLedger(db: Database.Database, state: State): void {
     const insClaim = db.prepare(
       `INSERT INTO claims (
         id, object_id, predicate, text, status, unverified, valid_from, valid_to,
-        close_reason, source_id, span, superseded_by, created_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        close_reason, source_id, span, source_start, source_end, source_locator,
+        superseded_by, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     );
     for (const c of state.claims) {
       insClaim.run(
@@ -115,6 +160,9 @@ export function persistLedger(db: Database.Database, state: State): void {
         c.closeReason ?? null,
         c.sourceId,
         c.span ?? null,
+        c.sourceStart ?? null,
+        c.sourceEnd ?? null,
+        c.sourceLocator ? JSON.stringify(c.sourceLocator) : null,
         c.supersededBy ?? null,
         c.createdAt,
       );
@@ -176,6 +224,30 @@ export function persistLedger(db: Database.Database, state: State): void {
       insBrief.run(b.id, b.objectId, b.taskId, JSON.stringify(b.blocks), b.createdAt);
     }
 
+    const insIngest = db.prepare(
+      `INSERT INTO ingest_jobs (
+        id, input_kind, input_json, status, title, locator, source_id,
+        failure_kind, detail, attempt, workspace_id, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    );
+    for (const job of state.ingestJobs) {
+      insIngest.run(
+        job.id,
+        job.inputKind,
+        job.input ? JSON.stringify(job.input) : null,
+        job.status,
+        job.title ?? null,
+        job.locator ?? null,
+        job.sourceId ?? null,
+        job.failureKind ?? null,
+        job.detail ?? null,
+        job.attempt,
+        job.workspaceId ?? null,
+        job.createdAt,
+        job.updatedAt,
+      );
+    }
+
     const insMsg = db.prepare(
       `INSERT INTO chat_messages (id, object_id, role, text, claim_refs, card, created_at, seq)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -200,20 +272,7 @@ export function persistLedger(db: Database.Database, state: State): void {
     metaSet(db, 'seq', String(state.seq));
     metaSet(db, 'currentWorkspaceId', state.currentWorkspaceId);
     metaSet(db, 'themePreference', state.themePreference);
-    metaSet(db, 'activeProviderId', state.activeProviderId);
-    metaSet(db, 'activeModelId', state.activeModelId);
-    metaSet(db, 'thinkingEffort', state.thinkingEffort);
     metaSet(db, 'onboardingDone', state.onboardingDone ? '1' : '0');
-    metaSet(
-      db,
-      'providers',
-      JSON.stringify(
-        state.providers.map((p) => ({
-          ...p,
-          apiKey: '',
-        })),
-      ),
-    );
   });
   tx();
   rebuildFts(db);
@@ -255,20 +314,82 @@ function redactSecrets(payload: unknown): string {
   return JSON.stringify(payload).replace(/"apiKey"\s*:\s*"[^"]*"/g, '"apiKey":""');
 }
 
-export function listOperations(db: Database.Database): { action: string; undo_of: string | null }[] {
-  return db
-    .prepare('SELECT action, undo_of FROM operations ORDER BY created_at')
-    .all() as { action: string; undo_of: string | null }[];
+export function listOperations(
+  db: Database.Database,
+): { action: string; undo_of: string | null }[] {
+  return db.prepare('SELECT action, undo_of FROM operations ORDER BY created_at').all() as {
+    action: string;
+    undo_of: string | null;
+  }[];
+}
+
+export function listDeletedSourceRecoveries(
+  db: Database.Database,
+  liveSources: Source[],
+): DeletedSourceRecovery[] {
+  const liveIds = new Set(
+    liveSources.filter((source) => !source.virtual).map((source) => source.id),
+  );
+  const rows = db
+    .prepare('SELECT payload FROM operations WHERE action = ? ORDER BY created_at')
+    .all('DELETE_SOURCE') as { payload: string }[];
+  const bySource = new Map<string, DeletedSourceRecovery>();
+  for (const row of rows) {
+    try {
+      const recovery = recoveryFromPayload(JSON.parse(row.payload) as unknown);
+      if (recovery && !liveIds.has(recovery.source.id)) bySource.set(recovery.source.id, recovery);
+    } catch {
+      // Older or corrupt operation payloads are ignored; they cannot safely drive recovery.
+    }
+  }
+  return [...bySource.values()];
+}
+
+function recoveryFromPayload(payload: unknown): DeletedSourceRecovery | null {
+  if (!payload || typeof payload !== 'object') return null;
+  const recovery = (payload as { recovery?: unknown }).recovery;
+  if (!recovery || typeof recovery !== 'object') return null;
+  const source = (recovery as { source?: unknown }).source;
+  const claims = (recovery as { claims?: unknown }).claims;
+  const deletedAt = (recovery as { deletedAt?: unknown }).deletedAt;
+  if (
+    !source ||
+    typeof source !== 'object' ||
+    !Array.isArray(claims) ||
+    typeof deletedAt !== 'string'
+  ) {
+    return null;
+  }
+  const candidate = source as Source;
+  if (
+    typeof candidate.id !== 'string' ||
+    typeof candidate.title !== 'string' ||
+    typeof candidate.body !== 'string' ||
+    !Array.isArray(candidate.boundObjectIds)
+  ) {
+    return null;
+  }
+  return { source: candidate, claims: claims as Claim[], deletedAt };
 }
 
 function stateStamp(_state: State): string {
   return new Date().toISOString();
 }
 
+function parseJson<T>(value: string | null): T | undefined {
+  if (!value) return undefined;
+  try {
+    return JSON.parse(value) as T;
+  } catch {
+    return undefined;
+  }
+}
+
 export type LedgerRows = {
   workspaces: Workspace[];
   objects: DeskObject[];
   sources: Source[];
+  ingestJobs: IngestJob[];
   slotDefs: SlotDef[];
   claims: Claim[];
   memories: Memory[];
@@ -308,7 +429,9 @@ export function loadLedger(db: Database.Database): LedgerRows {
   }
   const objects = (
     db
-      .prepare('SELECT id, kind, name, note, workspace_id, archived FROM objects ORDER BY created_at')
+      .prepare(
+        'SELECT id, kind, name, note, workspace_id, archived FROM objects ORDER BY created_at',
+      )
       .all() as {
       id: string;
       kind: DeskObject['kind'];
@@ -343,7 +466,9 @@ export function loadLedger(db: Database.Database): LedgerRows {
   const sources = (
     db
       .prepare(
-        'SELECT id, title, body, path, role, workspace_id, unparsed FROM sources ORDER BY created_at',
+        `SELECT id, title, body, path, role, workspace_id, unparsed,
+                origin_json, segments_json, content_hash, fetched_at
+         FROM sources ORDER BY created_at`,
       )
       .all() as {
       id: string;
@@ -353,6 +478,10 @@ export function loadLedger(db: Database.Database): LedgerRows {
       role: Source['role'] | null;
       workspace_id: string | null;
       unparsed: number;
+      origin_json: string | null;
+      segments_json: string | null;
+      content_hash: string | null;
+      fetched_at: string | null;
     }[]
   ).map((s) => {
     const src: Source = {
@@ -365,6 +494,12 @@ export function loadLedger(db: Database.Database): LedgerRows {
     if (s.role) src.role = s.role;
     if (s.workspace_id) src.workspaceId = s.workspace_id;
     if (s.unparsed) src.unparsed = true;
+    const origin = parseJson<Source['origin']>(s.origin_json);
+    const segments = parseJson<Source['segments']>(s.segments_json);
+    if (origin) src.origin = origin;
+    if (segments) src.segments = segments;
+    if (s.content_hash) src.contentHash = s.content_hash;
+    if (s.fetched_at) src.fetchedAt = s.fetched_at;
     return src;
   });
 
@@ -395,6 +530,9 @@ export function loadLedger(db: Database.Database): LedgerRows {
       close_reason: Claim['closeReason'] | null;
       source_id: string;
       span: string | null;
+      source_start: number | null;
+      source_end: number | null;
+      source_locator: string | null;
       superseded_by: string | null;
       created_at: string;
     }[]
@@ -413,6 +551,10 @@ export function loadLedger(db: Database.Database): LedgerRows {
     if (c.valid_to) claim.validTo = c.valid_to;
     if (c.close_reason) claim.closeReason = c.close_reason;
     if (c.span) claim.span = c.span;
+    if (typeof c.source_start === 'number') claim.sourceStart = c.source_start;
+    if (typeof c.source_end === 'number') claim.sourceEnd = c.source_end;
+    const locator = parseJson<Claim['sourceLocator']>(c.source_locator);
+    if (locator) claim.sourceLocator = locator;
     if (c.superseded_by) claim.supersededBy = c.superseded_by;
     return claim;
   });
@@ -516,6 +658,48 @@ export function loadLedger(db: Database.Database): LedgerRows {
     blocks: JSON.parse(b.blocks) as Brief['blocks'],
   }));
 
+  const ingestJobs = (
+    db
+      .prepare(
+        `SELECT id, input_kind, input_json, status, title, locator, source_id,
+                failure_kind, detail, attempt, workspace_id, created_at, updated_at
+         FROM ingest_jobs ORDER BY created_at, id`,
+      )
+      .all() as {
+      id: string;
+      input_kind: IngestJob['inputKind'];
+      input_json: string | null;
+      status: IngestJob['status'];
+      title: string | null;
+      locator: string | null;
+      source_id: string | null;
+      failure_kind: IngestJob['failureKind'] | null;
+      detail: string | null;
+      attempt: number;
+      workspace_id: string | null;
+      created_at: string;
+      updated_at: string;
+    }[]
+  ).map((row) => {
+    const job: IngestJob = {
+      id: row.id,
+      inputKind: row.input_kind,
+      status: row.status,
+      attempt: row.attempt,
+      createdAt: row.created_at,
+      updatedAt: row.updated_at,
+    };
+    const input = parseJson<IngestJob['input']>(row.input_json);
+    if (input) job.input = input;
+    if (row.title) job.title = row.title;
+    if (row.locator) job.locator = row.locator;
+    if (row.source_id) job.sourceId = row.source_id;
+    if (row.failure_kind) job.failureKind = row.failure_kind;
+    if (row.detail) job.detail = row.detail;
+    if (row.workspace_id) job.workspaceId = row.workspace_id;
+    return job;
+  });
+
   const msgs = db
     .prepare(
       'SELECT id, object_id, role, text, claim_refs, card FROM chat_messages ORDER BY seq, created_at',
@@ -548,6 +732,7 @@ export function loadLedger(db: Database.Database): LedgerRows {
     workspaces,
     objects,
     sources,
+    ingestJobs,
     slotDefs,
     claims,
     memories,
@@ -558,9 +743,10 @@ export function loadLedger(db: Database.Database): LedgerRows {
     chatByObject,
     seq: Number(meta.get('seq') ?? '1') || 1,
     currentWorkspaceId: meta.get('currentWorkspaceId') ?? workspaces[0]?.id ?? '',
-    themePreference: (meta.get('themePreference') as State['themePreference'] | undefined) ?? 'system',
-    activeProviderId: meta.get('activeProviderId') ?? 'p-deepseek',
-    activeModelId: meta.get('activeModelId') ?? 'deepseek-chat',
+    themePreference:
+      (meta.get('themePreference') as State['themePreference'] | undefined) ?? 'system',
+    activeProviderId: meta.get('activeProviderId') ?? '',
+    activeModelId: meta.get('activeModelId') ?? '',
     thinkingEffort: (meta.get('thinkingEffort') as State['thinkingEffort'] | undefined) ?? '中',
     onboardingDone: meta.get('onboardingDone') === '1',
     providersJson: meta.get('providers') ?? '',

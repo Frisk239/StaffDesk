@@ -1,25 +1,17 @@
 import { isWriteIntent, scriptReply, type ChatReply } from '@shared/chat';
 import { DEFAULT_PLAYBOOK } from '@shared/playbook';
 import { scenarioOfWorkspace } from '@shared/scenario';
-import type { LlmProvider, State } from '@shared/types';
-import type { ChatMessageParam, CompleteResult, FetchFn, ToolDef } from '../llm/chatCompletions';
-import { chatComplete } from '../llm/chatCompletions';
+import type { State } from '@shared/types';
+import type { ModelCompletion } from '../llm/runtime';
+import type { ChatMessageParam } from '../llm/chatCompletions';
 import { searchClaimsFts, resolveFtsHits } from '../brain/fts';
 import type Database from 'better-sqlite3';
 import { executeReadonlyTool, READONLY_TOOL_DEFS, recallClaims } from './readonlyTools';
 import { projectionFrom } from '../brain/projection';
 
 export interface SessionDeps {
-  fetch?: FetchFn;
   db?: Database.Database;
-  complete?:
-    | ((req: {
-        messages: ChatMessageParam[];
-        jsonMode?: boolean | undefined;
-        tools?: ToolDef[] | undefined;
-        onDelta?: ((chunk: string) => void) | undefined;
-      }) => Promise<CompleteResult>)
-    | undefined;
+  complete?: ModelCompletion | undefined;
   onDelta?: ((chunk: string) => void) | undefined;
 }
 
@@ -36,9 +28,7 @@ export async function runSessionTurn(
     return scriptReply(state, objectId, text);
   }
 
-  const provider = activeProvider(state);
-  const canCall = Boolean(deps.complete || (provider && provider.apiKey.trim()));
-  if (!canCall) {
+  if (!deps.complete) {
     return scriptReply(state, objectId, text);
   }
 
@@ -53,7 +43,9 @@ export async function runSessionTurn(
     '只根据下列主张回答。没有就说未知，不准编造新事实。',
     '引用只能写成 [ref:主张ID]，ID 必须出现在下列清单。',
     recalled.length
-      ? recalled.map((c) => `- ${c.id}｜${c.predicate}｜${c.text}${c.unverified ? '（未核）' : ''}`).join('\n')
+      ? recalled
+          .map((c) => `- ${c.id}｜${c.predicate}｜${c.text}${c.unverified ? '（未核）' : ''}`)
+          .join('\n')
       : '（当前没有可引用的主张）',
   ].join('\n');
 
@@ -71,22 +63,7 @@ export async function runSessionTurn(
     { role: 'user', content: text },
   ];
 
-  const complete =
-    deps.complete ??
-    (async (req) => {
-      if (!provider) throw new Error('没有提供商');
-      return chatComplete({
-        baseUrl: provider.baseUrl,
-        apiKey: provider.apiKey,
-        model: state.activeModelId,
-        messages: req.messages,
-        jsonMode: req.jsonMode,
-        tools: req.tools,
-        stream: Boolean(req.onDelta),
-        onDelta: req.onDelta,
-        fetch: deps.fetch,
-      });
-    });
+  const complete = deps.complete;
 
   let result = await complete({
     messages,
@@ -101,7 +78,12 @@ export async function runSessionTurn(
       tool_calls: result.toolCalls,
     });
     for (const call of result.toolCalls) {
-      const output = executeReadonlyTool(state, objectId, call.function.name, call.function.arguments);
+      const output = executeReadonlyTool(
+        state,
+        objectId,
+        call.function.name,
+        call.function.arguments,
+      );
       messages.push({ role: 'tool', content: output, tool_call_id: call.id });
     }
     result = await complete({ messages, tools: READONLY_TOOL_DEFS });
@@ -129,10 +111,6 @@ function recallForPrompt(state: State, objectId: string, text: string, db?: Data
     return projected.filter((c) => recalled.some((r) => r.id === c.id));
   }
   return projected.slice(0, 12);
-}
-
-function activeProvider(state: State): LlmProvider | undefined {
-  return state.providers.find((p) => p.id === state.activeProviderId && p.enabled);
 }
 
 export { isWriteIntent };

@@ -6,6 +6,7 @@ import { DEFAULT_SLOT_DEFS, deriveConflicts } from '@shared/scenario';
 import type { Claim, SlotDef } from '@shared/types';
 import { openBrain, projectionClaims, type Brain } from '../../src/main/brain';
 import { sentenceIsUnknownPlaceholder } from '../../src/main/brain/briefOut';
+import { completeExtraction } from '../helpers/extraction';
 
 const dirs: string[] = [];
 const brains: Brain[] = [];
@@ -42,7 +43,9 @@ afterEach(() => {
   }
 });
 
-function claim(partial: Omit<Claim, 'status' | 'unverified' | 'createdAt'> & Partial<Claim>): Claim {
+function claim(
+  partial: Omit<Claim, 'status' | 'unverified' | 'createdAt'> & Partial<Claim>,
+): Claim {
   return {
     status: '成立',
     unverified: true,
@@ -78,7 +81,10 @@ describe('出荷写入与重启', () => {
     brain.dispatch({ type: 'BIND_CONFIRMED', sourceId: source.id, objectIds: [obj.id] });
     expect(brain.snapshot().claims).toHaveLength(0);
 
-    brain.dispatch({ type: 'EXTRACT_DONE', sourceId: source.id });
+    completeExtraction(brain, source.id, [
+      { predicate: '在招岗位', text: '该公司在招后端实习', span: '该公司在招后端实习' },
+      { predicate: '后端主栈', text: '团队主栈是 Go', span: '团队主栈是 Go' },
+    ]);
     const afterExtract = brain.snapshot();
     expect(afterExtract.claims.length).toBeGreaterThan(0);
     brain.dispatch({ type: 'CHAT_SEND', objectId: obj.id, text: '这家组织在招什么？' });
@@ -92,9 +98,9 @@ describe('出荷写入与重启', () => {
     const again = brain.snapshot();
     expect(again.workspaces.map((w) => w.name)).toEqual(['验收区']);
     expect(again.objects.map((o) => o.name)).toEqual(['验收组织']);
-    expect(again.sources.some((s) => s.title === '手给材料.txt' && s.boundObjectIds.includes(obj.id))).toBe(
-      true,
-    );
+    expect(
+      again.sources.some((s) => s.title === '手给材料.txt' && s.boundObjectIds.includes(obj.id)),
+    ).toBe(true);
     expect(again.claims.length).toBe(claimCount);
     expect((again.chatByObject[obj.id] ?? []).length).toBe(msgCount);
     brain.close();
@@ -187,15 +193,27 @@ describe('deriveConflicts 0029', () => {
 
   it('反例：text 相同不建冲突', () => {
     const claims = [
-      claim({ id: 'a', objectId: 'o1', predicate: '后端主栈', text: '主栈是 Go。', sourceId: 's1' }),
-      claim({ id: 'b', objectId: 'o1', predicate: '后端主栈', text: '主栈是 Go。', sourceId: 's2' }),
+      claim({
+        id: 'a',
+        objectId: 'o1',
+        predicate: '后端主栈',
+        text: '主栈是 Go。',
+        sourceId: 's1',
+      }),
+      claim({
+        id: 'b',
+        objectId: 'o1',
+        predicate: '后端主栈',
+        text: '主栈是 Go。',
+        sourceId: 's2',
+      }),
     ];
     expect(deriveConflicts(claims, slots)).toEqual([]);
   });
 });
 
 describe('绑定、抽取、闲聊、纠正', () => {
-  it('未确认绑定不写主张，确认后桩抽取才写', () => {
+  it('未确认绑定不写主张，确认后只写明确传入的抽取结果', () => {
     const brain = track(openBrain(tmpBrain()));
     const { obj } = seedWorkspace(brain);
     brain.dispatch({
@@ -205,11 +223,17 @@ describe('绑定、抽取、闲聊、纠正', () => {
     });
     const source = brain.snapshot().sources.find((s) => !s.virtual);
     if (!source) throw new Error('来源未写入');
-    brain.dispatch({ type: 'EXTRACT_DONE', sourceId: source.id });
+    completeExtraction(brain, source.id, [
+      { predicate: '在招岗位', text: '该公司在招后端实习', span: '该公司在招后端实习' },
+      { predicate: '后端主栈', text: '团队主栈是 Go', span: '团队主栈是 Go' },
+    ]);
     expect(brain.snapshot().claims).toHaveLength(0);
     brain.dispatch({ type: 'BIND_CONFIRMED', sourceId: source.id, objectIds: [obj.id] });
     expect(brain.snapshot().claims).toHaveLength(0);
-    brain.dispatch({ type: 'EXTRACT_DONE', sourceId: source.id });
+    completeExtraction(brain, source.id, [
+      { predicate: '在招岗位', text: '该公司在招后端实习', span: '该公司在招后端实习' },
+      { predicate: '后端主栈', text: '团队主栈是 Go', span: '团队主栈是 Go' },
+    ]);
     expect(brain.snapshot().claims.length).toBeGreaterThan(0);
     brain.close();
   });
@@ -225,11 +249,15 @@ describe('绑定、抽取、闲聊、纠正', () => {
     const source = brain.snapshot().sources.find((s) => !s.virtual);
     if (!source) throw new Error('来源未写入');
     brain.dispatch({ type: 'BIND_CONFIRMED', sourceId: source.id, objectIds: [obj.id] });
-    brain.dispatch({ type: 'EXTRACT_DONE', sourceId: source.id });
+    completeExtraction(brain, source.id, [
+      { predicate: '在招岗位', text: '该公司在招后端实习', span: '该公司在招后端实习' },
+    ]);
     const boundSnap = brain.snapshot();
     expect(projectionClaims(boundSnap, obj.id).length).toBeGreaterThan(0);
 
-    const bindCard = (boundSnap.chatByObject[obj.id] ?? []).find((m) => m.card?.undo?.kind === '绑定');
+    const bindCard = (boundSnap.chatByObject[obj.id] ?? []).find(
+      (m) => m.card?.undo?.kind === '绑定',
+    );
     if (!bindCard) throw new Error('绑定结果卡缺失');
     brain.dispatch({ type: 'UNDO_RESULT', objectId: obj.id, messageId: bindCard.id });
     const unbound = brain.snapshot();
@@ -249,7 +277,11 @@ describe('绑定、抽取、闲聊、纠正', () => {
     const source = brain.snapshot().sources.find((s) => !s.virtual);
     if (!source) throw new Error('来源未写入');
     brain.dispatch({ type: 'BIND_CONFIRMED', sourceId: source.id, objectIds: [obj.id] });
-    brain.dispatch({ type: 'EXTRACT_DONE', sourceId: source.id });
+    completeExtraction(brain, source.id, [
+      { predicate: '在招岗位', text: '该公司在招后端实习', span: '该公司在招后端实习' },
+      { predicate: '后端主栈', text: '团队主栈是 Go', span: '团队主栈是 Go' },
+      { predicate: '后端主栈', text: '团队也在评估 Java 方向', span: '团队也在评估 Java 方向' },
+    ]);
     const n = brain.snapshot().claims.length;
     brain.dispatch({ type: 'CHAT_SEND', objectId: obj.id, text: '今天天气怎么样？' });
     expect(brain.snapshot().claims.length).toBe(n);
@@ -267,7 +299,15 @@ describe('绑定、抽取、闲聊、纠正', () => {
     const source = brain.snapshot().sources.find((s) => !s.virtual);
     if (!source) throw new Error('来源未写入');
     brain.dispatch({ type: 'BIND_CONFIRMED', sourceId: source.id, objectIds: [obj.id] });
-    brain.dispatch({ type: 'EXTRACT_DONE', sourceId: source.id });
+    completeExtraction(brain, source.id, [
+      { predicate: '在招岗位', text: '该公司在招后端实习', span: '该公司在招后端实习' },
+      { predicate: '后端主栈', text: '团队主栈是 Go', span: '团队主栈是 Go' },
+      {
+        predicate: '后端主栈',
+        text: '团队也在评估 Java 方向',
+        span: '团队也在评估 Java 方向',
+      },
+    ]);
     const claims = brain.snapshot().claims;
     expect(claims.length).toBeGreaterThanOrEqual(2);
     const first = claims[0];

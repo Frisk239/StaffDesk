@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { openBrain, type Brain } from '../../src/main/brain';
 import { runSessionTurn } from '../../src/main/loops/session';
+import { completeExtraction } from '../helpers/extraction';
 
 const brains: Brain[] = [];
 const dirs: string[] = [];
@@ -49,7 +50,10 @@ function setup() {
   const src = brain.snapshot().sources.find((s) => !s.virtual);
   if (!src) throw new Error('无来源');
   brain.dispatch({ type: 'BIND_CONFIRMED', sourceId: src.id, objectIds: [obj.id] });
-  brain.dispatch({ type: 'EXTRACT_DONE', sourceId: src.id });
+  completeExtraction(brain, src.id, [
+    { predicate: '在招岗位', text: '该公司在招后端实习', span: '该公司在招后端实习' },
+    { predicate: '后端主栈', text: '团队主栈是 Go', span: '团队主栈是 Go' },
+  ]);
   return { brain, obj };
 }
 

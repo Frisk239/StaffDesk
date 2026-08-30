@@ -1,42 +1,4 @@
-import type { LlmProvider, State } from './types';
-
-export const DEFAULT_PROVIDERS: LlmProvider[] = [
-  {
-    id: 'p-deepseek',
-    kind: 'deepseek',
-    name: 'DeepSeek',
-    baseUrl: 'https://api.deepseek.com/v1',
-    apiKey: '',
-    protocol: 'chat-completions',
-    enabled: true,
-    models: [
-      { id: 'deepseek-chat', name: 'deepseek-chat', contextWindow: 128000, maxOutput: 8192 },
-      { id: 'deepseek-reasoner', name: 'deepseek-reasoner', contextWindow: 128000, maxOutput: 8192 },
-    ],
-  },
-  {
-    id: 'p-openai',
-    kind: 'openai',
-    name: 'OpenAI',
-    baseUrl: 'https://api.openai.com/v1',
-    apiKey: '',
-    protocol: 'chat-completions',
-    enabled: true,
-    models: [{ id: 'gpt-4o', name: 'gpt-4o', contextWindow: 128000, maxOutput: 16384 }],
-  },
-  {
-    id: 'p-anthropic',
-    kind: 'anthropic',
-    name: 'Anthropic',
-    baseUrl: 'https://api.anthropic.com',
-    apiKey: '',
-    protocol: 'anthropic-messages',
-    enabled: true,
-    models: [
-      { id: 'claude-sonnet-4-5', name: 'claude-sonnet-4-5', contextWindow: 200000, maxOutput: 16384 },
-    ],
-  },
-];
+import type { State } from './types';
 
 export function emptyUiFields(): Pick<
   State,
@@ -45,6 +7,7 @@ export function emptyUiFields(): Pick<
   | 'sourceFocusId'
   | 'toast'
   | 'briefDraftingFor'
+  | 'ingestJobs'
   | 'extractJobs'
   | 'pendingClaims'
   | 'themePreference'
@@ -56,6 +19,7 @@ export function emptyUiFields(): Pick<
   | 'rightTabsByObject'
   | 'activeRightTabByObject'
   | 'certByProvider'
+  | 'deletedSourceRecoveries'
 > {
   return {
     view: { kind: 'inbox' },
@@ -63,17 +27,19 @@ export function emptyUiFields(): Pick<
     sourceFocusId: null,
     toast: null,
     briefDraftingFor: null,
+    ingestJobs: [],
     extractJobs: [],
     pendingClaims: [],
     themePreference: 'system',
-    providers: DEFAULT_PROVIDERS,
-    activeProviderId: 'p-deepseek',
-    activeModelId: 'deepseek-chat',
+    providers: [],
+    activeProviderId: '',
+    activeModelId: '',
     thinkingEffort: '中',
     writeQueue: [],
     rightTabsByObject: {},
     activeRightTabByObject: {},
     certByProvider: {},
+    deletedSourceRecoveries: [],
   };
 }
 

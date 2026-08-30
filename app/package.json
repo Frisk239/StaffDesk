@@ -9,7 +9,9 @@
     "dev": "electron-vite dev",
     "build": "electron-vite build",
     "preview": "electron-vite preview",
+    "format": "prettier --write",
     "lint": "eslint .",
+    "lint:fix": "eslint --fix",
     "typecheck": "tsc -b --pretty false",
     "test": "node scripts/run-vitest.mjs run --coverage",
     "test:watch": "node scripts/run-vitest.mjs",
@@ -20,9 +22,10 @@
   "dependencies": {
     "@phosphor-icons/react": "^2.1.10",
     "better-sqlite3": "^12.9.0",
-    "zod": "^3.25.0",
+    "pdfjs-dist": "^6.3.289",
     "react": "^19.1.0",
-    "react-dom": "^19.1.0"
+    "react-dom": "^19.1.0",
+    "zod": "^3.25.0"
   },
   "devDependencies": {
     "@electron/rebuild": "^4.0.1",

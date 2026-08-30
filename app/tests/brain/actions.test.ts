@@ -2,8 +2,15 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { closedClaims, conflictsOf, isExtracting, openBrain, type Brain } from '../../src/main/brain';
+import {
+  closedClaims,
+  conflictsOf,
+  isExtracting,
+  openBrain,
+  type Brain,
+} from '../../src/main/brain';
 import { listUserTables } from '../../src/main/brain/migrate';
+import { completeExtraction } from '../helpers/extraction';
 
 const dirs: string[] = [];
 const brains: Brain[] = [];
@@ -54,7 +61,12 @@ function setup() {
   if (!source) throw new Error('无来源');
   brain.dispatch({ type: 'BIND_CONFIRMED', sourceId: source.id, objectIds: [obj.id] });
   expect(isExtracting(brain.snapshot(), obj.id)).toBe(true);
-  brain.dispatch({ type: 'EXTRACT_DONE', sourceId: source.id });
+  completeExtraction(brain, source.id, [
+    { predicate: '在招岗位', text: '该公司在招后端实习', span: '该公司在招后端实习' },
+    { predicate: '后端主栈', text: '团队主栈是 Go', span: '团队主栈是 Go' },
+    { predicate: '后端主栈', text: '团队也在评估 Java 方向', span: '团队也在评估 Java 方向' },
+    { predicate: '未编目', text: '内部在推进平台化建设', span: '内部在推进平台化建设' },
+  ]);
   return { brain, obj, source };
 }
 
@@ -139,7 +151,12 @@ describe('账本动作覆盖', () => {
     brain.dispatch({ type: 'ADD_SLOT', name: '未编目', kind: '组织', arity: '单值' });
     brain.dispatch({ type: 'ADD_SLOT', name: '自定义槽', kind: '组织', arity: '单值' });
 
-    brain.dispatch({ type: 'ADD_SOURCE', title: 'url', body: 'https://example.com/jd', fromUrl: true });
+    brain.dispatch({
+      type: 'ADD_SOURCE',
+      title: 'url',
+      body: 'https://example.com/jd',
+      fromUrl: true,
+    });
     brain.dispatch({ type: 'ADD_SOURCE', title: 'pdf', body: 'binary', unparsed: true });
     brain.dispatch({ type: 'ADD_SOURCE', title: '', body: '   ' });
 
@@ -154,28 +171,24 @@ describe('账本动作覆盖', () => {
       type: 'UPSERT_PROVIDER',
       provider: {
         id: 'p-custom',
-        kind: 'custom',
         name: '自建',
         baseUrl: 'http://localhost:1234/v1',
         apiKey: '',
-        protocol: 'chat-completions',
         enabled: true,
         models: [{ id: 'local', name: 'local', contextWindow: 8, maxOutput: 8 }],
       },
     });
     brain.dispatch({ type: 'SET_ACTIVE_PROVIDER', id: 'p-custom' });
-    brain.dispatch({ type: 'SET_ACTIVE_MODEL', id: 'local' });
+    brain.dispatch({ type: 'SET_ACTIVE_MODEL', providerId: 'p-custom', modelId: 'local' });
     brain.dispatch({ type: 'TEST_PROVIDER', id: 'p-custom' });
     brain.dispatch({ type: 'CERT_DONE', id: 'p-custom' });
     brain.dispatch({
       type: 'UPSERT_PROVIDER',
       provider: {
         id: 'p-custom',
-        kind: 'custom',
         name: '自建改',
         baseUrl: 'http://localhost:1234/v1',
         apiKey: '',
-        protocol: 'chat-completions',
         enabled: true,
         models: [{ id: 'local', name: 'local', contextWindow: 8, maxOutput: 8 }],
       },
@@ -255,7 +268,9 @@ describe('账本动作覆盖', () => {
         createdAt: '2026-08-29',
         budgetGear: '快搜',
       },
-      audits: [{ taskId: 'task-test', seq: 1, kind: '搜索', payload: { query: 'x' }, ts: '2026-08-29' }],
+      audits: [
+        { taskId: 'task-test', seq: 1, kind: '搜索', payload: { query: 'x' }, ts: '2026-08-29' },
+      ],
       sources: [],
     });
     brain.dispatch({ type: 'SET_VIEW', view: { kind: 'replay', taskId: 'task-test' } });
@@ -336,7 +351,9 @@ describe('账本动作覆盖', () => {
       );
     brain.dispatch({ type: 'PROPOSAL_DECIDE', proposalId: 'prop-mem2', decision: 'reject' });
 
-    const bindCard = (brain.snapshot().chatByObject[obj.id] ?? []).find((m) => m.card?.undo?.kind === '绑定');
+    const bindCard = (brain.snapshot().chatByObject[obj.id] ?? []).find(
+      (m) => m.card?.undo?.kind === '绑定',
+    );
     if (bindCard) {
       brain.dispatch({ type: 'UNDO_RESULT', objectId: obj.id, messageId: bindCard.id });
     }

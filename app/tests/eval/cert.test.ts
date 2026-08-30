@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { fabricationLine, runCert, scorePack } from '../../src/main/eval/cert';
+import { fabricationLine, runCert, runLiveCert, scorePack } from '../../src/main/eval/cert';
 import { GOLD_PACKS } from '../../src/main/eval/goldPacks';
 
 describe('资格认证金标', () => {
@@ -20,6 +20,33 @@ describe('资格认证金标', () => {
     const dirty = runCert(pack, ['年薪百万']);
     expect(dirty.fabrication).toBeGreaterThan(clean.fabrication);
     expect(dirty.fabrication).toBeGreaterThan(5);
+  });
+
+  it('产品检查分数来自模型返回，不使用确定性夹具结果', async () => {
+    const pack = GOLD_PACKS[0]!;
+    let calls = 0;
+    const scores = await runLiveCert(pack, async () => {
+      calls += 1;
+      return {
+        content: JSON.stringify({
+          claims: pack.expected.map((item) => ({
+            objectName: pack.object.name,
+            predicate: item.predicate,
+            text: `${pack.object.name}${item.textIncludes}`,
+            span: item.spanIncludes,
+          })),
+        }),
+        toolCalls: [],
+      };
+    });
+    expect(calls).toBe(1);
+    expect(scores.recall).toBe(100);
+  });
+
+  it('模型输出结构损坏时认证失败，不把技术错误算成低召回', async () => {
+    await expect(
+      runLiveCert(GOLD_PACKS[0]!, async () => ({ content: 'not-json', toolCalls: [] })),
+    ).rejects.toThrow('JSON');
   });
 
   it('简报无出处句子会拉低忠实度', () => {

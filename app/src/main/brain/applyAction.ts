@@ -4,6 +4,8 @@ import type {
   ChatCard,
   ChatMessage,
   Claim,
+  ExtractionOutcomeKind,
+  IngestJob,
   RightTab,
   Predicate,
   RightTabKind,
@@ -12,11 +14,11 @@ import type {
 } from '@shared/types';
 import { bannedHit } from '@shared/brief';
 import { outboundBrief, verifyBrief } from './briefOut';
+import { idempotencyKey } from '../loops/extract';
 import { proposeDropUnverified } from '../loops/tidy';
 import { deriveConflicts } from '@shared/scenario';
 import { scriptReply } from '@shared/chat';
 import { attachTurn } from '@shared/turn';
-import { stubExtract } from './extractStub';
 
 // · 账本规则（必须落在 reducer / 纯函数里，不是画在 UI 上） ·
 // 1. 未绑定来源不投影、不进对象对话默认语境：投影与对话都只读 claims，
@@ -53,6 +55,33 @@ function pushCard(state: State, objectId: string, card: ChatCard, text = ''): St
   };
 }
 
+/** 追加账本结果卡但不抢走用户当前视图，用于可同时影响多对象的来源动作。 */
+function appendCard(state: State, objectId: string, card: ChatCard, text = ''): State {
+  const [id, seq] = nextId(state, 'msg');
+  const msg: ChatMessage = { id, role: 'card', text, card };
+  return {
+    ...state,
+    seq,
+    chatByObject: pushChat({ ...state, seq }, objectId, msg),
+  };
+}
+
+function proposalTouchesClaims(state: State, proposalId: string, claimIds: Set<string>): boolean {
+  const proposal = state.proposals.find((item) => item.id === proposalId);
+  if (!proposal) return false;
+  if (proposal.payload.kind === '整理') return claimIds.has(proposal.payload.claimId);
+  if (proposal.payload.kind === '丢弃未核') {
+    return proposal.payload.claimIds.some((id) => claimIds.has(id));
+  }
+  return false;
+}
+
+function claimStillHasSource(state: State, claim: Claim): boolean {
+  if (claim.sourceId === 'user-stmt') return true;
+  const source = state.sources.find((item) => item.id === claim.sourceId);
+  return Boolean(source?.boundObjectIds.includes(claim.objectId));
+}
+
 function tabsOf(state: State, objectId: string): RightTab[] {
   return state.rightTabsByObject[objectId] ?? [];
 }
@@ -79,7 +108,12 @@ function ensureTab(state: State, objectId: string, kind: RightTabKind, focus: bo
 }
 
 function openObject(state: State, objectId: string): State {
-  return ensureTab({ ...state, view: { kind: 'object', objectId } }, objectId, '档案', !state.activeRightTabByObject[objectId]);
+  return ensureTab(
+    { ...state, view: { kind: 'object', objectId } },
+    objectId,
+    '档案',
+    !state.activeRightTabByObject[objectId],
+  );
 }
 
 /** 0025：受控谓词表是数据（state.slotDefs），整理只能并入表内已有槽。 */
@@ -87,22 +121,144 @@ function slotIsControlled(state: State, name: Predicate): boolean {
   return state.slotDefs.some((d) => d.name === name);
 }
 
+function modelSelection(
+  providers: State['providers'],
+  providerId: string,
+  modelId: string,
+): Pick<State, 'activeProviderId' | 'activeModelId'> {
+  const requested = providers.find((provider) => provider.id === providerId);
+  const activeProvider =
+    (requested?.enabled ? requested : undefined) ?? providers.find((provider) => provider.enabled);
+  const activeModel =
+    activeProvider?.models.find((model) => model.id === modelId) ?? activeProvider?.models[0];
+  return {
+    activeProviderId: activeProvider?.id ?? '',
+    activeModelId: activeModel?.id ?? '',
+  };
+}
+
+function providerRuntimeChanged(
+  before: State['providers'][number] | undefined,
+  after: State['providers'][number],
+): boolean {
+  if (!before) return false;
+  return (
+    before.baseUrl !== after.baseUrl ||
+    before.apiKey !== after.apiKey ||
+    before.enabled !== after.enabled ||
+    JSON.stringify(before.models) !== JSON.stringify(after.models)
+  );
+}
+
+function resetProviderCert(
+  certByProvider: State['certByProvider'],
+  providerId: string,
+): State['certByProvider'] {
+  if (!certByProvider[providerId]) return certByProvider;
+  return { ...certByProvider, [providerId]: { status: '未认证' } };
+}
+
+function removeProviderCert(
+  certByProvider: State['certByProvider'],
+  providerId: string,
+): State['certByProvider'] {
+  return Object.fromEntries(
+    Object.entries(certByProvider).filter(([id]) => id !== providerId),
+  ) as State['certByProvider'];
+}
+
+function resetSelectedCertIfChanged(
+  state: State,
+  certByProvider: State['certByProvider'],
+  selected: Pick<State, 'activeProviderId' | 'activeModelId'>,
+): State['certByProvider'] {
+  const changed =
+    state.activeProviderId !== selected.activeProviderId ||
+    state.activeModelId !== selected.activeModelId;
+  return changed && selected.activeProviderId
+    ? resetProviderCert(certByProvider, selected.activeProviderId)
+    : certByProvider;
+}
+
+function extractionResultText(
+  outcome: ExtractionOutcomeKind,
+  detail: string | undefined,
+  draftCount: number,
+  rejectedCount: number,
+): string {
+  if (outcome === 'unconfigured') {
+    return '未开始抽取：还没有可调用的模型。请先到设置里完成模型配置，再点来源旁的重试。';
+  }
+  if (outcome === 'invalid-output') {
+    return `抽取未完成：${detail ?? '模型输出结构不合格'}。没有写入任何主张，可以重试。`;
+  }
+  if (outcome === 'failed') {
+    return `抽取失败：${detail ?? '模型调用失败'}。没有写入任何主张，可以重试。`;
+  }
+  if (draftCount > 0 && rejectedCount >= draftCount) {
+    return `模型返回了 ${draftCount} 条候选，但都没有通过原文片段、对象或去重校验；没有写入主张。`;
+  }
+  return '原文中没有抽出可核对的主张；没有写入账本。';
+}
+
+function ingestStatusText(job: IngestJob): string {
+  if (job.inputKind === 'url') return '正在获取链接正文';
+  if (job.inputKind === 'file') return '正在读取文件';
+  return '正在解析文本';
+}
+
+function claimEvidenceKey(claim: Claim): string {
+  const span = claim.span ?? claim.text;
+  return typeof claim.sourceStart === 'number' ? `${span}\0${claim.sourceStart}` : span;
+}
+
 function enqueueWrite(state: State, draft: Omit<WriteProposal, 'id'>): State {
   if ((draft.kind === '晋升' || draft.kind === '纠正' || draft.kind === '整理') && !draft.claimId) {
-    return { ...state, toast: { text: '无出处的写提议不许生成', id: state.seq }, seq: state.seq + 1 };
+    return {
+      ...state,
+      toast: { text: '无出处的写提议不许生成', id: state.seq },
+      seq: state.seq + 1,
+    };
   }
-  if ((draft.kind === '批量晋升' || draft.kind === '批量回退') && !(draft.claimIds && draft.claimIds.length > 0)) {
-    return { ...state, toast: { text: '无出处的写提议不许生成', id: state.seq }, seq: state.seq + 1 };
+  if (
+    (draft.kind === '批量晋升' || draft.kind === '批量回退') &&
+    !(draft.claimIds && draft.claimIds.length > 0)
+  ) {
+    return {
+      ...state,
+      toast: { text: '无出处的写提议不许生成', id: state.seq },
+      seq: state.seq + 1,
+    };
   }
   if (draft.kind === '绑定' && !draft.sourceId) {
-    return { ...state, toast: { text: '无出处的写提议不许生成', id: state.seq }, seq: state.seq + 1 };
+    return {
+      ...state,
+      toast: { text: '无出处的写提议不许生成', id: state.seq },
+      seq: state.seq + 1,
+    };
   }
   const claim = draft.claimId ? state.claims.find((c) => c.id === draft.claimId) : undefined;
-  if (claim && bannedHit(state, claim) && (draft.kind === '晋升' || draft.kind === '纠正' || draft.kind === '整理')) {
-    return { ...state, toast: { text: '命中禁写，不许把这句话写回来', id: state.seq }, seq: state.seq + 1 };
+  if (
+    claim &&
+    bannedHit(state, claim) &&
+    (draft.kind === '晋升' || draft.kind === '纠正' || draft.kind === '整理')
+  ) {
+    return {
+      ...state,
+      toast: { text: '命中禁写，不许把这句话写回来', id: state.seq },
+      seq: state.seq + 1,
+    };
   }
-  if (draft.kind === '整理' && draft.targetPredicate && !slotIsControlled(state, draft.targetPredicate)) {
-    return { ...state, toast: { text: '不许自开谓词槽，只能并入已有槽', id: state.seq }, seq: state.seq + 1 };
+  if (
+    draft.kind === '整理' &&
+    draft.targetPredicate &&
+    !slotIsControlled(state, draft.targetPredicate)
+  ) {
+    return {
+      ...state,
+      toast: { text: '不许自开谓词槽，只能并入已有槽', id: state.seq },
+      seq: state.seq + 1,
+    };
   }
   // TODO(待拍板 §10) 任务级白名单「本任务内允许晋升」先不做。
   const [id, seq] = nextId(state, 'wr');
@@ -115,21 +271,28 @@ function proposalObjectId(state: State, proposalId: string): string | null {
   if (p.payload.kind === '候选记忆') return p.payload.fromObjectId ?? null;
   if (p.payload.kind === '丢弃未核') {
     const dropHead = p.payload.claimIds[0];
-    return state.claims.find((c) => c.id === dropHead)?.objectId
-      ?? state.pendingClaims.find((c) => c.id === dropHead)?.objectId
-      ?? null;
+    return (
+      state.claims.find((c) => c.id === dropHead)?.objectId ??
+      state.pendingClaims.find((c) => c.id === dropHead)?.objectId ??
+      null
+    );
   }
   const claimId = p.payload.claimId;
-  return state.claims.find((c) => c.id === claimId)?.objectId
-    ?? state.pendingClaims.find((c) => c.id === claimId)?.objectId
-    ?? null;
+  return (
+    state.claims.find((c) => c.id === claimId)?.objectId ??
+    state.pendingClaims.find((c) => c.id === claimId)?.objectId ??
+    null
+  );
 }
 
 export function reducer(state: State, action: Action): State {
   switch (action.type) {
     case 'SET_VIEW': {
       if (action.view.kind === 'object') {
-        return openObject({ ...state, selectedClaimId: state.selectedClaimId }, action.view.objectId);
+        return openObject(
+          { ...state, selectedClaimId: state.selectedClaimId },
+          action.view.objectId,
+        );
       }
       return { ...state, view: action.view };
     }
@@ -137,11 +300,21 @@ export function reducer(state: State, action: Action): State {
     case 'BIND_CONFIRMED': {
       const source = state.sources.find((s) => s.id === action.sourceId);
       if (!source || action.objectIds.length === 0) return state;
+      if (source.unparsed) {
+        return {
+          ...state,
+          toast: { text: '旧版占位材料需要重新导入后再绑定', id: state.seq },
+          seq: state.seq + 1,
+        };
+      }
       const seq = state.seq;
       const sources = state.sources.map((s) =>
         s.id === action.sourceId ? { ...s, boundObjectIds: action.objectIds } : s,
       );
-      const jobs = [...state.extractJobs, { sourceId: action.sourceId, status: '抽取中' as const }];
+      const jobs = [
+        ...state.extractJobs.filter((job) => job.sourceId !== action.sourceId),
+        { sourceId: action.sourceId, status: '抽取中' as const },
+      ];
       const objectId = action.objectIds[0];
       if (!objectId) return state;
       let next = openObject(
@@ -164,31 +337,257 @@ export function reducer(state: State, action: Action): State {
       );
     }
 
+    case 'UNBIND_SOURCE': {
+      const source = state.sources.find((item) => item.id === action.sourceId);
+      if (!source || source.virtual || !source.boundObjectIds.includes(action.objectId))
+        return state;
+      const remainingObjectIds = source.boundObjectIds.filter((id) => id !== action.objectId);
+      const droppedClaims = state.claims.filter(
+        (claim) => claim.sourceId === action.sourceId && claim.objectId === action.objectId,
+      );
+      const droppedIds = new Set(droppedClaims.map((claim) => claim.id));
+      const sourceTitle = source.title;
+      const next: State = {
+        ...state,
+        sources: state.sources.map((item) =>
+          item.id === action.sourceId ? { ...item, boundObjectIds: remainingObjectIds } : item,
+        ),
+        claims: state.claims.filter(
+          (claim) => !(claim.sourceId === action.sourceId && claim.objectId === action.objectId),
+        ),
+        pendingClaims: state.pendingClaims.filter(
+          (claim) => !(claim.sourceId === action.sourceId && claim.objectId === action.objectId),
+        ),
+        proposals: state.proposals.filter(
+          (proposal) => !proposalTouchesClaims(state, proposal.id, droppedIds),
+        ),
+        writeQueue: state.writeQueue.filter(
+          (write) =>
+            !(write.claimId && droppedIds.has(write.claimId)) &&
+            !write.claimIds?.some((id) => droppedIds.has(id)),
+        ),
+        inbox:
+          remainingObjectIds.length === 0 && !state.inbox.includes(action.sourceId)
+            ? [...state.inbox, action.sourceId]
+            : state.inbox,
+        extractJobs:
+          remainingObjectIds.length === 0
+            ? state.extractJobs.filter((job) => job.sourceId !== action.sourceId)
+            : state.extractJobs,
+        selectedClaimId:
+          state.selectedClaimId && droppedIds.has(state.selectedClaimId)
+            ? null
+            : state.selectedClaimId,
+        toast: {
+          text:
+            remainingObjectIds.length === 0
+              ? `已解绑「${sourceTitle}」，来源回 Inbox`
+              : `已解绑「${sourceTitle}」与当前对象`,
+          id: state.seq,
+        },
+        seq: state.seq + 1,
+      };
+      return pushCard(
+        next,
+        action.objectId,
+        {
+          kind: '结果',
+          claimIds: droppedClaims.map((claim) => claim.id),
+          result: '解绑',
+          undo: {
+            kind: '解绑',
+            sourceId: action.sourceId,
+            objectId: action.objectId,
+            claims: droppedClaims.map((claim) => ({ ...claim })),
+          },
+        },
+        `已解绑「${sourceTitle}」：撤下该对象下 ${droppedClaims.length} 条主张${
+          remainingObjectIds.length === 0 ? '，来源回到 Inbox' : ''
+        }`,
+      );
+    }
+
+    case 'DELETE_SOURCE': {
+      const source = state.sources.find((item) => item.id === action.sourceId);
+      if (!source || source.virtual) return state;
+      const today = new Date().toISOString().slice(0, 10);
+      const relatedClaims = state.claims.filter((claim) => claim.sourceId === action.sourceId);
+      const closingClaims = relatedClaims.filter((claim) => claim.status === '成立');
+      const relatedIds = new Set(relatedClaims.map((claim) => claim.id));
+      const affectedObjectIds = [
+        ...new Set([...source.boundObjectIds, ...relatedClaims.map((claim) => claim.objectId)]),
+      ].filter((objectId) => state.objects.some((object) => object.id === objectId));
+      let next: State = {
+        ...state,
+        sources: state.sources.filter((item) => item.id !== action.sourceId),
+        claims: state.claims.map((claim) =>
+          claim.sourceId === action.sourceId && claim.status === '成立'
+            ? {
+                ...claim,
+                status: '过时' as const,
+                validTo: today,
+                closeReason: '来源删除' as const,
+              }
+            : claim,
+        ),
+        pendingClaims: state.pendingClaims.filter((claim) => claim.sourceId !== action.sourceId),
+        proposals: state.proposals.filter(
+          (proposal) => !proposalTouchesClaims(state, proposal.id, relatedIds),
+        ),
+        writeQueue: state.writeQueue.filter(
+          (write) =>
+            write.sourceId !== action.sourceId &&
+            !(write.claimId && relatedIds.has(write.claimId)) &&
+            !write.claimIds?.some((id) => relatedIds.has(id)),
+        ),
+        inbox: state.inbox.filter((id) => id !== action.sourceId),
+        extractJobs: state.extractJobs.filter((job) => job.sourceId !== action.sourceId),
+        sourceFocusId: state.sourceFocusId === action.sourceId ? null : state.sourceFocusId,
+        toast: {
+          text: `已删除来源「${source.title}」，${closingClaims.length} 条主张已关窗`,
+          id: state.seq,
+        },
+        seq: state.seq + 1,
+      };
+      for (const objectId of affectedObjectIds) {
+        const count = closingClaims.filter((claim) => claim.objectId === objectId).length;
+        next = appendCard(
+          next,
+          objectId,
+          { kind: '结果', result: '删除来源' },
+          `已删除来源「${source.title}」：该对象下 ${count} 条主张已关窗（来源删除），历史简报不改`,
+        );
+      }
+      return next;
+    }
+
+    case 'RESTORE_DELETED_SOURCE': {
+      const source = action.recovery.source;
+      if (source.virtual || state.sources.some((item) => item.id === source.id)) return state;
+      const objectIds = new Set(state.objects.map((object) => object.id));
+      const boundObjectIds = source.boundObjectIds.filter((id) => objectIds.has(id));
+      const restoredSource = { ...source, boundObjectIds };
+      const snapshots = new Map(
+        action.recovery.claims
+          .filter((claim) => claim.sourceId === source.id && objectIds.has(claim.objectId))
+          .map((claim) => [claim.id, claim]),
+      );
+      const restoredIds = new Set<string>();
+      const claims = state.claims.map((claim) => {
+        const snapshot = snapshots.get(claim.id);
+        if (!snapshot) return claim;
+        restoredIds.add(claim.id);
+        return { ...snapshot };
+      });
+      const missingClaims = [...snapshots.values()]
+        .filter((claim) => !restoredIds.has(claim.id))
+        .map((claim) => ({ ...claim }));
+      const affectedObjectIds = [
+        ...new Set([...boundObjectIds, ...[...snapshots.values()].map((claim) => claim.objectId)]),
+      ].filter((objectId) => objectIds.has(objectId));
+      let next: State = {
+        ...state,
+        sources: [...state.sources, restoredSource],
+        claims: [...claims, ...missingClaims],
+        inbox:
+          boundObjectIds.length === 0 && !state.inbox.includes(source.id)
+            ? [...state.inbox, source.id]
+            : state.inbox.filter((id) => id !== source.id),
+        deletedSourceRecoveries: state.deletedSourceRecoveries.filter(
+          (item) => item.source.id !== source.id,
+        ),
+        toast: {
+          text: `已恢复来源「${source.title}」`,
+          id: state.seq,
+        },
+        seq: state.seq + 1,
+      };
+      for (const objectId of affectedObjectIds) {
+        const count = [...snapshots.values()].filter((claim) => claim.objectId === objectId).length;
+        next = appendCard(
+          next,
+          objectId,
+          { kind: '结果', result: '撤销' },
+          `已恢复来源「${source.title}」：恢复绑定并重开 ${count} 条主张`,
+        );
+      }
+      return next;
+    }
+
+    case 'RETRY_EXTRACTION': {
+      const source = state.sources.find((item) => item.id === action.sourceId);
+      if (!source || source.boundObjectIds.length === 0) return state;
+      return {
+        ...state,
+        extractJobs: [
+          ...state.extractJobs.filter((job) => job.sourceId !== action.sourceId),
+          { sourceId: action.sourceId, status: '抽取中' },
+        ],
+        toast: { text: '已重新开始抽取', id: state.seq + 1 },
+        seq: state.seq + 1,
+      };
+    }
+
     case 'EXTRACT_DONE': {
-      const jobs = state.extractJobs.map((j) => (j.sourceId === action.sourceId ? { ...j, status: '完成' as const } : j));
+      const outcome = action.outcome ?? 'success';
+      const finalStatus: State['extractJobs'][number]['status'] =
+        outcome === 'success' ? '完成' : outcome === 'unconfigured' ? '未配置' : '失败';
+      const jobs = state.extractJobs.map((j) =>
+        j.sourceId === action.sourceId
+          ? {
+              ...j,
+              status: finalStatus,
+              detail: action.detail,
+            }
+          : j,
+      );
       const src = state.sources.find((s) => s.id === action.sourceId);
       // 绑定被撤销后迟到的抽取完成：来源已不在绑定态，只清理作业，不写入、不弹卡。
       if (!src || src.boundObjectIds.length === 0) {
-        return { ...state, extractJobs: jobs, pendingClaims: state.pendingClaims.filter((c) => c.sourceId !== action.sourceId) };
+        return {
+          ...state,
+          extractJobs: jobs,
+          pendingClaims: state.pendingClaims.filter((c) => c.sourceId !== action.sourceId),
+        };
       }
       const objectId = src.boundObjectIds[0];
       const pending = state.pendingClaims.filter((c) => c.sourceId === action.sourceId);
-      const incoming =
-        action.claims && action.claims.length > 0
-          ? action.claims
-          : pending.length > 0
-            ? pending
-            : stubExtract({
-                source: src,
-                objects: state.objects,
-                slotDefs: state.slotDefs,
-                now: new Date().toISOString(),
-                existing: state.claims,
-              });
+      // action.claims 只接收真实抽取循环的结果；未配置模型时不写任何主张。
+      const candidates = outcome === 'success' ? (action.claims ?? pending) : [];
+      // 抽取请求可能在解绑/重绑之间并发完成；最终落账必须再次按当前账本幂等复核。
+      const seen = new Set(
+        state.claims.map((claim) =>
+          idempotencyKey(claim.sourceId, claim.objectId, claim.predicate, claimEvidenceKey(claim)),
+        ),
+      );
+      const incoming = candidates.filter((claim) => {
+        if (claim.sourceId !== action.sourceId || !src.boundObjectIds.includes(claim.objectId)) {
+          return false;
+        }
+        const key = idempotencyKey(
+          claim.sourceId,
+          claim.objectId,
+          claim.predicate,
+          claimEvidenceKey(claim),
+        );
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      });
       if (incoming.length === 0) {
-        let next: State = { ...state, extractJobs: jobs };
+        let next: State = {
+          ...state,
+          extractJobs: jobs,
+          pendingClaims: state.pendingClaims.filter((c) => c.sourceId !== action.sourceId),
+        };
         if (objectId) {
-          next = pushCard(next, objectId, { kind: '结果', result: '抽取' }, '未抽出可核对命题，未写入账本');
+          const text = extractionResultText(
+            outcome,
+            action.detail,
+            action.draftCount ?? 0,
+            action.rejectedCount ?? 0,
+          );
+          next = pushCard(next, objectId, { kind: '结果', result: '抽取' }, text);
         }
         return next;
       }
@@ -208,8 +607,12 @@ export function reducer(state: State, action: Action): State {
         const hit = claimObjIds.some((id) => bound.includes(id));
         let text = `抽出 ${incoming.length} 条主张，全部未核`;
         if (!hit && bound.length > 0) {
-          const claimNames = claimObjIds.map((id) => state.objects.find((o) => o.id === id)?.name ?? id).join('、');
-          const boundNames = bound.map((id) => state.objects.find((o) => o.id === id)?.name ?? id).join('、');
+          const claimNames = claimObjIds
+            .map((id) => state.objects.find((o) => o.id === id)?.name ?? id)
+            .join('、');
+          const boundNames = bound
+            .map((id) => state.objects.find((o) => o.id === id)?.name ?? id)
+            .join('、');
           text += `。主张挂在「${claimNames}」，本次绑定的是「${boundNames}」`;
         }
         next = pushCard(
@@ -227,7 +630,10 @@ export function reducer(state: State, action: Action): State {
     case 'OPEN_AUDIT_CARD': {
       const claim = state.claims.find((c) => c.id === action.claimId);
       if (!claim) return state;
-      return pushCard(openObject(state, claim.objectId), claim.objectId, { kind: '审计', claimId: claim.id });
+      return pushCard(openObject(state, claim.objectId), claim.objectId, {
+        kind: '审计',
+        claimId: claim.id,
+      });
     }
 
     case 'OPEN_CORRECT_CARD': {
@@ -247,10 +653,18 @@ export function reducer(state: State, action: Action): State {
       const prop = state.proposals.find((p) => p.id === action.proposalId);
       const objectId = proposalObjectId(state, action.proposalId);
       if (prop?.payload.kind === '丢弃未核') {
-        return { ...state, toast: { text: '丢弃类提议请在待确认页处理', id: state.seq }, seq: state.seq + 1 };
+        return {
+          ...state,
+          toast: { text: '丢弃类提议请在待确认页处理', id: state.seq },
+          seq: state.seq + 1,
+        };
       }
       if (!prop || !objectId || prop.payload.kind !== '整理') {
-        return { ...state, toast: { text: '这条提议没有对应对象', id: state.seq }, seq: state.seq + 1 };
+        return {
+          ...state,
+          toast: { text: '这条提议没有对应对象', id: state.seq },
+          seq: state.seq + 1,
+        };
       }
       return enqueueWrite(openObject(state, objectId), {
         objectId,
@@ -263,16 +677,25 @@ export function reducer(state: State, action: Action): State {
     }
 
     case 'DISMISS_CARD': {
-      const list = (state.chatByObject[action.objectId] ?? []).filter((m) => m.id !== action.messageId);
+      const list = (state.chatByObject[action.objectId] ?? []).filter(
+        (m) => m.id !== action.messageId,
+      );
       return { ...state, chatByObject: { ...state.chatByObject, [action.objectId]: list } };
     }
 
     case 'FOCUS_SOURCE': {
       const source = state.sources.find((s) => s.id === action.sourceId);
       const objectId =
-        (state.view.kind === 'object' ? state.view.objectId : null) ?? source?.boundObjectIds[0] ?? null;
+        (state.view.kind === 'object' ? state.view.objectId : null) ??
+        source?.boundObjectIds[0] ??
+        null;
       if (!objectId) return { ...state, sourceFocusId: action.sourceId };
-      return ensureTab({ ...openObject(state, objectId), sourceFocusId: action.sourceId }, objectId, '来源', true);
+      return ensureTab(
+        { ...openObject(state, objectId), sourceFocusId: action.sourceId },
+        objectId,
+        '来源',
+        true,
+      );
     }
 
     case 'CORRECT_CLAIM': {
@@ -310,7 +733,12 @@ export function reducer(state: State, action: Action): State {
         return pushCard(
           next,
           old.objectId,
-          { kind: '结果', claimId: old.id, result: '整理', undo: { kind: '整理丢弃', claim: { ...old } } },
+          {
+            kind: '结果',
+            claimId: old.id,
+            result: '整理',
+            undo: { kind: '整理丢弃', claims: [{ ...old }] },
+          },
           newId ? '未核旧句已丢弃，你的新句已记入（未写禁写）' : '已丢弃（未核主张，不写禁写）',
         );
       }
@@ -367,7 +795,12 @@ export function reducer(state: State, action: Action): State {
       return pushCard(
         next,
         old.objectId,
-        { kind: '结果', claimId: old.id, result: '关窗', undo: { kind: '关窗', claimId: old.id, memoryId: memId, companionId: newId } },
+        {
+          kind: '结果',
+          claimId: old.id,
+          result: '关窗',
+          undo: { kind: '关窗', claimId: old.id, memoryId: memId, companionId: newId },
+        },
         `已关窗 · ${action.closeReason} · 禁写已生效`,
       );
     }
@@ -377,14 +810,21 @@ export function reducer(state: State, action: Action): State {
       if (!claim) return state;
       const next: State = {
         ...state,
-        claims: state.claims.map((c) => (c.id === action.claimId ? { ...c, unverified: false } : c)),
+        claims: state.claims.map((c) =>
+          c.id === action.claimId ? { ...c, unverified: false } : c,
+        ),
         toast: { text: '已晋升', id: state.seq },
         seq: state.seq + 1,
       };
       return pushCard(
         next,
         claim.objectId,
-        { kind: '结果', claimId: claim.id, result: '晋升', undo: { kind: '晋升', claimId: claim.id } },
+        {
+          kind: '结果',
+          claimId: claim.id,
+          result: '晋升',
+          undo: { kind: '晋升', claimId: claim.id },
+        },
         '已晋升，简报不再带未核',
       );
     }
@@ -400,7 +840,9 @@ export function reducer(state: State, action: Action): State {
       const createdAt = new Date().toISOString().replace('T', ' ').slice(0, 16);
       const assembled = action.brief ?? outboundBrief(state, objectId, briefId, taskId);
       const brief: Brief = { ...verifyBrief(assembled, state.claims), createdAt };
-      const unverifiedClaims = state.claims.filter((c) => c.objectId === objectId && c.unverified && c.status === '成立');
+      const unverifiedClaims = state.claims.filter(
+        (c) => c.objectId === objectId && c.unverified && c.status === '成立',
+      );
       let next: State = {
         ...state,
         seq: seq2,
@@ -438,7 +880,11 @@ export function reducer(state: State, action: Action): State {
     case 'CHAT_SEND': {
       const { text } = action;
       const userMsg: ChatMessage = { id: `msg-${state.seq}`, role: 'user', text };
-      let st: State = { ...state, seq: state.seq + 1, chatByObject: pushChat(state, action.objectId, userMsg) };
+      let st: State = {
+        ...state,
+        seq: state.seq + 1,
+        chatByObject: pushChat(state, action.objectId, userMsg),
+      };
       const result = scriptReply(st, action.objectId, text);
       const deskMsg: ChatMessage = attachTurn(
         st,
@@ -488,7 +934,11 @@ export function reducer(state: State, action: Action): State {
           st = pushCard(
             st,
             action.objectId,
-            { kind: '结果', result: '记忆', undo: dup ? undefined : { kind: '记忆', memoryId: memId } },
+            {
+              kind: '结果',
+              result: '记忆',
+              undo: dup ? undefined : { kind: '记忆', memoryId: memId },
+            },
             dup ? '这条已经记过，未再写入' : '已记下，立刻生效',
           );
           break;
@@ -525,7 +975,9 @@ export function reducer(state: State, action: Action): State {
           return pushCard(
             {
               ...state,
-              proposals: state.proposals.map((p) => (p.id === prop.id ? { ...p, pending: false, decision: 'reject' } : p)),
+              proposals: state.proposals.map((p) =>
+                p.id === prop.id ? { ...p, pending: false, decision: 'reject' } : p,
+              ),
               toast: { text: '已驳回', id: state.seq },
               seq: state.seq + 1,
             },
@@ -554,12 +1006,18 @@ export function reducer(state: State, action: Action): State {
                     createdAt: new Date().toISOString().slice(0, 10),
                   },
                 ],
-            proposals: state.proposals.map((p) => (p.id === prop.id ? { ...p, pending: false, decision: 'accept-merge' } : p)),
+            proposals: state.proposals.map((p) =>
+              p.id === prop.id ? { ...p, pending: false, decision: 'accept-merge' } : p,
+            ),
             toast: { text: dup ? '已经在记忆里' : `已写入${scope}记忆`, id: state.seq },
             seq: state.seq + 1,
           },
           objectId ?? state.currentWorkspaceId,
-          { kind: '结果', result: '记忆', undo: dup ? undefined : { kind: '记忆', memoryId: memId } },
+          {
+            kind: '结果',
+            result: '记忆',
+            undo: dup ? undefined : { kind: '记忆', memoryId: memId },
+          },
           dup ? '候选记忆已在记忆里，未再写入' : `已写入${scope}记忆`,
         );
       }
@@ -573,7 +1031,9 @@ export function reducer(state: State, action: Action): State {
             {
               ...state,
               claims: state.claims.filter((c) => !dropIds.includes(c.id)),
-              proposals: state.proposals.map((p) => (p.id === prop.id ? { ...p, pending: false, decision: 'accept-drop' } : p)),
+              proposals: state.proposals.map((p) =>
+                p.id === prop.id ? { ...p, pending: false, decision: 'accept-drop' } : p,
+              ),
               toast: { text: `已丢弃 ${dropped.length} 条未核主张`, id: state.seq },
               seq: state.seq + 1,
             },
@@ -582,7 +1042,10 @@ export function reducer(state: State, action: Action): State {
               kind: '结果',
               claimIds: prop.payload.claimIds,
               result: '整理',
-              undo: dropped.length === 1 ? { kind: '整理丢弃', claim: { ...dropped[0]! } } : undefined,
+              undo:
+                dropped.length > 0
+                  ? { kind: '整理丢弃', claims: dropped.map((claim) => ({ ...claim })) }
+                  : undefined,
             },
             `已丢弃 ${dropped.length} 条未核主张（派生冲突随之消失）`,
           );
@@ -591,7 +1054,9 @@ export function reducer(state: State, action: Action): State {
         return pushCard(
           {
             ...state,
-            proposals: state.proposals.map((p) => (p.id === prop.id ? { ...p, pending: false, decision: decided } : p)),
+            proposals: state.proposals.map((p) =>
+              p.id === prop.id ? { ...p, pending: false, decision: decided } : p,
+            ),
             toast: { text: '已驳回', id: state.seq },
             seq: state.seq + 1,
           },
@@ -611,7 +1076,9 @@ export function reducer(state: State, action: Action): State {
           {
             ...state,
             claims,
-            proposals: state.proposals.map((p) => (p.id === prop.id ? { ...p, pending: false, decision: 'accept-merge' } : p)),
+            proposals: state.proposals.map((p) =>
+              p.id === prop.id ? { ...p, pending: false, decision: 'accept-merge' } : p,
+            ),
             toast: { text: `已并入「${tidy.targetPredicate}」`, id: state.seq },
             seq: state.seq + 1,
           },
@@ -620,7 +1087,9 @@ export function reducer(state: State, action: Action): State {
             kind: '结果',
             claimId: tidy.claimId,
             result: '整理',
-            undo: fromPredicate ? { kind: '整理并入', claimId: tidy.claimId, fromPredicate } : undefined,
+            undo: fromPredicate
+              ? { kind: '整理并入', claimId: tidy.claimId, fromPredicate }
+              : undefined,
           },
           `已并入「${tidy.targetPredicate}」`,
         );
@@ -631,7 +1100,9 @@ export function reducer(state: State, action: Action): State {
           {
             ...state,
             claims: state.claims.filter((c) => c.id !== tidy.claimId),
-            proposals: state.proposals.map((p) => (p.id === prop.id ? { ...p, pending: false, decision: 'accept-drop' } : p)),
+            proposals: state.proposals.map((p) =>
+              p.id === prop.id ? { ...p, pending: false, decision: 'accept-drop' } : p,
+            ),
             toast: { text: '已丢弃', id: state.seq },
             seq: state.seq + 1,
           },
@@ -640,7 +1111,7 @@ export function reducer(state: State, action: Action): State {
             kind: '结果',
             claimId: tidy.claimId,
             result: '整理',
-            undo: dropped ? { kind: '整理丢弃', claim: { ...dropped } } : undefined,
+            undo: dropped ? { kind: '整理丢弃', claims: [{ ...dropped }] } : undefined,
           },
           '已丢弃这条未编目主张',
         );
@@ -648,7 +1119,9 @@ export function reducer(state: State, action: Action): State {
       return pushCard(
         {
           ...state,
-          proposals: state.proposals.map((p) => (p.id === prop.id ? { ...p, pending: false, decision: 'reject' } : p)),
+          proposals: state.proposals.map((p) =>
+            p.id === prop.id ? { ...p, pending: false, decision: 'reject' } : p,
+          ),
           toast: { text: '已驳回', id: state.seq },
           seq: state.seq + 1,
         },
@@ -659,6 +1132,13 @@ export function reducer(state: State, action: Action): State {
     }
 
     case 'ADD_SOURCE': {
+      if (action.fromUrl || action.unparsed) {
+        return {
+          ...state,
+          toast: { text: '请使用导入入口获取真实正文', id: state.seq },
+          seq: state.seq + 1,
+        };
+      }
       const body = action.body.trim();
       if (!body) return state;
       const [id, seq] = nextId(state, 'src');
@@ -678,14 +1158,93 @@ export function reducer(state: State, action: Action): State {
             path: '手给',
             boundObjectIds: [],
             workspaceId: state.currentWorkspaceId,
-            ...(action.unparsed ? { unparsed: true } : {}),
           },
         ],
         inbox: [...state.inbox, id],
-        toast: {
-          text: action.unparsed ? '文件已收下，成品才解析' : action.fromUrl ? '已收下，成品才抓 URL' : '已加入 Inbox',
-          id: seq,
-        },
+        toast: { text: '已加入 Inbox', id: seq },
+      };
+    }
+
+    case 'INGEST_STARTED': {
+      const existing = state.ingestJobs.find((job) => job.id === action.job.id);
+      const jobs = existing
+        ? state.ingestJobs.map((job) =>
+            job.id === action.job.id
+              ? {
+                  ...action.job,
+                  createdAt: job.createdAt,
+                  attempt: Math.max(action.job.attempt, job.attempt + 1),
+                }
+              : job,
+          )
+        : [...state.ingestJobs, action.job];
+      return {
+        ...state,
+        ingestJobs: jobs,
+        toast: { text: ingestStatusText(action.job), id: state.seq },
+      };
+    }
+
+    case 'INGEST_SUCCEEDED': {
+      const body = action.body.trim();
+      if (!body) return state;
+      const [id, seq] = nextId(state, 'src');
+      const source = {
+        id,
+        title: action.title.trim() || '导入材料',
+        body,
+        path: '手给' as const,
+        boundObjectIds: [],
+        workspaceId: state.currentWorkspaceId,
+        origin: action.origin,
+        segments: action.segments,
+        contentHash: action.contentHash,
+        fetchedAt: action.origin.fetchedAt,
+      };
+      const updatedAt = new Date().toISOString();
+      const jobs = state.ingestJobs.map((job) =>
+        job.id === action.jobId
+          ? {
+              ...job,
+              status: '完成' as const,
+              sourceId: id,
+              title: source.title,
+              locator: action.origin.finalUrl ?? action.origin.locator ?? job.locator,
+              detail: undefined,
+              failureKind: undefined,
+              updatedAt,
+            }
+          : job,
+      );
+      return {
+        ...state,
+        seq,
+        sources: [...state.sources, source],
+        inbox: [...state.inbox, id],
+        ingestJobs: jobs,
+        toast: { text: '真实材料已解析并加入 Inbox', id: seq },
+      };
+    }
+
+    case 'INGEST_FAILED': {
+      const updatedAt = new Date().toISOString();
+      const jobs = state.ingestJobs.map((job) =>
+        job.id === action.jobId
+          ? {
+              ...job,
+              status: '失败' as const,
+              title: action.title ?? job.title,
+              locator: action.locator ?? job.locator,
+              failureKind: action.failureKind,
+              detail: action.detail,
+              updatedAt,
+            }
+          : job,
+      );
+      return {
+        ...state,
+        ingestJobs: jobs,
+        toast: { text: `导入失败：${action.detail}`, id: state.seq },
       };
     }
 
@@ -702,33 +1261,74 @@ export function reducer(state: State, action: Action): State {
       return { ...state, themePreference: action.preference };
 
     case 'UPSERT_PROVIDER': {
-      const exists = state.providers.some((p) => p.id === action.provider.id);
-      if (exists) {
-        const providers = state.providers.map((p) => (p.id === action.provider.id ? action.provider : p));
-        const still = providers.find((p) => p.id === state.activeProviderId)?.models.some((m) => m.id === state.activeModelId);
-        return { ...state, providers, activeModelId: still ? state.activeModelId : providers.find((p) => p.id === state.activeProviderId)?.models[0]?.id ?? state.activeModelId };
-      }
-      return { ...state, providers: [...state.providers, action.provider], seq: state.seq + 1 };
+      const previous = state.providers.find((p) => p.id === action.provider.id);
+      const exists = Boolean(previous);
+      const providers = exists
+        ? state.providers.map((provider) =>
+            provider.id === action.provider.id ? action.provider : provider,
+          )
+        : [...state.providers, action.provider];
+      const selected = modelSelection(
+        providers,
+        state.activeProviderId || action.provider.id,
+        state.activeModelId,
+      );
+      const runtimeCerts = providerRuntimeChanged(previous, action.provider)
+        ? resetProviderCert(state.certByProvider, action.provider.id)
+        : state.certByProvider;
+      return {
+        ...state,
+        providers,
+        certByProvider: resetSelectedCertIfChanged(state, runtimeCerts, selected),
+        ...selected,
+        seq: state.seq + 1,
+      };
     }
 
     case 'REMOVE_PROVIDER': {
       const providers = state.providers.filter((p) => p.id !== action.id);
-      const activeProviderId =
-        state.activeProviderId === action.id ? (providers[0]?.id ?? state.activeProviderId) : state.activeProviderId;
-      return { ...state, providers, activeProviderId };
-    }
-
-    case 'SET_ACTIVE_PROVIDER': {
-      const p = state.providers.find((x) => x.id === action.id);
+      const selected = modelSelection(
+        providers,
+        state.activeProviderId === action.id ? '' : state.activeProviderId,
+        state.activeModelId,
+      );
+      const remainingCerts = removeProviderCert(state.certByProvider, action.id);
       return {
         ...state,
-        activeProviderId: action.id,
-        activeModelId: p?.models[0]?.id ?? state.activeModelId,
+        providers,
+        certByProvider: resetSelectedCertIfChanged(state, remainingCerts, selected),
+        ...selected,
+        seq: state.seq + 1,
       };
     }
 
-    case 'SET_ACTIVE_MODEL':
-      return { ...state, activeModelId: action.id };
+    case 'SET_ACTIVE_PROVIDER': {
+      if (!state.providers.some((provider) => provider.id === action.id)) return state;
+      const selected = modelSelection(state.providers, action.id, '');
+      return {
+        ...state,
+        certByProvider: resetSelectedCertIfChanged(state, state.certByProvider, selected),
+        ...selected,
+        seq: state.seq + 1,
+      };
+    }
+
+    case 'SET_ACTIVE_MODEL': {
+      const provider = state.providers.find((item) => item.id === action.providerId);
+      if (!provider?.enabled || !provider.models.some((model) => model.id === action.modelId)) {
+        return state;
+      }
+      return {
+        ...state,
+        activeProviderId: provider.id,
+        activeModelId: action.modelId,
+        certByProvider:
+          state.activeProviderId === provider.id && state.activeModelId === action.modelId
+            ? state.certByProvider
+            : resetProviderCert(state.certByProvider, provider.id),
+        seq: state.seq + 1,
+      };
+    }
 
     case 'SET_THINKING':
       return { ...state, thinkingEffort: action.effort };
@@ -740,7 +1340,7 @@ export function reducer(state: State, action: Action): State {
     case 'CLOSE_RIGHT_TAB': {
       const tabs = tabsOf(state, action.objectId).filter((t) => t.id !== action.id);
       const prev = state.activeRightTabByObject[action.objectId];
-      const active = prev === action.id ? (tabs[tabs.length - 1]?.id ?? null) : prev ?? null;
+      const active = prev === action.id ? (tabs[tabs.length - 1]?.id ?? null) : (prev ?? null);
       return patchTabs(state, action.objectId, tabs, active);
     }
 
@@ -781,7 +1381,10 @@ export function reducer(state: State, action: Action): State {
       if (!state.currentWorkspaceId) {
         return { ...state, toast: { text: '先建工作区', id: state.seq }, seq: state.seq + 1 };
       }
-      const [id, seq] = nextId(state, action.kind === '人' ? 'person' : action.kind === '组织' ? 'org' : 'proj');
+      const [id, seq] = nextId(
+        state,
+        action.kind === '人' ? 'person' : action.kind === '组织' ? 'org' : 'proj',
+      );
       const obj = {
         id,
         kind: action.kind,
@@ -795,14 +1398,19 @@ export function reducer(state: State, action: Action): State {
     case 'REMOVE_WORKSPACE': {
       const rest = state.workspaces.filter((w) => w.id !== action.id);
       if (rest.length === state.workspaces.length) return state;
-      const nextIdWs = action.id === state.currentWorkspaceId ? (rest[0]?.id ?? '') : state.currentWorkspaceId;
+      const nextIdWs =
+        action.id === state.currentWorkspaceId ? (rest[0]?.id ?? '') : state.currentWorkspaceId;
       const openObj = state.view.kind === 'object' ? state.view.objectId : null;
-      const leaving = Boolean(openObj && state.objects.find((o) => o.id === openObj)?.workspaceId === action.id);
+      const leaving = Boolean(
+        openObj && state.objects.find((o) => o.id === openObj)?.workspaceId === action.id,
+      );
       // 0032：对象保留 workspaceId（指向已删区）并归档，成为可从「全部对象」找回的孤儿，不丢主张。
       return {
         ...state,
         workspaces: rest,
-        objects: state.objects.map((o) => (o.workspaceId === action.id ? { ...o, archived: true } : o)),
+        objects: state.objects.map((o) =>
+          o.workspaceId === action.id ? { ...o, archived: true } : o,
+        ),
         currentWorkspaceId: nextIdWs,
         view: leaving || action.id === state.currentWorkspaceId ? { kind: 'inbox' } : state.view,
         selectedClaimId: null,
@@ -846,31 +1454,59 @@ export function reducer(state: State, action: Action): State {
         if (target && !target.unverified && !action.closeReason) {
           return { ...state, toast: { text: '关闭原因必填', id: state.seq }, seq: state.seq + 1 };
         }
-        st = reducer(st, { type: 'CORRECT_CLAIM', claimId: head.claimId, closeReason: action.closeReason ?? '从未成立', newText: action.newText });
+        st = reducer(st, {
+          type: 'CORRECT_CLAIM',
+          claimId: head.claimId,
+          closeReason: action.closeReason ?? '从未成立',
+          newText: action.newText,
+        });
       } else if (head.kind === '整理' && head.claimId && head.targetPredicate) {
-        const prop = st.proposals.find((p) => p.payload.kind === '整理' && p.payload.claimId === head.claimId && p.pending);
-        if (prop) st = reducer(st, { type: 'PROPOSAL_DECIDE', proposalId: prop.id, decision: 'accept-merge' });
+        const prop = st.proposals.find(
+          (p) => p.payload.kind === '整理' && p.payload.claimId === head.claimId && p.pending,
+        );
+        if (prop)
+          st = reducer(st, {
+            type: 'PROPOSAL_DECIDE',
+            proposalId: prop.id,
+            decision: 'accept-merge',
+          });
         else {
-          const claims = st.claims.map((c) => (c.id === head.claimId ? { ...c, predicate: head.targetPredicate! } : c));
+          const claims = st.claims.map((c) =>
+            c.id === head.claimId ? { ...c, predicate: head.targetPredicate! } : c,
+          );
           st = { ...st, claims };
-          st = pushCard(st, head.objectId, { kind: '结果', claimId: head.claimId, result: '整理' }, `已并入「${head.targetPredicate}」`);
+          st = pushCard(
+            st,
+            head.objectId,
+            { kind: '结果', claimId: head.claimId, result: '整理' },
+            `已并入「${head.targetPredicate}」`,
+          );
         }
       } else if (head.kind === '批量晋升' && head.claimIds) {
         st = {
           ...st,
-          claims: st.claims.map((c) => (head.claimIds!.includes(c.id) ? { ...c, unverified: false } : c)),
+          claims: st.claims.map((c) =>
+            head.claimIds!.includes(c.id) ? { ...c, unverified: false } : c,
+          ),
         };
         st = pushCard(
           st,
           head.objectId,
-          { kind: '结果', claimIds: head.claimIds, result: '批量晋升', undo: { kind: '批量晋升', claimIds: head.claimIds } },
+          {
+            kind: '结果',
+            claimIds: head.claimIds,
+            result: '批量晋升',
+            undo: { kind: '批量晋升', claimIds: head.claimIds },
+          },
           `已全部晋升 ${head.claimIds.length} 条，简报不再带未核`,
         );
       } else if (head.kind === '批量回退' && head.claimIds) {
         // 0034：批量晋升的补偿走 takeover 确认（Q3/Q5），确认后整批回到未核。
         st = {
           ...st,
-          claims: st.claims.map((c) => (head.claimIds!.includes(c.id) ? { ...c, unverified: true } : c)),
+          claims: st.claims.map((c) =>
+            head.claimIds!.includes(c.id) ? { ...c, unverified: true } : c,
+          ),
         };
         st = pushCard(
           st,
@@ -879,7 +1515,11 @@ export function reducer(state: State, action: Action): State {
           `已全部回到未核 ${head.claimIds.length} 条`,
         );
       } else if (head.kind === '绑定' && head.sourceId && head.objectIds) {
-        st = reducer(st, { type: 'BIND_CONFIRMED', sourceId: head.sourceId, objectIds: head.objectIds });
+        st = reducer(st, {
+          type: 'BIND_CONFIRMED',
+          sourceId: head.sourceId,
+          objectIds: head.objectIds,
+        });
       }
       return st;
     }
@@ -892,7 +1532,12 @@ export function reducer(state: State, action: Action): State {
         head.kind === '批量晋升'
           ? `已全部保持未核 ${head.claimIds?.length ?? 0} 条`
           : '已拒绝这条提议';
-      return pushCard({ ...state, writeQueue: rest }, head.objectId, { kind: '结果', result: '拒绝' }, text);
+      return pushCard(
+        { ...state, writeQueue: rest },
+        head.objectId,
+        { kind: '结果', result: '拒绝' },
+        text,
+      );
     }
 
     case 'UNDO_RESULT': {
@@ -904,7 +1549,10 @@ export function reducer(state: State, action: Action): State {
       const stripped = list.map((m) =>
         m.id === action.messageId && m.card ? { ...m, card: { ...m.card, undo: undefined } } : m,
       );
-      let st: State = { ...state, chatByObject: { ...state.chatByObject, [action.objectId]: stripped } };
+      let st: State = {
+        ...state,
+        chatByObject: { ...state.chatByObject, [action.objectId]: stripped },
+      };
       switch (undo.kind) {
         case '晋升':
           st = {
@@ -913,23 +1561,50 @@ export function reducer(state: State, action: Action): State {
             toast: { text: '已撤回晋升', id: st.seq },
             seq: st.seq + 1,
           };
-          return pushCard(st, action.objectId, { kind: '结果', claimId: undo.claimId, result: '撤销' }, '已撤回晋升，回到未核');
+          return pushCard(
+            st,
+            action.objectId,
+            { kind: '结果', claimId: undo.claimId, result: '撤销' },
+            '已撤回晋升，回到未核',
+          );
         case '整理并入':
           st = {
             ...st,
-            claims: st.claims.map((c) => (c.id === undo.claimId ? { ...c, predicate: undo.fromPredicate } : c)),
+            claims: st.claims.map((c) =>
+              c.id === undo.claimId ? { ...c, predicate: undo.fromPredicate } : c,
+            ),
             toast: { text: '已撤回并入', id: st.seq },
             seq: st.seq + 1,
           };
-          return pushCard(st, action.objectId, { kind: '结果', claimId: undo.claimId, result: '撤销' }, `已撤回并入，回到「${undo.fromPredicate}」`);
-        case '整理丢弃':
+          return pushCard(
+            st,
+            action.objectId,
+            { kind: '结果', claimId: undo.claimId, result: '撤销' },
+            `已撤回并入，回到「${undo.fromPredicate}」`,
+          );
+        case '整理丢弃': {
+          const discarded = 'claims' in undo ? undo.claims : [undo.claim];
+          const existingIds = new Set(st.claims.map((claim) => claim.id));
+          const restored = discarded.filter(
+            (claim) => !existingIds.has(claim.id) && claimStillHasSource(st, claim),
+          );
           st = {
             ...st,
-            claims: st.claims.some((c) => c.id === undo.claim.id) ? st.claims : [...st.claims, undo.claim],
-            toast: { text: '已恢复该主张', id: st.seq },
+            claims: [...st.claims, ...restored],
+            toast: { text: `已恢复 ${restored.length} 条主张`, id: st.seq },
             seq: st.seq + 1,
           };
-          return pushCard(st, action.objectId, { kind: '结果', claimId: undo.claim.id, result: '撤销' }, '已恢复被丢弃的主张');
+          return pushCard(
+            st,
+            action.objectId,
+            {
+              kind: '结果',
+              claimIds: discarded.map((claim) => claim.id),
+              result: '撤销',
+            },
+            `已恢复被丢弃的 ${restored.length} 条主张`,
+          );
+        }
         case '记忆':
           st = {
             ...st,
@@ -937,38 +1612,94 @@ export function reducer(state: State, action: Action): State {
             toast: { text: '已移除这条记忆', id: st.seq },
             seq: st.seq + 1,
           };
-          return pushCard(st, action.objectId, { kind: '结果', result: '撤销' }, '已移除刚写入的记忆');
+          return pushCard(
+            st,
+            action.objectId,
+            { kind: '结果', result: '撤销' },
+            '已移除刚写入的记忆',
+          );
         case '绑定': {
           // 0031：解绑 = 撤该来源下的主张，来源回 Inbox。
+          if (!st.sources.some((source) => source.id === undo.sourceId)) return st;
           const affected = [undo.sourceId];
           st = {
             ...st,
             claims: st.claims.filter((c) => !affected.includes(c.sourceId)),
             pendingClaims: st.pendingClaims.filter((c) => !affected.includes(c.sourceId)),
-            sources: st.sources.map((s) => (s.id === undo.sourceId ? { ...s, boundObjectIds: [] } : s)),
+            sources: st.sources.map((s) =>
+              s.id === undo.sourceId ? { ...s, boundObjectIds: [] } : s,
+            ),
             inbox: st.inbox.includes(undo.sourceId) ? st.inbox : [...st.inbox, undo.sourceId],
             extractJobs: st.extractJobs.filter((j) => !affected.includes(j.sourceId)),
             toast: { text: '已解绑，来源回 Inbox', id: st.seq },
             seq: st.seq + 1,
           };
-          return pushCard(st, action.objectId, { kind: '结果', result: '撤销' }, '已解绑：该来源的主张已撤，来源回到 Inbox（可撤销本步重新绑定）');
+          return pushCard(
+            st,
+            action.objectId,
+            { kind: '结果', result: '撤销' },
+            '已解绑：该来源的主张已撤，来源回到 Inbox',
+          );
+        }
+        case '解绑': {
+          const source = st.sources.find((item) => item.id === undo.sourceId);
+          if (!source) return st;
+          const existingIds = new Set(st.claims.map((claim) => claim.id));
+          const restoredClaims = undo.claims.filter((claim) => !existingIds.has(claim.id));
+          st = {
+            ...st,
+            sources: st.sources.map((item) =>
+              item.id === undo.sourceId && !item.boundObjectIds.includes(undo.objectId)
+                ? { ...item, boundObjectIds: [...item.boundObjectIds, undo.objectId] }
+                : item,
+            ),
+            claims: [...st.claims, ...restoredClaims],
+            inbox: st.inbox.filter((id) => id !== undo.sourceId),
+            toast: { text: '已撤销解绑，绑定与主张已恢复', id: st.seq },
+            seq: st.seq + 1,
+          };
+          return pushCard(
+            st,
+            action.objectId,
+            {
+              kind: '结果',
+              claimIds: restoredClaims.map((claim) => claim.id),
+              result: '撤销',
+            },
+            `已撤销解绑，恢复 ${restoredClaims.length} 条主张`,
+          );
         }
         case '关窗':
           // Q4 原子性：重开旧句 + 移除禁写 + 配套新句一并撤。
+          {
+            const target = st.claims.find((claim) => claim.id === undo.claimId);
+            if (target && !claimStillHasSource(st, target)) return st;
+          }
           st = {
             ...st,
             claims: st.claims
               .filter((c) => c.id !== undo.companionId)
               .map((c) =>
                 c.id === undo.claimId
-                  ? { ...c, status: '成立' as const, validTo: undefined, closeReason: undefined, supersededBy: undefined }
+                  ? {
+                      ...c,
+                      status: '成立' as const,
+                      validTo: undefined,
+                      closeReason: undefined,
+                      supersededBy: undefined,
+                    }
                   : c,
               ),
             memories: st.memories.filter((m) => m.id !== undo.memoryId),
             toast: { text: '已重开，禁写已移除', id: st.seq },
             seq: st.seq + 1,
           };
-          return pushCard(st, action.objectId, { kind: '结果', claimId: undo.claimId, result: '撤销' }, '已重开旧句，禁写已移除，配套新句一并撤下');
+          return pushCard(
+            st,
+            action.objectId,
+            { kind: '结果', claimId: undo.claimId, result: '撤销' },
+            '已重开旧句，禁写已移除，配套新句一并撤下',
+          );
         case '批量晋升': {
           // Q3：影响面大的补偿走 takeover 确认，不一键。
           return enqueueWrite(st, {
@@ -999,7 +1730,7 @@ export function reducer(state: State, action: Action): State {
       };
 
     case 'TEST_PROVIDER':
-      // 0039：三级自检——连通、能力探测、资格认证。原型模拟跑分，不真连。
+      // 0039：三级自检只记录真实运行状态，结果由 IPC 的实际请求回写。
       return {
         ...state,
         seq: state.seq + 1,
@@ -1039,6 +1770,23 @@ export function reducer(state: State, action: Action): State {
       };
     }
 
+    case 'CERT_FAILED': {
+      const prev = state.certByProvider[action.id];
+      return {
+        ...state,
+        seq: state.seq + 1,
+        certByProvider: {
+          ...state.certByProvider,
+          [action.id]: {
+            ...prev,
+            status: '未认证',
+            certDetail: action.detail,
+          },
+        },
+        toast: { text: action.detail, id: state.seq + 1 },
+      };
+    }
+
     case 'SET_ONBOARDING':
       return { ...state, onboardingDone: action.done };
 
@@ -1054,7 +1802,9 @@ export function reducer(state: State, action: Action): State {
       const obj = state.objects.find((o) => o.id === action.id);
       if (!obj?.archived) return state;
       const today = new Date().toISOString().slice(0, 10);
-      const claimIds = new Set(state.claims.filter((c) => c.objectId === action.id).map((c) => c.id));
+      const claimIds = new Set(
+        state.claims.filter((c) => c.objectId === action.id).map((c) => c.id),
+      );
       const { [action.id]: _drop, ...chatByObject } = state.chatByObject;
       const { [action.id]: _t1, ...rightTabsByObject } = state.rightTabsByObject;
       const { [action.id]: _t2, ...activeRightTabByObject } = state.activeRightTabByObject;
@@ -1063,12 +1813,15 @@ export function reducer(state: State, action: Action): State {
         ...state,
         objects: state.objects.filter((o) => o.id !== action.id),
         claims: state.claims.map((c) =>
-          c.objectId === action.id ? { ...c, status: '过时' as const, validTo: today, closeReason: '对象误建' as const } : c,
+          c.objectId === action.id
+            ? { ...c, status: '过时' as const, validTo: today, closeReason: '对象误建' as const }
+            : c,
         ),
         pendingClaims: state.pendingClaims.filter((c) => c.objectId !== action.id),
         proposals: state.proposals.filter((p) => {
           if (p.payload.kind === '整理') return !claimIds.has(p.payload.claimId);
-          if (p.payload.kind === '丢弃未核') return !p.payload.claimIds.some((id) => claimIds.has(id));
+          if (p.payload.kind === '丢弃未核')
+            return !p.payload.claimIds.some((id) => claimIds.has(id));
           return p.payload.fromObjectId !== action.id;
         }),
         tasks: state.tasks.filter((t) => t.objectId !== action.id),
@@ -1076,7 +1829,10 @@ export function reducer(state: State, action: Action): State {
         rightTabsByObject,
         activeRightTabByObject,
         view: leaving ? { kind: 'inbox' } : state.view,
-        selectedClaimId: leaving || (state.selectedClaimId && claimIds.has(state.selectedClaimId)) ? null : state.selectedClaimId,
+        selectedClaimId:
+          leaving || (state.selectedClaimId && claimIds.has(state.selectedClaimId))
+            ? null
+            : state.selectedClaimId,
         toast: { text: '已永久删除，名下主张已关窗（对象误建）', id: state.seq },
         seq: state.seq + 1,
       };
@@ -1090,7 +1846,9 @@ export function reducer(state: State, action: Action): State {
         {
           ...state,
           objects: state.objects.map((o) =>
-            o.id === action.id ? { ...o, archived: false, workspaceId: state.currentWorkspaceId } : o,
+            o.id === action.id
+              ? { ...o, archived: false, workspaceId: state.currentWorkspaceId }
+              : o,
           ),
         },
         action.id,
@@ -1122,15 +1880,20 @@ export function reducer(state: State, action: Action): State {
 
     case 'SELF_CHECK': {
       const prev = state.certByProvider[action.id] ?? { status: '未认证' as const };
+      const failed = action.connect === 'fail' || action.capability === 'fail';
       return {
         ...state,
         certByProvider: {
           ...state.certByProvider,
           [action.id]: {
             ...prev,
+            status: failed ? '未认证' : prev.status,
             connect: action.connect,
             capability: action.capability ?? prev.capability,
-            connectDetail: action.connect === 'ok' || action.connect === 'fail' ? action.detail : prev.connectDetail,
+            connectDetail:
+              action.connect === 'ok' || action.connect === 'fail'
+                ? action.detail
+                : prev.connectDetail,
             capabilityDetail: action.capability ? action.detail : prev.capabilityDetail,
           },
         },
@@ -1165,17 +1928,29 @@ export function reducer(state: State, action: Action): State {
     case 'ADD_SLOT': {
       // 0025：谓词表由人维护。新槽默认通用（所有场景显示），单值/多值影响冲突判定（0029）。
       const name = action.name.trim();
-      if (!name) return { ...state, toast: { text: '槽名不能为空', id: state.seq }, seq: state.seq + 1 };
+      if (!name)
+        return { ...state, toast: { text: '槽名不能为空', id: state.seq }, seq: state.seq + 1 };
       if (name === '未编目') {
-        return { ...state, toast: { text: '「未编目」是保留值', id: state.seq }, seq: state.seq + 1 };
+        return {
+          ...state,
+          toast: { text: '「未编目」是保留值', id: state.seq },
+          seq: state.seq + 1,
+        };
       }
       if (state.slotDefs.some((d) => d.name === name && d.kind === action.kind)) {
-        return { ...state, toast: { text: '该种类下已有同名槽', id: state.seq }, seq: state.seq + 1 };
+        return {
+          ...state,
+          toast: { text: '该种类下已有同名槽', id: state.seq },
+          seq: state.seq + 1,
+        };
       }
       return {
         ...state,
         seq: state.seq + 1,
-        slotDefs: [...state.slotDefs, { name, kind: action.kind, arity: action.arity, scenarios: [] }],
+        slotDefs: [
+          ...state.slotDefs,
+          { name, kind: action.kind, arity: action.arity, scenarios: [] },
+        ],
         toast: { text: `已加槽「${name}」（通用）`, id: state.seq + 1 },
       };
     }

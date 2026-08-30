@@ -24,8 +24,8 @@ export function isWriteIntent(text: string): boolean {
   if (/^记下来[:：]/.test(t)) return true;
   if (/这句不对|纠正/.test(t)) return true;
   if (/删掉|永久删除|移除工作区/.test(t)) return true;
-  if (/把主栈那条晋升|晋升.*主栈|把.*Go.*晋升/.test(t)) return true;
-  if (/并入使用技术|平台化.*并入|把平台化/.test(t)) return true;
+  if (/晋升/.test(t)) return true;
+  if (/并入/.test(t)) return true;
   return false;
 }
 
@@ -52,7 +52,7 @@ export function scriptReply(state: State, objectId: string, text: string): ChatR
     };
   }
 
-  if (/删掉|永久删除|移除工作区|删了周若水/.test(t)) {
+  if (/删掉|永久删除|移除工作区/.test(t)) {
     return {
       replyText: '这个我不代做，永久删除和工作区移除请你在界面里操作。',
       claimRefs: [],
@@ -60,9 +60,11 @@ export function scriptReply(state: State, objectId: string, text: string): ChatR
     };
   }
 
-  if (/把主栈那条晋升|晋升.*主栈|把.*Go.*晋升/.test(t)) {
-    const c = claimsOf(state, objectId).find((x) => x.predicate === '后端主栈' && /Go/.test(x.text) && x.status !== '过时');
-    if (!c) return unknownReply();
+  if (/晋升/.test(t)) {
+    const c = selectedOrMentionedClaim(state, objectId, t);
+    if (!c) {
+      return { replyText: '先在档案或引用中选中一条主张，再告诉我晋升。', claimRefs: [] };
+    }
     return {
       replyText: '晋升要你确认。通过后可出站当定论。',
       claimRefs: [c.id],
@@ -80,11 +82,19 @@ export function scriptReply(state: State, objectId: string, text: string): ChatR
     };
   }
 
-  if (/并入使用技术|平台化.*并入|把平台化/.test(t)) {
-    const c = claimsOf(state, objectId).find((x) => x.predicate === '未编目');
-    if (!c) return unknownReply();
+  if (/并入/.test(t)) {
+    const c = selectedOrMentionedClaim(state, objectId, t, '未编目');
+    const target = state.slotDefs
+      .filter((slot) => state.objects.find((object) => object.id === objectId)?.kind === slot.kind)
+      .find((slot) => t.includes(slot.name));
+    if (!c || !target) {
+      return {
+        replyText: '先选中一条未编目主张，并说清要并入的字段名。',
+        claimRefs: c ? [c.id] : [],
+      };
+    }
     return {
-      replyText: '整理提议：把未编目并入「使用技术」，等你确认。',
+      replyText: `整理提议：把这条未编目主张并入「${target.name}」，等你确认。`,
       claimRefs: [c.id],
       effect: {
         type: 'propose',
@@ -92,8 +102,8 @@ export function scriptReply(state: State, objectId: string, text: string): ChatR
           objectId,
           kind: '整理',
           claimId: c.id,
-          targetPredicate: '使用技术',
-          headline: '把「内部平台化」并入「使用技术」',
+          targetPredicate: target.name,
+          headline: `把所选主张并入「${target.name}」`,
           evidence: c.span ?? c.text,
         },
       },
@@ -102,8 +112,9 @@ export function scriptReply(state: State, objectId: string, text: string): ChatR
 
   // 绑定意图：说「绑」就算明确意图，指不出对象名会反问，不怕误绑。
   if (/绑/.test(t)) {
-    const src = state.sources.find((s) => (s.id === 'src-jd' || /JD|jd/.test(s.title)) && s.boundObjectIds.length === 0)
-      ?? state.sources.find((s) => s.boundObjectIds.length === 0 && !s.virtual);
+    const src =
+      state.sources.find((s) => /JD|jd/.test(s.title) && s.boundObjectIds.length === 0) ??
+      state.sources.find((s) => s.boundObjectIds.length === 0 && !s.virtual);
     if (!src) {
       return { replyText: '没有未绑定的来源可绑。', claimRefs: [] };
     }
@@ -141,7 +152,7 @@ export function scriptReply(state: State, objectId: string, text: string): ChatR
               '',
               c.unverified ? '这条还是未核：' : '这条已晋升出过站：',
               '',
-              c.unverified ? '- 直接丢弃，不写禁写（0037）' : '- 关窗 + 必填关闭原因 + 写禁写',
+              c.unverified ? '- 直接丢弃，不影响已经确认的结论' : '- 关闭旧结论，并记录关闭原因',
               '- 可选新主张（使用者陈述）',
               '',
               '表单已打开。闲聊抽取不会走这条路。',
@@ -185,10 +196,14 @@ export function scriptReply(state: State, objectId: string, text: string): ChatR
   if (/许可证|活跃|发布|社区|贡献者|维护/.test(t)) {
     const picks = [...pick('许可证'), ...pick('活跃度'), ...pick('发布节奏'), ...pick('维护方')];
     if (picks.length === 0) return unknownReply();
-    const conflicted = picks.some((c) => c.predicate === '活跃度' && picks.filter((x) => x.predicate === '活跃度').length >= 2);
+    const conflicted = picks.some(
+      (c) => c.predicate === '活跃度' && picks.filter((x) => x.predicate === '活跃度').length >= 2,
+    );
     return {
       replyText: [
-        conflicted ? '活跃度上两条主张并排挂着（主键对转述），我不合成「目前有争议」：' : '账本里的选型信号：',
+        conflicted
+          ? '活跃度上两条主张并排挂着（主键对转述），我不合成「目前有争议」：'
+          : '账本里的选型信号：',
         '',
         ...picks.map((c) => `- 「${c.text}」${badge(c)}`),
       ].join('\n'),
@@ -286,7 +301,9 @@ export function scriptReply(state: State, objectId: string, text: string): ChatR
 
   if (/有什么|都有什么|概况|全部/.test(t)) {
     if (claims.length === 0) return unknownReply();
-    const rows = claims.map((c) => `| ${c.predicate} | ${c.text} | ${c.unverified ? '未核' : '已晋升'} |`);
+    const rows = claims.map(
+      (c) => `| ${c.predicate} | ${c.text} | ${c.unverified ? '未核' : '已晋升'} |`,
+    );
     return {
       replyText: [
         `当前对象账本里有 **${claims.length}** 条未关窗主张。`,
@@ -313,6 +330,23 @@ export function scriptReply(state: State, objectId: string, text: string): ChatR
 
 function claimsOf(state: State, objectId: string): Claim[] {
   return state.claims.filter((c) => c.objectId === objectId && c.status !== '过时');
+}
+
+function selectedOrMentionedClaim(
+  state: State,
+  objectId: string,
+  sentence: string,
+  predicate?: string,
+): Claim | undefined {
+  const live = claimsOf(state, objectId).filter(
+    (claim) => !predicate || claim.predicate === predicate,
+  );
+  const selected = live.find((claim) => claim.id === state.selectedClaimId);
+  if (selected) return selected;
+  return live.find(
+    (claim) =>
+      sentence.includes(claim.predicate) || sentence.includes(claim.text.replace(/[。！？]$/, '')),
+  );
 }
 
 function namedObject(state: State, sentence: string) {

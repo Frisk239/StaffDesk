@@ -6,9 +6,11 @@ import {
   FileText,
   FloppyDisk,
   LinkSimple,
+  LinkBreak,
   MagnifyingGlass,
   Prohibit,
   Stack,
+  Trash,
 } from '@phosphor-icons/react';
 import { useStore } from '../../store';
 import type { ChatCard, ResultKind } from '@shared/types';
@@ -29,6 +31,10 @@ function ResultIcon({ kind }: { kind?: ResultKind | undefined }) {
       return <FileText {...common} />;
     case '绑定':
       return <LinkSimple {...common} />;
+    case '解绑':
+      return <LinkBreak {...common} />;
+    case '删除来源':
+      return <Trash {...common} />;
     case '抽取':
       return <MagnifyingGlass {...common} />;
     case '整理':
@@ -60,7 +66,9 @@ export function ResultCard({
       <span className="result-lead">
         <ResultIcon kind={card.result} />
       </span>
-      <span className="result-text" title={text}>{text}</span>
+      <span className="result-text" title={text}>
+        {text}
+      </span>
       {card.undo && (
         <button
           type="button"
