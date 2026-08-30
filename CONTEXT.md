@@ -20,7 +20,8 @@
 - M15 added task run control: research/radar runs first create a visible `进行中` task, append process audit rows while running, can be manually stopped as `已停止 · 手动`, and can be opened from the object page replay surface during or after the run.
 - M16 added task-scoped claim review after research extraction: research sources now carry `origin.taskId`; when all sources for a completed research/re-search task finish extraction, the object page takeover offers the 0016 batch choice for only this task’s live unverified claims. Confirming flips only `unverified`; keeping leaves the claims untouched and records a result card. Replay shows a lightweight pointer back to the object page when the decision is pending.
 - M17 made takeover write proposals durable ledger state: pending `writeQueue` rows now live in SQLite `write_queue`, restore through `snapshot()`, survive app restart and brain backup/restore, and continue to confirm/reject by the same `writeId`. Legacy backups without the table are validated through a temporary migration before restore.
-- Current working branch for this cut: `codex/m17-persistent-write-queue`. Previous merged branch: `codex/m16-claim-promotion-flow`.
+- M18 settled the four pending design decisions as ADR 0052–0055: objects are created only by human confirmation with tidy proposing new ones; conflict mutex is normalized value difference on single-value slots; ban-write intercepts on slot+value and original text; memory scope defaults from the proposal and is editable on the confirmation card. No behavior change in this slice.
+- Current working branch for this cut: `codex/m18-design-decisions`. Previous merged branch: `codex/m17-persistent-write-queue`.
 
 ## Language
 
@@ -53,7 +54,7 @@ _Avoid_: 未知（页面占位，不是状态）, 部分成立（v1 已删）, �
 _Avoid_: 冲突, 覆盖, 过期删除
 
 **冲突**:
-同一对象、同一单值谓词槽上，有效期重叠且取值互斥的多条主张之间的派生关系，不存独立状态。两侧都留在账本，页面并排展示。唯一消解路径是任一方关窗；晋升不消解冲突、只改出站资格，未消解的冲突在简报始终摊开双方。未编目谓词不自动建冲突。未核调研不能盖过手给；调研侧晋升后解除未核限制，并排保留到手给一方关窗。
+同一对象、同一单值谓词槽上，有效期重叠且取值互斥的多条主张之间的派生关系，不存独立状态。两侧都留在账本，页面并排展示。唯一消解路径是任一方关窗；晋升不消解冲突、只改出站资格，未消解的冲突在简报始终摊开双方。未编目谓词不自动建冲突。未核调研不能盖过手给；调研侧晋升后解除未核限制，并排保留到手给一方关窗。取值互斥按归一化取值判定（大小写、空白、全半角），不做语义判断。
 _Avoid_: 裁决动作（没有判某方胜的操作）, 主张状态, 多值槽上的并存, 综合成「目前有争议」, 按新覆盖, 按网页覆盖手给
 
 **有效期**:
@@ -105,7 +106,7 @@ _Avoid_: 权威分数, Domain Authority, 自动定官方
 _Avoid_: 调研（转述也可以是手给）
 
 **对象**:
-可打开档案的主体，种类为人、组织、项目。组织是你要搞清楚的机构，不是产品的企业客户。
+可打开档案的主体，种类为人、组织、项目。组织是你要搞清楚的机构，不是产品的企业客户。对象只由人确认建立，整理可提议新对象；v1 不做别名。
 _Avoid_: 实体, 节点, 词条, 笔记, 公司（易听成租户）
 
 **人**:
@@ -225,7 +226,7 @@ _Avoid_: 主张抽屉（旧名）, 浮层抽屉, 合规模块, 引用列表（�
 _Avoid_: 知识图谱（若当功能名）, 全量可视化
 
 **整理**:
-任务后或空闲时的提议：合并重复主张、补关系、标可能过时、给未编目谓词编目、丢弃滞留的未核。人确认才改账本。不挡进料。不是 dream。
+任务后或空闲时的提议：合并重复主张、补关系、标可能过时、给未编目谓词编目、丢弃滞留的未核、提议建新对象。人确认才改账本。不挡进料。不是 dream。
 _Avoid_: 静默改写, dream, 记忆整理, 夜间（本机形态应用没开就不跑）
 
 **回放**:
@@ -265,7 +266,7 @@ _Avoid_: 主会话顺手抽, 每句入库, 世界事实进记忆, 主张抽取�
 _Avoid_: 对话里抽主张, 抽取循环, 每打开即阻塞等待抽完
 
 **候选记忆**:
-抽取循环从本会话扫出、尚未并入耐久记忆的条目，带着会话出处。会话结束才产；明确「记下来」和纠正不走候选，立刻写耐久。
+抽取循环从本会话扫出、尚未并入耐久记忆的条目，带着会话出处。会话结束才产；明确「记下来」和纠正不走候选，立刻写耐久。范围默认由提议给定，确认卡上可改。
 _Avoid_: 主张, 已生效记忆
 
 **dream**:
@@ -273,7 +274,7 @@ _Avoid_: 主张, 已生效记忆
 _Avoid_: 整理, 静默删主张, 主会话里整理记忆, 功能名展览
 
 **禁写**:
-纠正写入的记忆：以后出站不得再写出那句错的。纠正当时立即生效，不等 dream。只保护已出过站的定论；未核主张被纠正直接丢弃，不写禁写。
+纠正写入的记忆：以后出站不得再写出那句错的。纠正当时立即生效，不等 dream。只保护已出过站的定论；未核主张被纠正直接丢弃，不写禁写。拦截按「对象+谓词槽+归一化取值」与被纠正原句双路，作用于出站与提议生成；抽取入账不拦。
 _Avoid_: 删除主张, 只改这一次生成, 等整理才生效, 拦截未核垃圾（丢掉就好，不值得永久拦截）
 
 **全局记忆**:

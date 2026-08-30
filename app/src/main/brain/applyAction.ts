@@ -227,7 +227,6 @@ function enqueueWrite(state: State, draft: Omit<WriteProposal, 'id'>): State {
       seq: state.seq + 1,
     };
   }
-  // TODO(待拍板 §10) 任务级白名单「本任务内允许晋升」先不做。
   const [id, seq] = nextId(state, 'wr');
   return { ...state, seq, writeQueue: [...state.writeQueue, { ...draft, id }] };
 }

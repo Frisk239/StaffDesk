@@ -210,7 +210,7 @@ export type CandidatePayload = {
   fromObjectId?: string | undefined;
   fromMessageIds: string[];
   sourceExcerpt: string;
-  // TODO(待拍板 §11) 范围由 payload 给定，卡上不做下拉。
+  // 0055 已裁决：确认卡上可改范围；现状仍是 payload 给定，实现随后续里程碑落地。
   scope: MemoryScope;
 };
 export type ProposalPayload = TidyPayload | CandidatePayload | DropUnverifiedPayload;
