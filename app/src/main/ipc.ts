@@ -11,7 +11,13 @@ import { createExtractionJobExecutor } from './extraction';
 import { generateBrief } from './loops/briefGen';
 import { isWriteIntent, runSessionTurn } from './loops/session';
 import { extractCandidateMemories } from './loops/memoryExtract';
-import { createResearchTask, defaultQuery, runResearchTask, type BudgetGear } from './tasks/engine';
+import {
+  createResearchTask,
+  defaultQuery,
+  runResearchTask,
+  type BudgetGear,
+  type ResearchRunOptions,
+} from './tasks/engine';
 import { planRadarRun } from './tasks/radar';
 import { createBrainBackupArchive, writeBrainBackupFile } from './brainBackup';
 import { GOLD_PACKS } from './eval/goldPacks';
@@ -21,7 +27,7 @@ import {
   qualificationFingerprint,
   QUALITY_SUITE_VERSION,
 } from './eval/fingerprint';
-import type { QualityQualificationRecord } from '@shared/types';
+import type { QualityQualificationRecord, State, TaskKind } from '@shared/types';
 
 type IpcSecurity = {
   assertTrustedSender: (event: IpcMainInvokeEvent) => void;
@@ -32,6 +38,48 @@ type BrainHandle = Brain | (() => Brain);
 type BrainLifecycle = {
   restoreBrainBackup: (archivePath: string) => Promise<BrainRestoreResult>;
 };
+
+// 全部注册通道的单一清单：注册侧以这里的通道名为类型约束，卸载侧遍历同一份，两处列表不漂移。
+const HANDLED_CHANNELS = [
+  { channel: 'brain:snapshot', trusted: true },
+  { channel: 'brain:dispatch', trusted: true },
+  { channel: 'chat:send', trusted: true },
+  { channel: 'ingest:text', trusted: true },
+  { channel: 'ingest:url', trusted: true },
+  { channel: 'ingest:chooseFiles', trusted: true },
+  { channel: 'ingest:files', trusted: true },
+  { channel: 'ingest:retry', trusted: true },
+  { channel: 'extract:run', trusted: true },
+  { channel: 'settings:testProvider', trusted: true },
+  { channel: 'brief:generate', trusted: true },
+  { channel: 'brain:export', trusted: true },
+  { channel: 'brain:restore', trusted: true },
+  { channel: 'task:startResearch', trusted: true },
+  { channel: 'task:stop', trusted: true },
+  { channel: 'task:createRadar', trusted: true },
+  { channel: 'task:runRadar', trusted: true },
+] as const;
+
+type HandledChannel = (typeof HANDLED_CHANNELS)[number]['channel'];
+
+export type StartResearchPayload = {
+  objectId: string;
+  gear?: BudgetGear | undefined;
+  kind?: Extract<TaskKind, '调研' | '再搜一轮'> | undefined;
+  fromTaskId?: string | undefined;
+};
+
+// 0036：「再搜一轮」只在账本里找得到父任务时成立，否则回落普通调研，不伪造父子链。
+// 渲染端只给 fromTaskId；dueAt/missedRuns/late 属雷达补跑语义，不随用户入口下发。
+export function researchOptionsFor(
+  state: State,
+  payload: StartResearchPayload,
+): ResearchRunOptions {
+  if (payload.kind !== '再搜一轮' || !payload.fromTaskId) return {};
+  const parent = state.tasks.find((task) => task.id === payload.fromTaskId);
+  if (!parent) return {};
+  return { kind: '再搜一轮', parentTaskId: parent.id, query: parent.query };
+}
 
 function broadcast(next: unknown): void {
   for (const win of BrowserWindow.getAllWindows()) {
@@ -48,7 +96,7 @@ export function registerIpc(
   const assertTrustedSender = security.assertTrustedSender;
   const runningResearchByObject = new Map<string, string>();
   const handleTrusted = <Args extends unknown[], Result>(
-    channel: string,
+    channel: HandledChannel,
     handler: (event: IpcMainInvokeEvent, ...args: Args) => Result,
   ): void => {
     ipcMain.handle(channel, (event, ...args) => {
@@ -138,7 +186,7 @@ export function registerIpc(
     return next;
   });
 
-  handleTrusted('chat:send', async (event, payload: { objectId: string; text: string }) => {
+  handleTrusted('chat:send', async (_event, payload: { objectId: string; text: string }) => {
     const text = payload.text.trim();
     const brain = getBrain();
     if (!text) return brain.snapshot();
@@ -147,64 +195,78 @@ export function registerIpc(
       broadcast(next);
       return next;
     }
-    brain.dispatch({ type: 'CHAT_USER_ONLY', objectId: payload.objectId, text });
-    const state = brain.snapshot();
-    const userMessage = [...(state.chatByObject[payload.objectId] ?? [])]
+    const afterUser = brain.dispatch({
+      type: 'CHAT_USER_ONLY',
+      objectId: payload.objectId,
+      text,
+    });
+    // 用户消息先广播再走模型：失败时这句话也不悬挂、不丢。
+    broadcast(afterUser);
+    const userMessage = [...(afterUser.chatByObject[payload.objectId] ?? [])]
       .reverse()
       .find((message) => message.role === 'user' && message.text === text);
-    const complete = activeModelCompletion(state);
-    const reply = await runSessionTurn(state, payload.objectId, text, {
-      db: brain.db,
-      complete,
-      onDelta: (chunk) => event.sender.send('chat:delta', { objectId: payload.objectId, chunk }),
-    });
-    const st = brain.snapshot();
-    const desk = attachTurn(
-      st,
-      payload.objectId,
-      {
-        id: `msg-${st.seq}`,
-        role: 'desk',
-        text: reply.replyText,
-        claimRefs: reply.claimRefs,
-        note: reply.note,
-      },
-      text,
-      reply.effect,
-    );
-    const next = brain.dispatch({
-      type: 'CHAT_APPEND_DESK',
-      objectId: payload.objectId,
-      text: desk.text,
-      claimRefs: reply.claimRefs,
-    });
-    let finalState = next;
-    const memoryResult = await extractCandidateMemories({
-      state: finalState,
-      objectId: payload.objectId,
-      userMessages: userMessage ? [userMessage] : [],
-      complete,
-    });
-    if (memoryResult.candidates.length > 0) {
-      finalState = brain.dispatch({
-        type: 'ADD_CANDIDATE_MEMORIES',
+    const complete = activeModelCompletion(afterUser);
+    try {
+      const reply = await runSessionTurn(afterUser, payload.objectId, text, {
+        db: brain.db,
+        complete,
+      });
+      const st = brain.snapshot();
+      const desk = attachTurn(
+        st,
+        payload.objectId,
+        {
+          id: `msg-${st.seq}`,
+          role: 'desk',
+          text: reply.replyText,
+          claimRefs: reply.claimRefs,
+          note: reply.note,
+        },
+        text,
+        reply.effect,
+      );
+      const next = brain.dispatch({
+        type: 'CHAT_APPEND_DESK',
         objectId: payload.objectId,
-        candidates: memoryResult.candidates,
+        text: desk.text,
+        claimRefs: reply.claimRefs,
       });
-      finalState = brain.dispatch({ type: 'RUN_MEMORY_DREAM' });
-    } else if (memoryResult.status === 'unconfigured' && memoryResult.detail) {
-      finalState = brain.dispatch({ type: 'TOAST', text: memoryResult.detail });
-    } else if (
-      (memoryResult.status === 'invalid-output' || memoryResult.status === 'failed') &&
-      memoryResult.detail
-    ) {
-      finalState = brain.dispatch({
+      let finalState = next;
+      const memoryResult = await extractCandidateMemories({
+        state: finalState,
+        objectId: payload.objectId,
+        userMessages: userMessage ? [userMessage] : [],
+        complete,
+      });
+      if (memoryResult.candidates.length > 0) {
+        finalState = brain.dispatch({
+          type: 'ADD_CANDIDATE_MEMORIES',
+          objectId: payload.objectId,
+          candidates: memoryResult.candidates,
+        });
+        finalState = brain.dispatch({ type: 'RUN_MEMORY_DREAM' });
+      } else if (memoryResult.status === 'unconfigured' && memoryResult.detail) {
+        finalState = brain.dispatch({ type: 'TOAST', text: memoryResult.detail });
+      } else if (
+        (memoryResult.status === 'invalid-output' || memoryResult.status === 'failed') &&
+        memoryResult.detail
+      ) {
+        finalState = brain.dispatch({
+          type: 'TOAST',
+          text: `候选记忆抽取未完成：${memoryResult.detail}`,
+        });
+      }
+      broadcast(finalState);
+      return finalState;
+    } catch (error) {
+      // 0030：本轮失败如实告知（脱敏 TOAST），不编造回复；invoke 正常 resolve，渲染端不悬挂。
+      const failed = brain.dispatch({
         type: 'TOAST',
-        text: `候选记忆抽取未完成：${memoryResult.detail}`,
+        text: `本轮回复失败：${safeDetail(error)}`,
       });
+      broadcast(failed);
+      return failed;
     }
-    broadcast(finalState);
-    return finalState;
   });
 
   handleTrusted(
@@ -422,12 +484,10 @@ export function registerIpc(
     return result;
   });
 
-  handleTrusted(
-    'task:startResearch',
-    async (_event, payload: { objectId: string; gear?: BudgetGear }) => {
-      return runResearchAndApply(payload.objectId, payload.gear ?? '快搜');
-    },
-  );
+  handleTrusted('task:startResearch', async (_event, payload: StartResearchPayload) => {
+    const options = researchOptionsFor(getBrain().snapshot(), payload);
+    return runResearchAndApply(payload.objectId, payload.gear ?? '快搜', options);
+  });
 
   handleTrusted('task:stop', (_event, payload: { taskId: string }) => {
     const brain = getBrain();
@@ -489,21 +549,7 @@ function safeDetail(error: unknown): string {
 }
 
 export function unregisterIpc(): void {
-  ipcMain.removeHandler('brain:snapshot');
-  ipcMain.removeHandler('brain:dispatch');
-  ipcMain.removeHandler('chat:send');
-  ipcMain.removeHandler('ingest:text');
-  ipcMain.removeHandler('ingest:url');
-  ipcMain.removeHandler('ingest:chooseFiles');
-  ipcMain.removeHandler('ingest:files');
-  ipcMain.removeHandler('ingest:retry');
-  ipcMain.removeHandler('extract:run');
-  ipcMain.removeHandler('settings:testProvider');
-  ipcMain.removeHandler('task:startResearch');
-  ipcMain.removeHandler('task:stop');
-  ipcMain.removeHandler('task:createRadar');
-  ipcMain.removeHandler('task:runRadar');
-  ipcMain.removeHandler('brief:generate');
-  ipcMain.removeHandler('brain:export');
-  ipcMain.removeHandler('brain:restore');
+  for (const { channel } of HANDLED_CHANNELS) {
+    ipcMain.removeHandler(channel);
+  }
 }

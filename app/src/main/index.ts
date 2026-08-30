@@ -164,12 +164,11 @@ function safeErrorMessage(error: unknown): string {
 }
 
 app.whenReady().then(() => {
+  // 原生依赖在打开大脑文件之前先加载：ABI 不匹配要在最早处抛出，不拖到首次读写账本。
   try {
-    const Database = require('better-sqlite3') as unknown;
-    console.log('better-sqlite3 loaded in main process', typeof Database);
-  } catch (err) {
-    console.error('better-sqlite3 failed to load in main process', err);
-    throw err;
+    require('better-sqlite3');
+  } catch (error) {
+    throw new Error(`better-sqlite3 在主进程加载失败：${String(error)}`);
   }
 
   const dir = secretsDir();
@@ -188,7 +187,6 @@ app.whenReady().then(() => {
   });
 
   const path = brainPath();
-  console.log('brain file', path, 'exists_before', existsSync(path));
   const modelSettings = createJsonModelSettingsStore(
     join(app.getPath('userData'), 'model-settings.json'),
   );
@@ -196,7 +194,6 @@ app.whenReady().then(() => {
     join(app.getPath('userData'), 'quality-qualification.json'),
   );
   brain = openBrain(path, secrets, modelSettings, qualificationStore);
-  console.log('brain file created', existsSync(path));
   const securityPolicy = createRuntimeSecurityPolicy({
     rendererFilePath: rendererFilePath(),
     devServerUrl: process.env.ELECTRON_RENDERER_URL,
@@ -301,7 +298,6 @@ async function runDueRadarCatchup(
     next = await executeExtractionJob(src.id);
   }
   broadcastState(next);
-  console.log('radar catchup latest only', due.id);
 }
 
 app.on('window-all-closed', () => {

@@ -28,8 +28,8 @@ const api: StaffdeskApi = {
   runExtract: (sourceId) => ipcRenderer.invoke('extract:run', sourceId) as Promise<State>,
   testProvider: (providerId, modelId) =>
     ipcRenderer.invoke('settings:testProvider', { providerId, modelId }) as Promise<State>,
-  startResearch: (objectId, gear) =>
-    ipcRenderer.invoke('task:startResearch', { objectId, gear }) as Promise<State>,
+  startResearch: (objectId, gear, options) =>
+    ipcRenderer.invoke('task:startResearch', { objectId, gear, ...options }) as Promise<State>,
   stopTask: (taskId) => ipcRenderer.invoke('task:stop', { taskId }) as Promise<State>,
   createRadar: (objectId) => ipcRenderer.invoke('task:createRadar', { objectId }) as Promise<State>,
   runRadar: (radarTaskId) => ipcRenderer.invoke('task:runRadar', { radarTaskId }) as Promise<State>,

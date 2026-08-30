@@ -2817,6 +2817,21 @@ textarea {
   background: var(--bg-100);
   color: var(--ink);
 }
+/* M19 调研档位下拉：箭头按钮收窄一档；弹层复用 cmenu-pop，只改为向下展开 */
+.gear-caret {
+  padding: 0 6px;
+}
+.gear-pop {
+  bottom: auto;
+  top: calc(100% + 6px);
+}
+.gear-pop button:disabled {
+  cursor: not-allowed;
+}
+.gear-pop button:disabled:hover {
+  background: transparent;
+  color: var(--ink-2);
+}
 
 .col-handle {
   position: absolute;

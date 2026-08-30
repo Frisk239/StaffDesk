@@ -358,7 +358,8 @@ export type View =
   | { kind: 'pending' }
   | { kind: 'all' } // 全部对象（0032）：含已归档、含无工作区的孤儿对象，可恢复进当前工作区
   | { kind: 'object'; objectId: string }
-  | { kind: 'replay'; taskId: string };
+  | { kind: 'replay'; taskId: string }
+  | { kind: 'tasks' };
 
 export type ThemePreference = 'light' | 'dark' | 'system';
 
