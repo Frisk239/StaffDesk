@@ -18,18 +18,20 @@
     "eval": "node scripts/run-vitest.mjs run tests/eval/quality.cli.test.ts --reporter=verbose",
     "e2e": "playwright test",
     "package": "electron-vite build && electron-builder",
-    "rebuild": "electron-rebuild -f -w better-sqlite3"
+    "native:check": "node scripts/verify-native-sqlite.mjs",
+    "rebuild": "npm run native:check",
+    "rebuild:force": "electron-rebuild -f -w better-sqlite3"
   },
   "dependencies": {
     "@phosphor-icons/react": "^2.1.10",
-    "better-sqlite3": "^12.9.0",
+    "better-sqlite3": "^13.0.3",
     "pdfjs-dist": "^6.3.289",
     "react": "^19.1.0",
     "react-dom": "^19.1.0",
     "zod": "^3.25.0"
   },
   "devDependencies": {
-    "@electron/rebuild": "^4.0.1",
+    "@electron/rebuild": "^4.2.0",
     "@eslint/js": "^9.28.0",
     "@playwright/test": "^1.52.0",
     "@types/better-sqlite3": "^7.6.13",
@@ -37,8 +39,8 @@
     "@types/react-dom": "^19.1.0",
     "@vitejs/plugin-react": "^4.5.0",
     "@vitest/coverage-v8": "^3.2.0",
-    "electron": "^37.2.6",
-    "electron-builder": "^26.0.12",
+    "electron": "^44.0.0",
+    "electron-builder": "^26.15.3",
     "electron-vite": "^3.1.0",
     "eslint": "^9.28.0",
     "eslint-config-prettier": "^10.1.5",

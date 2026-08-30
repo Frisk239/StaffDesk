@@ -11,4 +11,4 @@ asarUnpack:
 win:
   target:
     - nsis
-npmRebuild: true
+npmRebuild: false
