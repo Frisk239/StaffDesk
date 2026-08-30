@@ -207,6 +207,8 @@ export type CandidatePayload = {
   text: string;
   memoryKind: MemoryKind;
   fromObjectId?: string | undefined;
+  fromMessageIds: string[];
+  sourceExcerpt: string;
   // TODO(待拍板 §11) 范围由 payload 给定，卡上不做下拉。
   scope: MemoryScope;
 };
@@ -322,6 +324,7 @@ export interface WriteProposal {
 export type TaskKind = '调研' | '出简报' | '再搜一轮' | '周期性雷达';
 export type TaskStatus = '待启动' | '进行中' | '已完成' | '已停止';
 export type TaskStopReason = '手动' | '触顶' | '失败';
+export type BudgetGear = '快搜' | '深挖';
 
 export interface DeskTask {
   id: string;
@@ -329,7 +332,13 @@ export interface DeskTask {
   kind: TaskKind;
   status: TaskStatus;
   stopReason?: TaskStopReason | undefined;
-  budgetGear?: '快搜' | '深挖' | undefined;
+  budgetGear?: BudgetGear | undefined;
+  query?: string | undefined;
+  intervalDays?: number | undefined;
+  nextDueAt?: string | undefined;
+  lastRunAt?: string | undefined;
+  parentTaskId?: string | undefined;
+  dueAt?: string | undefined;
   createdAt: string;
 }
 

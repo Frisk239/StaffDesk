@@ -194,8 +194,10 @@ export function persistLedger(db: Database.Database, state: State): void {
     }
 
     const insTask = db.prepare(
-      `INSERT INTO tasks (id, object_id, kind, status, stop_reason, budget_gear, created_at, finished_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO tasks (
+        id, object_id, kind, status, stop_reason, budget_gear, query, interval_days,
+        next_due_at, last_run_at, parent_task_id, due_at, created_at, finished_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     );
     for (const t of state.tasks) {
       insTask.run(
@@ -205,6 +207,12 @@ export function persistLedger(db: Database.Database, state: State): void {
         t.status,
         t.stopReason ?? null,
         t.budgetGear ?? null,
+        t.query ?? null,
+        t.intervalDays ?? null,
+        t.nextDueAt ?? null,
+        t.lastRunAt ?? null,
+        t.parentTaskId ?? null,
+        t.dueAt ?? null,
         t.createdAt,
         t.status === '已完成' || t.status === '已停止' ? t.createdAt : null,
       );
@@ -611,6 +619,12 @@ export function loadLedger(db: Database.Database): LedgerRows {
       status: DeskTask['status'];
       stop_reason: DeskTask['stopReason'] | null;
       budget_gear: DeskTask['budgetGear'] | null;
+      query: string | null;
+      interval_days: number | null;
+      next_due_at: string | null;
+      last_run_at: string | null;
+      parent_task_id: string | null;
+      due_at: string | null;
       created_at: string;
     }[]
   ).map((t) => {
@@ -623,6 +637,12 @@ export function loadLedger(db: Database.Database): LedgerRows {
     };
     if (t.stop_reason) task.stopReason = t.stop_reason;
     if (t.budget_gear) task.budgetGear = t.budget_gear;
+    if (t.query) task.query = t.query;
+    if (typeof t.interval_days === 'number') task.intervalDays = t.interval_days;
+    if (t.next_due_at) task.nextDueAt = t.next_due_at;
+    if (t.last_run_at) task.lastRunAt = t.last_run_at;
+    if (t.parent_task_id) task.parentTaskId = t.parent_task_id;
+    if (t.due_at) task.dueAt = t.due_at;
     return task;
   });
 

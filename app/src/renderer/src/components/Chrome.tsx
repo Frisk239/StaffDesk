@@ -420,6 +420,9 @@ export function ChatTopbar({
   const obj = state.objects.find((o) => o.id === view.objectId);
   if (!obj) return null;
   const disabled = state.briefDraftingFor !== null;
+  const radar = state.tasks.find(
+    (task) => task.objectId === obj.id && task.kind === '周期性雷达' && task.status !== '已停止',
+  );
 
   return (
     <div className="chat-topbar">
@@ -435,6 +438,28 @@ export function ChatTopbar({
         >
           调研
         </button>
+        {radar ? (
+          <>
+            <span className="tag grey" title={radar.query}>
+              雷达 {radar.nextDueAt ? `下次 ${radar.nextDueAt.slice(5)}` : '已计划'}
+            </span>
+            <button
+              type="button"
+              className="btn outline sm"
+              onClick={() => void window.staffdesk.runRadar(radar.id)}
+            >
+              补跑
+            </button>
+          </>
+        ) : (
+          <button
+            type="button"
+            className="btn outline sm"
+            onClick={() => void window.staffdesk.createRadar(obj.id)}
+          >
+            每日雷达
+          </button>
+        )}
         <button
           type="button"
           className="btn outline sm"

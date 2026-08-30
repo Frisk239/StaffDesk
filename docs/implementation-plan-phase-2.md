@@ -1,6 +1,6 @@
 # StaffDesk Phase 2：从功能齐备走向可信日用
 
-> 状态：执行中（2026-08-30）。M0–M8 已完成；M9 真实进料已在 `codex/m9-real-ingestion` 完成返修与自测，等待 M8 先合入后再合 M9；M10 尚未启动。本计划承接 `docs/implementation-plan.md`，不改变既有账本语义。
+> 状态：执行中（2026-08-30）。M0–M8 已完成；M9 首版已进入 `origin/main`，M9 返修 tip `a3a7e6d` 仍需按顺序合入；M10 已在 `codex/m10-memory-research-radar` 完成主体实现与自测，等待 M9 返修先合。本计划承接 `docs/implementation-plan.md`，不改变既有账本语义。
 
 ## 目标
 
@@ -33,7 +33,7 @@ Phase 1 已把 Electron、SQLite、真实模型、抽取、调研、简报、撤
 
 验收：真实 URL、TXT、PDF 各走一遍入库与抽取；任何失败都不产生假正文或假主张。
 
-## M10：记忆与调研补全
+## M10：记忆与调研补全（已完成主体实现）
 
 - 实现 ADR 0022 尚缺的会话候选记忆抽取和独立整理循环；明确“记下来”仍即时写，闲聊不产候选。
 - 把 Agent Reach 体检、搜索、打开收进一个深 module；真实安装不可用时给安装/降级说明，不保留假搜索结果。

@@ -8,7 +8,11 @@ export function ReplayView({ taskId }: { taskId: string }) {
     <div className="inbox-page" style={{ padding: 24, overflow: 'auto' }}>
       <div className="inbox-head">
         <h2>任务回放</h2>
-        <button type="button" className="ghost small" onClick={() => dispatch({ type: 'SET_VIEW', view: { kind: 'inbox' } })}>
+        <button
+          type="button"
+          className="ghost small"
+          onClick={() => dispatch({ type: 'SET_VIEW', view: { kind: 'inbox' } })}
+        >
           返回
         </button>
       </div>
@@ -18,6 +22,10 @@ export function ReplayView({ taskId }: { taskId: string }) {
           {task.kind} · {task.status}
           {task.stopReason ? ` · ${task.stopReason}` : ''}
           {task.budgetGear ? ` · ${task.budgetGear}` : ''}
+          {task.query ? ` · ${task.query}` : ''}
+          {task.parentTaskId ? ` · 父雷达 ${task.parentTaskId}` : ''}
+          {task.dueAt ? ` · 应跑 ${task.dueAt}` : ''}
+          {task.nextDueAt ? ` · 下次 ${task.nextDueAt}` : ''}
         </p>
       )}
       <ol className="source-list">

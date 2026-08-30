@@ -5,11 +5,20 @@ import { openBrain, type Brain } from './brain';
 import { registerIpc, unregisterIpc } from './ipc';
 import { createSafeStorageSecrets } from './keychain';
 import { destroyTray, installTray, isQuitting, markQuitting } from './tray';
-import { lateAuditPayload, latestDueRadar } from './tasks/radar';
+import { latestDueRadar, planRadarRun } from './tasks/radar';
+import { createReachAdapter } from './adapters/reach';
+import { createExtractionJobExecutor } from './extraction';
+import { defaultQuery, runResearchTask } from './tasks/engine';
 import { createJsonModelSettingsStore } from './llm/settings';
 
 let mainWindow: BrowserWindow | null = null;
 let brain: Brain | null = null;
+
+function broadcastState(next: unknown): void {
+  for (const win of BrowserWindow.getAllWindows()) {
+    win.webContents.send('state:changed', next);
+  }
+}
 
 function brainPath(): string {
   if (process.env.STAFFDESK_BRAIN) return process.env.STAFFDESK_BRAIN;
@@ -107,28 +116,15 @@ app.whenReady().then(() => {
 
   const due = latestDueRadar(brain.snapshot().tasks);
   if (due) {
-    const payload = lateAuditPayload(due.id);
-    brain.dispatch({
-      type: 'APPLY_RESEARCH',
-      task: {
-        id: due.id,
-        objectId: due.objectId,
-        kind: due.kind,
-        status: '已完成',
-        createdAt: due.createdAt,
-      },
-      audits: [
-        {
-          taskId: due.id,
-          seq: 1,
-          kind: '迟跑',
-          payload,
-          ts: new Date().toISOString(),
-        },
-      ],
-      sources: [],
+    const executeExtractionJob = createExtractionJobExecutor({ brain, publish: broadcastState });
+    void runDueRadarCatchup(due, executeExtractionJob).catch((error) => {
+      const detail = error instanceof Error ? error.message : String(error);
+      const next = brain?.dispatch({
+        type: 'TOAST',
+        text: `雷达补跑失败：${detail.slice(0, 120)}`,
+      });
+      if (next) broadcastState(next);
     });
-    console.log('radar catchup latest only', due.id);
   }
 
   app.on('activate', () => {
@@ -136,6 +132,41 @@ app.whenReady().then(() => {
     else mainWindow?.show();
   });
 });
+
+async function runDueRadarCatchup(
+  due: NonNullable<ReturnType<typeof latestDueRadar>>,
+  executeExtractionJob: (sourceId: string) => Promise<ReturnType<Brain['snapshot']>>,
+): Promise<void> {
+  if (!brain) return;
+  const plan = planRadarRun(due);
+  const result = await runResearchTask(
+    brain.snapshot(),
+    due.objectId,
+    due.budgetGear ?? '快搜',
+    {
+      reach: createReachAdapter(),
+      queryFor: defaultQuery,
+    },
+    plan.options,
+  );
+  let next = brain.dispatch({
+    type: 'APPLY_RESEARCH',
+    task: result.task,
+    audits: result.audits,
+    sources: result.sources,
+  });
+  for (const src of result.sources) {
+    if (src.boundObjectIds.length === 0) continue;
+    next = brain.dispatch({
+      type: 'BIND_CONFIRMED',
+      sourceId: src.id,
+      objectIds: src.boundObjectIds,
+    });
+    next = await executeExtractionJob(src.id);
+  }
+  broadcastState(next);
+  console.log('radar catchup latest only', due.id);
+}
 
 app.on('window-all-closed', () => {
   if (isQuitting() && process.platform !== 'darwin') app.quit();
