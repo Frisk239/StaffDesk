@@ -28,8 +28,8 @@ function setup(): { brain: Brain; sourceId: string } {
   return { brain, sourceId: source.id };
 }
 
-describe('extraction job executor', () => {
-  it('maps an unexpected orchestration error to a redacted failed terminal state', async () => {
+describe('抽取作业执行器', () => {
+  it('意外的编排异常落为脱敏后的失败终态', async () => {
     const { brain, sourceId } = setup();
     const execute = createExtractionJobExecutor({
       brain,
@@ -50,7 +50,7 @@ describe('extraction job executor', () => {
     expect(detail).not.toContain('private-token');
   });
 
-  it('recovers ephemeral job state when both normal and failed terminal dispatches throw', async () => {
+  it('正常与失败终态落库都抛错时，作业态仍能收口', async () => {
     const { brain, sourceId } = setup();
     brain.dispatch = ((_action: Action) => {
       throw new Error('persist unavailable');
@@ -74,7 +74,7 @@ describe('extraction job executor', () => {
     );
   });
 
-  it('marks the job failed without a second result dispatch when publication throws', async () => {
+  it('广播抛错时作业记失败，且不重复派发第二次结果', async () => {
     const { brain, sourceId } = setup();
     const originalDispatch = brain.dispatch.bind(brain);
     let terminalDispatches = 0;

@@ -6,8 +6,8 @@ import {
   WORKSPACE_RAIL_WIDTH,
 } from '../../src/shared/layout';
 
-describe('workspace narrow-window layout', () => {
-  it('keeps the main and details columns usable at an approximately 886px viewport', () => {
+describe('工作区窄窗口布局', () => {
+  it('约 886px 视口下主列与详情列仍可用', () => {
     const fitted = fitWorkspaceLayout(886, {
       sessionOpen: true,
       rightOpen: true,
@@ -21,7 +21,7 @@ describe('workspace narrow-window layout', () => {
     expect(886 - WORKSPACE_RAIL_WIDTH - fitted.rightWidth).toBeGreaterThanOrEqual(MAIN_MIN_WIDTH);
   });
 
-  it('reopens the details column by yielding the session column first', () => {
+  it('重开详情列时先让位会话列', () => {
     const fitted = fitWorkspaceLayout(886, {
       sessionOpen: true,
       rightOpen: true,
@@ -32,7 +32,7 @@ describe('workspace narrow-window layout', () => {
     expect(fitted).toMatchObject({ sessionOpen: false, rightOpen: true, rightWidth: 400 });
   });
 
-  it('shrinks details to its minimum before finally closing it', () => {
+  it('详情列先缩到最小宽度，实在放不下才关闭', () => {
     const shrunk = fitWorkspaceLayout(756, {
       sessionOpen: true,
       rightOpen: true,
