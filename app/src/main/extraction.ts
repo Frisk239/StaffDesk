@@ -3,6 +3,7 @@ import type { State } from '@shared/types';
 import type { Brain } from './brain';
 import { activeModelCompletion } from './llm/runtime';
 import { runExtractLoop } from './loops/extract';
+import { safeDetail } from './redact';
 
 type ExtractionRunner = typeof runExtractLoop;
 type ExtractionBrain = Pick<Brain, 'snapshot' | 'dispatch' | 'recoverExtractionFailure'>;
@@ -33,7 +34,7 @@ export function createExtractionJobExecutor(args: {
       args.publish(next);
       return next;
     } catch (error) {
-      const detail = `抽取编排失败：${safeErrorDetail(error)}`;
+      const detail = `抽取编排失败：${safeDetail(error)}`;
 
       // The ledger may already contain a terminal result when publication throws.
       // Do not append a second result card; only correct the ephemeral job status.
@@ -55,7 +56,7 @@ export function createExtractionJobExecutor(args: {
           args.brain,
           args.publish,
           sourceId,
-          `${detail}；终态落库失败：${safeErrorDetail(settleError)}`,
+          `${detail}；终态落库失败：${safeDetail(settleError)}`,
         );
       }
     }
@@ -115,12 +116,4 @@ function tryPublish(publish: (state: State) => void, state: State): void {
     // The job is already terminal in the main process. A later snapshot/state
     // change lets the renderer recover even if this particular send failed.
   }
-}
-
-function safeErrorDetail(error: unknown): string {
-  const raw = error instanceof Error ? error.message : String(error);
-  return raw
-    .replace(/Bearer\s+\S+/gi, 'Bearer ***')
-    .replace(/sk-[A-Za-z0-9_-]+/g, 'sk-***')
-    .slice(0, 180);
 }

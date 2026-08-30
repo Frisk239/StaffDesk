@@ -7,6 +7,7 @@ import type { Brain } from './brain';
 import { migrate } from './brain/migrate';
 import { REQUIRED_TABLES, SCHEMA_VERSION } from './brain/schema';
 import type { BrainBackupInfo } from '@shared/api';
+import { safeDetail } from './redact';
 
 const ZIP_LOCAL_FILE_HEADER = 0x04034b50;
 const ZIP_CENTRAL_DIRECTORY_HEADER = 0x02014b50;
@@ -123,7 +124,7 @@ export function replaceBrainDatabaseFile(targetPath: string, database: Buffer): 
     if (!existsSync(targetPath) && rollbackReady && existsSync(rollbackPath)) {
       renameSync(rollbackPath, targetPath);
     }
-    throw new Error(`恢复大脑文件失败：${safeErrorMessage(error)}`);
+    throw new Error(`恢复大脑文件失败：${safeDetail(error, 160)}`);
   } finally {
     if (existsSync(incomingPath)) rmSync(incomingPath, { force: true });
   }
@@ -384,14 +385,6 @@ function removeSqliteSidecars(dbPath: string): void {
   for (const filePath of [`${dbPath}-wal`, `${dbPath}-shm`]) {
     if (existsSync(filePath)) rmSync(filePath, { force: true });
   }
-}
-
-function safeErrorMessage(error: unknown): string {
-  const raw = error instanceof Error ? error.message : String(error);
-  return raw
-    .replace(/Bearer\s+\S+/gi, 'Bearer ***')
-    .replace(/sk-[A-Za-z0-9_-]+/g, 'sk-***')
-    .slice(0, 160);
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

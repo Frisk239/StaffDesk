@@ -1,4 +1,6 @@
-import { chatComplete, maskSecret, type FetchFn } from './chatCompletions';
+import { chatComplete, type FetchFn } from './chatCompletions';
+// 自检 detail 是错误消息（可能内嵌密钥），直接用 redact 的正则掩码口径，不经 chatCompletions 的短值守卫转口。
+import { safeDetail } from '../redact';
 
 export type CheckLevel = 'connect' | 'capability';
 
@@ -37,8 +39,7 @@ export async function checkConnect(args: {
     }
     return { level: 'connect', ok: false, detail: `HTTP ${res.status}` };
   } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    return { level: 'connect', ok: false, detail: `连不上：${maskSecret(msg).slice(0, 120)}` };
+    return { level: 'connect', ok: false, detail: `连不上：${safeDetail(err, 120)}` };
   }
 }
 
@@ -70,7 +71,6 @@ export async function checkCapability(args: {
     }
     return { level: 'capability', ok: false, detail: 'JSON 不含 ping:true' };
   } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    return { level: 'capability', ok: false, detail: maskSecret(msg).slice(0, 160) };
+    return { level: 'capability', ok: false, detail: safeDetail(err, 160) };
   }
 }

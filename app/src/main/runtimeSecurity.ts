@@ -6,6 +6,7 @@ import {
   type IpcMainInvokeEvent,
   type WindowOpenHandlerResponse,
 } from 'electron';
+import { maskTruncated, safeDetail } from './redact';
 
 export type RuntimeSecurityPolicy = {
   rendererFilePath: string;
@@ -111,10 +112,10 @@ function openExternalIfAllowed(
   const normalized = normalizeAllowedExternalOpenUrl(rawUrl);
   if (normalized) {
     void openExternal(normalized).catch((error) => {
-      console.warn('external open denied by system', safeLogDetail(error));
+      console.warn('external open denied by system', safeDetail(error, 200));
     });
   } else {
-    console.warn('external open blocked by runtime policy', safeLogUrl(rawUrl));
+    console.warn('external open blocked by runtime policy', maskTruncated(rawUrl, 200));
   }
 }
 
@@ -146,16 +147,4 @@ function parseUrl(rawUrl: string | undefined): URL | null {
 function normalizeFilePath(path: string): string {
   const normalized = resolve(path);
   return process.platform === 'win32' ? normalized.toLowerCase() : normalized;
-}
-
-function safeLogUrl(rawUrl: string): string {
-  return rawUrl.replace(/sk-[A-Za-z0-9_-]+/g, 'sk-***').slice(0, 200);
-}
-
-function safeLogDetail(error: unknown): string {
-  const raw = error instanceof Error ? error.message : String(error);
-  return raw
-    .replace(/Bearer\s+\S+/gi, 'Bearer ***')
-    .replace(/sk-[A-Za-z0-9_-]+/g, 'sk-***')
-    .slice(0, 200);
 }

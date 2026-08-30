@@ -13,9 +13,9 @@ import {
 } from './runtimeSecurity';
 import { destroyTray, installTray, isQuitting, markQuitting } from './tray';
 import { latestDueRadar, planRadarRun } from './tasks/radar';
-import { createReachAdapter } from './adapters/reach';
-import { createExtractionJobExecutor } from './extraction';
-import { createResearchTask, defaultQuery, runResearchTask } from './tasks/engine';
+import { applyResearchRun } from './tasks/applyResearchRun';
+import { safeDetail } from './redact';
+import { broadcastState } from './windowBroadcast';
 import { createJsonModelSettingsStore } from './llm/settings';
 import { createJsonQualificationStore } from './eval/qualificationStore';
 import {
@@ -28,12 +28,6 @@ import {
 
 let mainWindow: BrowserWindow | null = null;
 let brain: Brain | null = null;
-
-function broadcastState(next: unknown): void {
-  for (const win of BrowserWindow.getAllWindows()) {
-    win.webContents.send('state:changed', next);
-  }
-}
 
 function brainPath(): string {
   if (process.env.STAFFDESK_BRAIN) return process.env.STAFFDESK_BRAIN;
@@ -146,21 +140,14 @@ async function restoreBrainBackup(archivePath: string): Promise<BrainRestoreResu
       broadcastState(brain.snapshot());
     } catch (rollbackError) {
       throw new Error(
-        `恢复失败，且无法自动回滚；恢复前安全副本仍在 ${safetyCopyPath}。原因：${safeErrorMessage(
+        `恢复失败，且无法自动回滚；恢复前安全副本仍在 ${safetyCopyPath}。原因：${safeDetail(
           error,
-        )}；回滚失败：${safeErrorMessage(rollbackError)}`,
+          160,
+        )}；回滚失败：${safeDetail(rollbackError, 160)}`,
       );
     }
     throw error;
   }
-}
-
-function safeErrorMessage(error: unknown): string {
-  const raw = error instanceof Error ? error.message : String(error);
-  return raw
-    .replace(/Bearer\s+\S+/gi, 'Bearer ***')
-    .replace(/sk-[A-Za-z0-9_-]+/g, 'sk-***')
-    .slice(0, 160);
 }
 
 app.whenReady().then(() => {
@@ -216,14 +203,29 @@ app.whenReady().then(() => {
     },
   );
 
+  // 启动一次性补跑：latestDueRadar 只取最新一条（迟跑语义见 planRadarRun）。
   const due = latestDueRadar(brain.snapshot().tasks);
   if (due) {
-    const executeExtractionJob = createExtractionJobExecutor({ brain, publish: broadcastState });
-    void runDueRadarCatchup(due, executeExtractionJob).catch((error) => {
-      const detail = error instanceof Error ? error.message : String(error);
+    const plan = planRadarRun(due);
+    void applyResearchRun({
+      getBrain: () => brain,
+      publish: broadcastState,
+      objectId: due.objectId,
+      gear: due.budgetGear ?? '快搜',
+      options: plan.options,
+      // 有意的语义收紧：补跑也纳入单飞锁——与用户手动调研撞同一对象时让位，不双开任务。
+      onBusy: () => {
+        const skipped = brain?.dispatch({
+          type: 'TOAST',
+          text: '雷达补跑跳过：该对象已有调研在跑',
+        });
+        if (skipped) broadcastState(skipped);
+      },
+    }).catch((error) => {
+      // 泄密口收口：补跑失败文案此前直接 slice 原文，现走统一脱敏。
       const next = brain?.dispatch({
         type: 'TOAST',
-        text: `雷达补跑失败：${detail.slice(0, 120)}`,
+        text: `雷达补跑失败：${safeDetail(error, 120)}`,
       });
       if (next) broadcastState(next);
     });
@@ -239,66 +241,6 @@ app.whenReady().then(() => {
     } else mainWindow?.show();
   });
 });
-
-async function runDueRadarCatchup(
-  due: NonNullable<ReturnType<typeof latestDueRadar>>,
-  executeExtractionJob: (sourceId: string) => Promise<ReturnType<Brain['snapshot']>>,
-): Promise<void> {
-  if (!brain) return;
-  const plan = planRadarRun(due);
-  const reach = createReachAdapter();
-  const task = createResearchTask(
-    brain.snapshot(),
-    due.objectId,
-    due.budgetGear ?? '快搜',
-    {
-      reach,
-      queryFor: defaultQuery,
-    },
-    plan.options,
-  );
-  let next = brain.dispatch({ type: 'TASK_RUN_STARTED', task });
-  broadcastState(next);
-  const result = await runResearchTask(
-    brain.snapshot(),
-    due.objectId,
-    due.budgetGear ?? '快搜',
-    {
-      reach,
-      queryFor: defaultQuery,
-      onAudit: (audit) => {
-        if (!brain) return;
-        const updated = brain.dispatch({
-          type: 'TASK_AUDIT_APPENDED',
-          taskId: task.id,
-          audits: [audit],
-        });
-        broadcastState(updated);
-      },
-      shouldStop: () => {
-        const current = brain?.snapshot().tasks.find((item) => item.id === task.id);
-        return current?.status === '已停止' && current.stopReason === '手动';
-      },
-    },
-    { ...plan.options, task },
-  );
-  next = brain.dispatch({
-    type: 'APPLY_RESEARCH',
-    task: result.task,
-    audits: result.audits,
-    sources: result.sources,
-  });
-  for (const src of result.sources) {
-    if (src.boundObjectIds.length === 0) continue;
-    next = brain.dispatch({
-      type: 'BIND_CONFIRMED',
-      sourceId: src.id,
-      objectIds: src.boundObjectIds,
-    });
-    next = await executeExtractionJob(src.id);
-  }
-  broadcastState(next);
-}
 
 app.on('window-all-closed', () => {
   if (isQuitting() && process.platform !== 'darwin') app.quit();

@@ -615,6 +615,9 @@ export function appendOperation(
   );
 }
 
+// 与 redact.ts 不合并：这里是 operations 载荷的结构性脱敏（整字段清空，DELETE_SOURCE 恢复等
+// 依赖 JSON 结构可解析回读），Bearer/sk- 文本掩码替代不了「apiKey 置空」；且 0040 要求密钥值
+// 在落库前就不可还原，不能只盖展示层掩码。
 function redactSecrets(payload: unknown): string {
   return JSON.stringify(payload).replace(/"apiKey"\s*:\s*"[^"]*"/g, '"apiKey":""');
 }

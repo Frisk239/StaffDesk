@@ -10,7 +10,10 @@ function jsonResponse(body: unknown, status = 200): Response {
 
 describe('chat-completions 客户端', () => {
   it('密钥在错误文本里被掩码', () => {
-    expect(maskSecret('sk-abcdefghijk')).toBe('sk-***jk');
+    // 长值不再露出首尾片段（原 'sk-***jk' 会泄漏内容轮廓）：统一走 redact 正则掩码。
+    expect(maskSecret('sk-abcdefghijk')).toBe('sk-***');
+    // 短值守卫保留：整条短密钥仍全隐。
+    expect(maskSecret('k')).toBe('sk-***');
   });
 
   it('非流式成功返回 content，绝不把密钥写进结果', async () => {

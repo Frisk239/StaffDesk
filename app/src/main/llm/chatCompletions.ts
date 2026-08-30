@@ -1,3 +1,5 @@
+import { maskSecret as maskSecretText } from '../redact';
+
 export type ChatRole = 'system' | 'user' | 'assistant' | 'tool';
 
 export interface ChatMessageParam {
@@ -41,10 +43,11 @@ export interface CompleteResult {
 
 const RETRY_STATUS = new Set([429, 500, 502, 503]);
 
+// 本模块可能被喂整条密钥值（短值必须全隐，不留首尾片段）；长文本走 redact 的统一正则掩码。
 export function maskSecret(value: string): string {
   if (!value) return '';
   if (value.length <= 6) return 'sk-***';
-  return `${value.slice(0, 3)}***${value.slice(-2)}`;
+  return maskSecretText(value);
 }
 
 function joinUrl(base: string, path: string): string {
