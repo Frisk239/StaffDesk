@@ -12,6 +12,7 @@
     "eval": "npm run eval --prefix app",
     "e2e": "npm run e2e --prefix app",
     "package": "npm run package --prefix app",
+    "native:check": "npm run native:check --prefix app",
     "rebuild": "npm run rebuild --prefix app",
     "prepare": "husky"
   },

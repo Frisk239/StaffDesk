@@ -4,9 +4,9 @@
 
 ## 必读文档（动手前先看）
 
-- `CONTEXT.md` — 领域语言（词条 + 每条的 Avoid 列表）。**与其他一切文档冲突时以它为准**；UI 文案与术语逐字对齐词条。「Current implementation」一节是最新进度（M1–M11 已完成）。
+- `CONTEXT.md` — 领域语言（词条 + 每条的 Avoid 列表）。**与其他一切文档冲突时以它为准**；UI 文案与术语逐字对齐词条。「Current implementation」一节是最新进度（M1–M12 已完成）。
 - `docs/engineering.md` — 工程规范全文（Git / 代码 / 测试 / CI / 安全）。
-- `docs/adr/` — 0001–0045 架构决策。新决策**先落 ADR（0046 起顺延）再写代码**；发现设计矛盾停下问用户，禁止口头裁决。
+- `docs/adr/` — 0001–0046 架构决策。新决策**先落 ADR（0047 起顺延）再写代码**；发现设计矛盾停下问用户，禁止口头裁决。
 - `docs/dev-logs/` — 各里程碑验收记录；新批次完成要写对应的 MX.md。
 - `docs/reference.md` — `reference/` 对照仓索引与产品边界。
 
@@ -27,11 +27,13 @@ npm run test        # vitest run --coverage
 npm run eval        # 内置虚构金标质量回归
 npm run e2e         # Playwright 驱动 Electron，交付前必跑
 npm run package     # electron-builder 打 Windows 安装包
-npm run rebuild     # electron-rebuild better-sqlite3（本地换 Electron 版本后需要）
+npm run native:check # Electron 运行时加载 better-sqlite3 烟测
+npm run rebuild     # 兼容入口：同 native:check
+npm run rebuild:force # 有 C++ 工具链时强制源码重编 better-sqlite3
 ```
 
 - 覆盖率硬门槛：`src/main/brain/**` 行覆盖 ≥ 80%（`app/vitest.config.ts`），不达标 CI 即红。
-- CI（`.github/workflows/ci.yml`）：check job（ubuntu）跑 lint/typecheck/test/build；package job（windows）仅 main/tag。better-sqlite3 在 CI 走 prebuild，不重编译。
+- CI（`.github/workflows/ci.yml`）：check job（ubuntu）跑 native:check/lint/typecheck/test/build；package job（windows）仅 main/tag。better-sqlite3 13 走 N-API prebuild，不要求常规重编译。
 - 路径别名：`@shared` → `app/src/shared`。
 
 ## 架构规则（ESLint 强制）

@@ -53,15 +53,16 @@
 触发：push（main + 分支）与 pull_request
 job check（ubuntu-latest 即可，Electron 打包作业才需要 windows）：
   1. npm ci（缓存 ~/.npm）
-  2. lint      → eslint .
-  3. typecheck → tsc -b（全部 tsconfig）
-  4. test      → vitest run --coverage（brain 层 80% 门槛，不达标即红）
-  5. build     → electron-vite build（不做安装包，安装包作业见下）
+  2. native:check → Electron 运行时加载 better-sqlite3 并写读内存 SQLite
+  3. lint      → eslint .
+  4. typecheck → tsc -b（全部 tsconfig）
+  5. test      → vitest run --coverage（brain 层 80% 门槛，不达标即红）
+  6. build     → electron-vite build（不做安装包，安装包作业见下）
 job package（仅 main / tag 触发，windows-latest）：
   electron-builder 打 win 安装包，产物上传 artifact（不上商店；M7 起启用）
 ```
 
-- better-sqlite3 在 CI 走 prebuild 二进制（`npm ci` 自带），不装 toolchain 重编译；本地开发才需要 `electron-rebuild`。
+- better-sqlite3 13 在 CI 与本机默认走 N-API prebuild，并用 `npm run native:check` 验证 Electron 可加载；只有排查源码构建问题时才运行 `npm run rebuild:force`。
 - CI 红灯的 commit 不允许合入 main——PR 页面自己确认绿了再点 merge。
 
 ## 5. 本地钩子（husky + lint-staged，M0 配置）

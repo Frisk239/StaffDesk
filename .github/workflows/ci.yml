@@ -22,10 +22,9 @@ jobs:
       - name: Install app
         run: npm ci
         working-directory: app
-      # 测试经 ELECTRON_RUN_AS_NODE 跑在 Electron 运行时上（ABI 与 better-sqlite3 必须一致），
-      # npm ci 只带 Node ABI 的 prebuilt，CI 上必须 electron-rebuild（ubuntu 自带编译工具链）。
-      - name: Rebuild better-sqlite3 for Electron ABI
-        run: npm run rebuild
+      # 测试经 ELECTRON_RUN_AS_NODE 跑在 Electron 运行时上；先验证 SQLite 原生绑定能被 Electron 加载。
+      - name: Verify native SQLite binding
+        run: npm run native:check
         working-directory: app
       - name: lint
         run: npm run lint
