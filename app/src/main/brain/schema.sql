@@ -99,6 +99,25 @@ CREATE TABLE IF NOT EXISTS proposals (
   payload TEXT NOT NULL,
   pending INTEGER NOT NULL,
   decision TEXT,
+  created_at TEXT NOT NULL,
+  title TEXT NOT NULL DEFAULT '',
+  detail TEXT NOT NULL DEFAULT ''
+);
+
+CREATE TABLE IF NOT EXISTS write_queue (
+  id TEXT PRIMARY KEY,
+  object_id TEXT NOT NULL,
+  kind TEXT NOT NULL CHECK (kind IN ('晋升', '纠正', '整理', '绑定', '批量晋升', '批量回退')),
+  task_id TEXT,
+  headline TEXT NOT NULL,
+  evidence TEXT NOT NULL,
+  claim_id TEXT,
+  claim_ids TEXT,
+  source_id TEXT,
+  object_ids TEXT,
+  target_predicate TEXT,
+  outbound INTEGER,
+  position INTEGER NOT NULL DEFAULT 0,
   created_at TEXT NOT NULL
 );
 
@@ -109,6 +128,12 @@ CREATE TABLE IF NOT EXISTS tasks (
   status TEXT NOT NULL CHECK (status IN ('待启动', '进行中', '已完成', '已停止')),
   stop_reason TEXT CHECK (stop_reason IN ('手动', '触顶', '失败')),
   budget_gear TEXT CHECK (budget_gear IN ('快搜', '深挖')),
+  query TEXT,
+  interval_days INTEGER,
+  next_due_at TEXT,
+  last_run_at TEXT,
+  parent_task_id TEXT,
+  due_at TEXT,
   created_at TEXT NOT NULL,
   finished_at TEXT
 );

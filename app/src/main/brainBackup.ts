@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 import Database from 'better-sqlite3';
 import type { Brain } from './brain';
+import { migrate } from './brain/migrate';
 import { REQUIRED_TABLES, SCHEMA_VERSION } from './brain/schema';
 import type { BrainBackupInfo } from '@shared/api';
 
@@ -249,10 +250,12 @@ export function validateBrainDatabaseBuffer(database: Buffer): void {
   const dbPath = join(dir, BRAIN_BACKUP_DATABASE_ENTRY);
   try {
     writeFileSync(dbPath, database);
-    const db = new Database(dbPath, { readonly: true, fileMustExist: true });
+    const db = new Database(dbPath, { fileMustExist: true });
     try {
       const integrity = db.pragma('integrity_check', { simple: true }) as string;
       if (integrity !== 'ok') throw new Error('备份中的大脑文件完整性检查失败');
+      // 0048/0051：旧备份可恢复；在临时副本上迁移后再按当前 REQUIRED_TABLES 校验。
+      migrate(db);
       const tableRows = db
         .prepare(
           `SELECT name FROM sqlite_master

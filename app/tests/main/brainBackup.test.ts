@@ -7,6 +7,7 @@ import {
   createBrainBackupArchive,
   readBrainBackupArchive,
   replaceBrainDatabaseFile,
+  validateBrainDatabaseBuffer,
   writeBrainBackupFile,
 } from '../../src/main/brainBackup';
 import { createMemorySecrets } from '../../src/main/keychain';
@@ -149,6 +150,19 @@ describe('大脑备份与恢复', () => {
 
     expect(existsSync(`${targetPath}-wal`)).toBe(false);
     expect(existsSync(`${targetPath}-shm`)).toBe(false);
+  });
+
+  it('旧 schema 备份缺少 write_queue 时仍可在临时副本上迁移校验', () => {
+    const brain = track(openBrain(tmpBrainPath()));
+    brain.db.exec(`
+      DROP TABLE write_queue;
+      DELETE FROM schema_migrations;
+      INSERT INTO schema_migrations (version, applied_at) VALUES (4, '2026-08-30T00:00:00.000Z');
+    `);
+    brain.db.pragma('wal_checkpoint(TRUNCATE)');
+    const database = readFileSync(brain.filePath);
+
+    expect(() => validateBrainDatabaseBuffer(database)).not.toThrow();
   });
 
   it('拒绝损坏备份，且不会改写当前大脑文件', () => {
