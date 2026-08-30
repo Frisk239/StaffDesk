@@ -34,6 +34,7 @@ export function searchClaimsFts(
       .prepare(
         `SELECT rowid, text, predicate FROM claims_fts
          WHERE object_id = ? AND claims_fts MATCH ?
+         ORDER BY bm25(claims_fts), rowid
          LIMIT ?`,
       )
       .all(objectId, match, limit) as { rowid: number; text: string; predicate: string }[];

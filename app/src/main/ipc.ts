@@ -13,9 +13,15 @@ import { isWriteIntent, runSessionTurn } from './loops/session';
 import { extractCandidateMemories } from './loops/memoryExtract';
 import { defaultQuery, runResearchTask, type BudgetGear } from './tasks/engine';
 import { planRadarRun } from './tasks/radar';
-import { runLiveCertForScenario } from './eval/cert';
 import { exportBrainZip } from './exportZip';
-import { scenarioOfWorkspace } from '@shared/scenario';
+import { GOLD_PACKS } from './eval/goldPacks';
+import { runQualityRegression } from './eval/runner';
+import {
+  buildQualificationTarget,
+  qualificationFingerprint,
+  QUALITY_SUITE_VERSION,
+} from './eval/fingerprint';
+import type { QualityQualificationRecord } from '@shared/types';
 
 function broadcast(next: unknown): void {
   for (const win of BrowserWindow.getAllWindows()) {
@@ -207,59 +213,90 @@ export function registerIpc(brain: Brain): void {
     return executeExtractionJob(sourceId);
   });
 
-  ipcMain.handle('settings:testProvider', async (_event, id: string) => {
-    const state = brain.snapshot();
-    const provider = state.providers.find((p) => p.id === id);
-    const model =
-      (state.activeProviderId === id
-        ? provider?.models.find((m) => m.id === state.activeModelId)?.id
-        : undefined) ??
-      provider?.models[0]?.id ??
-      '';
-    if (!provider) return brain.snapshot();
-    let next = brain.dispatch({ type: 'TEST_PROVIDER', id });
-    broadcast(next);
-    const c1 = await checkConnect({ baseUrl: provider.baseUrl, apiKey: provider.apiKey });
-    next = brain.dispatch({
-      type: 'SELF_CHECK',
-      id,
-      connect: c1.ok ? 'ok' : 'fail',
-      detail: c1.detail,
-    });
-    broadcast(next);
-    if (!c1.ok) return next;
-    const c2 = await checkCapability({
-      baseUrl: provider.baseUrl,
-      apiKey: provider.apiKey,
-      model,
-    });
-    next = brain.dispatch({
-      type: 'SELF_CHECK',
-      id,
-      connect: 'ok',
-      capability: c2.ok ? 'ok' : 'fail',
-      detail: c2.detail,
-    });
-    broadcast(next);
-    if (!c2.ok) return next;
-    const ws = next.workspaces.find((w) => w.id === next.currentWorkspaceId);
-    const scenario = ws?.scenario ?? scenarioOfWorkspace(next.workspaces, next.currentWorkspaceId);
-    try {
-      const complete = completionForProvider(provider, model);
-      if (!complete) throw new Error('模型配置不完整');
-      const scores = await runLiveCertForScenario(scenario, complete);
-      next = brain.dispatch({ type: 'CERT_DONE', id, scores });
-    } catch (error) {
-      const detail = error instanceof Error ? error.message : String(error);
-      next = brain.dispatch({
-        type: 'CERT_FAILED',
-        id,
-        detail: `隔离样本检查失败：${detail.slice(0, 120)}`,
+  ipcMain.handle(
+    'settings:testProvider',
+    async (_event, payload: { providerId: string; modelId: string }) => {
+      const frozen = brain.snapshot();
+      const provider = frozen.providers.find((item) => item.id === payload.providerId);
+      if (!provider?.enabled || !provider.models.some((model) => model.id === payload.modelId)) {
+        const next = brain.dispatch({ type: 'TOAST', text: '没有这条模型配置' });
+        broadcast(next);
+        return next;
+      }
+      const target = buildQualificationTarget(provider, payload.modelId, frozen.thinkingEffort);
+      const fingerprint = qualificationFingerprint(target);
+      let next = brain.startQualification(target);
+      broadcast(next);
+
+      const connect = await checkConnect({ baseUrl: provider.baseUrl, apiKey: provider.apiKey });
+      if (!connect.ok) {
+        next = finishQualificationAttempt(brain, {
+          fingerprint,
+          endpointIdentity: target.endpointIdentity,
+          modelId: target.modelId,
+          suiteVersion: QUALITY_SUITE_VERSION,
+          completedAt: new Date().toISOString(),
+          connect: { status: '失败', detail: connect.detail },
+          capability: { status: '失败', detail: '连通未通过，未运行' },
+          detail: `连通失败：${connect.detail}`,
+        });
+        broadcast(next);
+        return next;
+      }
+
+      const capability = await checkCapability({
+        baseUrl: provider.baseUrl,
+        apiKey: provider.apiKey,
+        model: payload.modelId,
       });
-    }
-    broadcast(next);
-    return next;
-  });
+      if (!capability.ok) {
+        next = finishQualificationAttempt(brain, {
+          fingerprint,
+          endpointIdentity: target.endpointIdentity,
+          modelId: target.modelId,
+          suiteVersion: QUALITY_SUITE_VERSION,
+          completedAt: new Date().toISOString(),
+          connect: { status: '通过', detail: connect.detail },
+          capability: { status: '失败', detail: capability.detail },
+          detail: `能力探测失败：${capability.detail}`,
+        });
+        broadcast(next);
+        return next;
+      }
+
+      try {
+        const complete = completionForProvider(provider, payload.modelId);
+        if (!complete) throw new Error('模型配置不完整');
+        const report = await runQualityRegression({ packs: GOLD_PACKS, complete });
+        const failed = report.stages.find((stage) => stage.status !== '通过');
+        next = finishQualificationAttempt(brain, {
+          fingerprint,
+          endpointIdentity: target.endpointIdentity,
+          modelId: target.modelId,
+          suiteVersion: QUALITY_SUITE_VERSION,
+          completedAt: report.completedAt,
+          connect: { status: '通过', detail: connect.detail },
+          capability: { status: '通过', detail: capability.detail },
+          report,
+          ...(failed ? { detail: `${failed.name}失败：${failed.detail ?? '未完成'}` } : {}),
+        });
+      } catch (error) {
+        const detail = safeDetail(error);
+        next = finishQualificationAttempt(brain, {
+          fingerprint,
+          endpointIdentity: target.endpointIdentity,
+          modelId: target.modelId,
+          suiteVersion: QUALITY_SUITE_VERSION,
+          completedAt: new Date().toISOString(),
+          connect: { status: '通过', detail: connect.detail },
+          capability: { status: '通过', detail: capability.detail },
+          detail: `资格认证未完成：${detail}`,
+        });
+      }
+      broadcast(next);
+      return next;
+    },
+  );
 
   ipcMain.handle('brief:generate', async (_event, objectId: string) => {
     let state = brain.snapshot();
@@ -324,6 +361,29 @@ export function registerIpc(brain: Brain): void {
     const plan = planRadarRun(radar);
     return runResearchAndApply(radar.objectId, radar.budgetGear ?? '快搜', plan.options);
   });
+}
+
+function finishQualificationAttempt(
+  brain: Brain,
+  record: QualityQualificationRecord,
+): ReturnType<Brain['snapshot']> {
+  brain.finishQualification(record);
+  const complete =
+    record.connect.status === '通过' &&
+    record.capability.status === '通过' &&
+    record.report?.stages.every((stage) => stage.status === '通过');
+  return brain.dispatch({
+    type: 'TOAST',
+    text: complete ? '资格认证完成' : safeDetail(record.detail ?? '资格认证未完成'),
+  });
+}
+
+function safeDetail(error: unknown): string {
+  const raw = error instanceof Error ? error.message : String(error);
+  return raw
+    .replace(/Bearer\s+\S+/gi, 'Bearer ***')
+    .replace(/sk-[A-Za-z0-9_-]+/g, 'sk-***')
+    .slice(0, 120);
 }
 
 export function unregisterIpc(): void {

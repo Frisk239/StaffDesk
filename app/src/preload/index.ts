@@ -26,7 +26,8 @@ const api: StaffdeskApi = {
   },
   retryIngest: (jobId) => ipcRenderer.invoke('ingest:retry', jobId) as Promise<State>,
   runExtract: (sourceId) => ipcRenderer.invoke('extract:run', sourceId) as Promise<State>,
-  testProvider: (id) => ipcRenderer.invoke('settings:testProvider', id) as Promise<State>,
+  testProvider: (providerId, modelId) =>
+    ipcRenderer.invoke('settings:testProvider', { providerId, modelId }) as Promise<State>,
   startResearch: (objectId, gear) =>
     ipcRenderer.invoke('task:startResearch', { objectId, gear }) as Promise<State>,
   createRadar: (objectId) => ipcRenderer.invoke('task:createRadar', { objectId }) as Promise<State>,

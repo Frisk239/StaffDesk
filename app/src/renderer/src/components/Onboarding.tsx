@@ -66,7 +66,7 @@ export function Onboarding({ onClose }: { onClose: () => void }) {
   const [sourceDraft, setSourceDraft] = useState('');
   const [sourceBusy, setSourceBusy] = useState(false);
 
-  const cert = state.certByProvider[provider.id];
+  const cert = state.qualification;
   const modelId = provider.models[0]?.id ?? '';
   const canSaveProvider = Boolean(
     provider.name.trim() && provider.baseUrl.trim() && modelId.trim(),
@@ -125,7 +125,7 @@ export function Onboarding({ onClose }: { onClose: () => void }) {
     if (!provider.apiKey.trim()) return;
     setChecking(true);
     try {
-      await window.staffdesk.testProvider(provider.id);
+      await window.staffdesk.testProvider(provider.id, modelId);
     } finally {
       setChecking(false);
     }
@@ -354,56 +354,56 @@ export function Onboarding({ onClose }: { onClose: () => void }) {
                 <div className="check-summary">
                   <div>
                     <span
-                      className={`check-state${cert?.connect === 'ok' ? ' ok' : cert?.connect === 'fail' ? ' fail' : ''}`}
+                      className={`check-state${cert.connect?.status === '通过' ? ' ok' : cert.connect?.status === '失败' ? ' fail' : ''}`}
                     >
-                      {cert?.connect === 'ok' ? <Check size={13} /> : '1'}
+                      {cert.connect?.status === '通过' ? <Check size={13} /> : '1'}
                     </span>
                     <span>
                       <strong>端点连通</strong>
-                      <small>{cert?.connectDetail ?? '确认地址与密钥可以访问'}</small>
+                      <small>{cert.connect?.detail ?? '确认地址与密钥可以访问'}</small>
                     </span>
                   </div>
                   <div>
                     <span
-                      className={`check-state${cert?.capability === 'ok' ? ' ok' : cert?.capability === 'fail' ? ' fail' : ''}`}
+                      className={`check-state${cert.capability?.status === '通过' ? ' ok' : cert.capability?.status === '失败' ? ' fail' : ''}`}
                     >
-                      {cert?.capability === 'ok' ? <Check size={13} /> : '2'}
+                      {cert.capability?.status === '通过' ? <Check size={13} /> : '2'}
                     </span>
                     <span>
                       <strong>结构化能力</strong>
-                      <small>{cert?.capabilityDetail ?? '确认模型能稳定返回结构化结果'}</small>
+                      <small>{cert.capability?.detail ?? '确认模型能稳定返回结构化结果'}</small>
                     </span>
                   </div>
                   <div>
-                    <span className={`check-state${cert?.status === '已认证' ? ' ok' : ''}`}>
-                      {cert?.status === '已认证' ? <Check size={13} /> : '3'}
+                    <span className={`check-state${cert.status === '已认证' ? ' ok' : ''}`}>
+                      {cert.status === '已认证' ? <Check size={13} /> : '3'}
                     </span>
                     <span>
                       <strong>隔离样本验证</strong>
                       <small>
-                        {cert?.status === '已认证'
+                        {cert.status === '已认证'
                           ? '已完成真实模型测试'
-                          : (cert?.certDetail ?? '样本数据不会进入你的大脑文件')}
+                          : (cert.detail ?? '样本数据不会进入你的大脑文件')}
                       </small>
                     </span>
                   </div>
                 </div>
-                {cert?.status === '已认证' && (
+                {cert.status === '已认证' && cert.report && (
                   <div className="check-metrics">
                     <div>
-                      <strong>{cert.recall}%</strong>
+                      <strong>{cert.report.metrics.ftsRecallAtK}%</strong>
                       <span>证据召回</span>
                     </div>
                     <div>
-                      <strong>{cert.faithful}%</strong>
+                      <strong>{cert.report.metrics.briefFaithfulness}%</strong>
                       <span>简报忠实</span>
                     </div>
                     <div>
-                      <strong>{cert.unknown}%</strong>
+                      <strong>{cert.report.metrics.unknownAdherence}%</strong>
                       <span>未知遵守</span>
                     </div>
-                    <div className={(cert.fabrication ?? 0) > 5 ? 'warn' : ''}>
-                      <strong>{cert.fabrication}%</strong>
+                    <div className={cert.report.metrics.fabrication > 5 ? 'warn' : ''}>
+                      <strong>{cert.report.metrics.fabrication}%</strong>
                       <span>编造率</span>
                     </div>
                   </div>

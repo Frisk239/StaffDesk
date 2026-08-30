@@ -12,7 +12,7 @@ export interface StaffdeskApi {
   ingestDroppedFiles: (files: readonly unknown[]) => Promise<State>;
   retryIngest: (jobId: string) => Promise<State>;
   runExtract: (sourceId: string) => Promise<State>;
-  testProvider: (id: string) => Promise<State>;
+  testProvider: (providerId: string, modelId: string) => Promise<State>;
   startResearch: (objectId: string, gear?: BudgetGear) => Promise<State>;
   createRadar: (objectId: string) => Promise<State>;
   runRadar: (radarTaskId: string) => Promise<State>;
