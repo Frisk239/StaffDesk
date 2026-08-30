@@ -66,7 +66,415 @@ export function interruptActiveIngestJobs(db: Database.Database): void {
   ).run(now);
 }
 
-/** 把出荷状态写入大脑文件。账本真相源是 SQLite，不是内存。 */
+/** 0056：写路径模式——'diff' 按脏表差异写入（dispatch 默认），'full' 全量重写（修复与等价对照通道）。 */
+export type PersistMode = 'diff' | 'full';
+
+/** persist 层可写的行值类型：账本 schema 只用 TEXT/INTEGER（0040：密钥不落库）。 */
+type PersistValue = string | number | null;
+type PersistRow = Record<string, PersistValue>;
+
+/**
+ * 0056：persist 写射程内单表的行构造器。全量重写与差异写入共用同一份代码，防两路漂移；
+ * operations、certs、scenario_brief_specs、schema_migrations 不在射程（约束二）。
+ */
+interface PersistTable {
+  table: string;
+  /** 列序即 persist 的 INSERT 列序；行构造器必须为每列都给出值（缺位写 null）。 */
+  columns: string[];
+  primaryKey: string[];
+  /** 判脏 fast-path（0056）：prev/next 该集合引用相同则必未变（不可变性审计），整表跳过。 */
+  collection: (state: State) => unknown;
+  rows: (state: State) => PersistRow[];
+}
+
+/** 虚拟来源（user-stmt）是快照派生的落点，永不落库：sources 与 source_bindings 共用此 skip 规则。 */
+function isPersistentSource(s: Source): boolean {
+  return !s.virtual && s.id !== 'user-stmt';
+}
+
+const PERSIST_TABLES: readonly PersistTable[] = [
+  {
+    table: 'workspaces',
+    columns: ['id', 'name', 'scenario', 'created_at'],
+    primaryKey: ['id'],
+    collection: (state) => state.workspaces,
+    rows: (state) =>
+      state.workspaces.map((w) => ({
+        id: w.id,
+        name: w.name,
+        scenario: w.scenario,
+        created_at: stateStamp(state),
+      })),
+  },
+  {
+    table: 'objects',
+    columns: ['id', 'kind', 'name', 'note', 'workspace_id', 'archived', 'created_at'],
+    primaryKey: ['id'],
+    collection: (state) => state.objects,
+    rows: (state) =>
+      state.objects.map((o) => ({
+        id: o.id,
+        kind: o.kind,
+        name: o.name,
+        note: o.note ?? null,
+        workspace_id: o.workspaceId,
+        archived: o.archived ? 1 : 0,
+        created_at: stateStamp(state),
+      })),
+  },
+  {
+    // 0056：子表跟随父集合引用判脏；relationIds 数组序即行序（reducer 不重排的不变量）。
+    table: 'object_relations',
+    columns: ['from_id', 'to_id'],
+    primaryKey: ['from_id', 'to_id'],
+    collection: (state) => state.objects,
+    rows: (state) => {
+      const rows: PersistRow[] = [];
+      for (const o of state.objects) {
+        for (const to of o.relationIds) {
+          rows.push({ from_id: o.id, to_id: to });
+        }
+      }
+      return rows;
+    },
+  },
+  {
+    table: 'sources',
+    columns: [
+      'id',
+      'title',
+      'body',
+      'path',
+      'role',
+      'workspace_id',
+      'unparsed',
+      'origin_json',
+      'segments_json',
+      'content_hash',
+      'fetched_at',
+      'created_at',
+    ],
+    primaryKey: ['id'],
+    collection: (state) => state.sources,
+    rows: (state) => {
+      const rows: PersistRow[] = [];
+      for (const s of state.sources) {
+        if (!isPersistentSource(s)) continue;
+        rows.push({
+          id: s.id,
+          title: s.title,
+          body: s.body,
+          path: s.path,
+          role: s.role ?? null,
+          workspace_id: s.workspaceId ?? null,
+          unparsed: s.unparsed ? 1 : 0,
+          origin_json: s.origin ? JSON.stringify(s.origin) : null,
+          segments_json: s.segments ? JSON.stringify(s.segments) : null,
+          content_hash: s.contentHash ?? s.origin?.contentHash ?? null,
+          fetched_at: s.fetchedAt ?? s.origin?.fetchedAt ?? null,
+          created_at: stateStamp(state),
+        });
+      }
+      return rows;
+    },
+  },
+  {
+    table: 'source_bindings',
+    columns: ['source_id', 'object_id'],
+    primaryKey: ['source_id', 'object_id'],
+    collection: (state) => state.sources,
+    rows: (state) => {
+      const rows: PersistRow[] = [];
+      for (const s of state.sources) {
+        if (!isPersistentSource(s)) continue;
+        for (const oid of s.boundObjectIds) {
+          rows.push({ source_id: s.id, object_id: oid });
+        }
+      }
+      return rows;
+    },
+  },
+  {
+    table: 'slot_defs',
+    columns: ['id', 'name', 'kind', 'arity', 'scenarios', 'created_at'],
+    primaryKey: ['id'],
+    collection: (state) => state.slotDefs,
+    rows: (state) =>
+      state.slotDefs.map((slot, i) => ({
+        id: `slot-${String(i + 1).padStart(3, '0')}-${slot.kind}`,
+        name: slot.name,
+        kind: slot.kind,
+        arity: slot.arity,
+        scenarios: JSON.stringify(slot.scenarios),
+        created_at: stateStamp(state),
+      })),
+  },
+  {
+    table: 'claims',
+    columns: [
+      'id',
+      'object_id',
+      'predicate',
+      'text',
+      'status',
+      'unverified',
+      'valid_from',
+      'valid_to',
+      'close_reason',
+      'source_id',
+      'span',
+      'source_start',
+      'source_end',
+      'source_locator',
+      'superseded_by',
+      'created_at',
+    ],
+    primaryKey: ['id'],
+    collection: (state) => state.claims,
+    rows: (state) =>
+      state.claims.map((c) => ({
+        id: c.id,
+        object_id: c.objectId,
+        predicate: c.predicate,
+        text: c.text,
+        status: c.status,
+        unverified: c.unverified ? 1 : 0,
+        valid_from: c.validFrom ?? null,
+        valid_to: c.validTo ?? null,
+        close_reason: c.closeReason ?? null,
+        source_id: c.sourceId,
+        span: c.span ?? null,
+        source_start: c.sourceStart ?? null,
+        source_end: c.sourceEnd ?? null,
+        source_locator: c.sourceLocator ? JSON.stringify(c.sourceLocator) : null,
+        superseded_by: c.supersededBy ?? null,
+        created_at: c.createdAt,
+      })),
+  },
+  {
+    table: 'memories',
+    columns: ['id', 'scope', 'object_id', 'kind', 'text', 'created_at'],
+    primaryKey: ['id'],
+    collection: (state) => state.memories,
+    rows: (state) =>
+      state.memories.map((m) => ({
+        id: m.id,
+        scope: m.scope,
+        object_id: m.objectId ?? null,
+        kind: m.kind,
+        text: m.text,
+        created_at: m.createdAt,
+      })),
+  },
+  {
+    table: 'proposals',
+    columns: ['id', 'type', 'payload', 'pending', 'decision', 'created_at', 'title', 'detail'],
+    primaryKey: ['id'],
+    collection: (state) => state.proposals,
+    rows: (state) =>
+      state.proposals.map((p) => ({
+        id: p.id,
+        type: p.type,
+        payload: JSON.stringify(p.payload),
+        pending: p.pending ? 1 : 0,
+        decision: p.decision ?? null,
+        created_at: stateStamp(state),
+        title: p.title,
+        detail: p.detail,
+      })),
+  },
+  {
+    table: 'write_queue',
+    columns: [
+      'id',
+      'object_id',
+      'kind',
+      'task_id',
+      'headline',
+      'evidence',
+      'claim_id',
+      'claim_ids',
+      'source_id',
+      'object_ids',
+      'target_predicate',
+      'outbound',
+      'position',
+      'created_at',
+    ],
+    primaryKey: ['id'],
+    collection: (state) => state.writeQueue,
+    rows: (state) => {
+      const rows: PersistRow[] = [];
+      state.writeQueue.forEach((write, position) => {
+        rows.push({
+          id: write.id,
+          object_id: write.objectId,
+          kind: write.kind,
+          task_id: write.taskId ?? null,
+          headline: write.headline,
+          evidence: write.evidence,
+          claim_id: write.claimId ?? null,
+          claim_ids: write.claimIds ? JSON.stringify(write.claimIds) : null,
+          source_id: write.sourceId ?? null,
+          object_ids: write.objectIds ? JSON.stringify(write.objectIds) : null,
+          target_predicate: write.targetPredicate ?? null,
+          outbound: typeof write.outbound === 'boolean' ? (write.outbound ? 1 : 0) : null,
+          // 0056 约束一例外：position 跟随数组下标重排，必须进 UPDATE 写集与脏判。
+          position,
+          created_at: stateStamp(state),
+        });
+      });
+      return rows;
+    },
+  },
+  {
+    table: 'tasks',
+    columns: [
+      'id',
+      'object_id',
+      'kind',
+      'status',
+      'stop_reason',
+      'budget_gear',
+      'query',
+      'interval_days',
+      'next_due_at',
+      'last_run_at',
+      'parent_task_id',
+      'due_at',
+      'created_at',
+      'finished_at',
+    ],
+    primaryKey: ['id'],
+    collection: (state) => state.tasks,
+    rows: (state) =>
+      state.tasks.map((t) => ({
+        id: t.id,
+        object_id: t.objectId,
+        kind: t.kind,
+        status: t.status,
+        stop_reason: t.stopReason ?? null,
+        budget_gear: t.budgetGear ?? null,
+        query: t.query ?? null,
+        interval_days: t.intervalDays ?? null,
+        next_due_at: t.nextDueAt ?? null,
+        last_run_at: t.lastRunAt ?? null,
+        parent_task_id: t.parentTaskId ?? null,
+        due_at: t.dueAt ?? null,
+        created_at: t.createdAt,
+        finished_at: t.status === '已完成' || t.status === '已停止' ? t.createdAt : null,
+      })),
+  },
+  {
+    table: 'task_audit',
+    columns: ['task_id', 'seq', 'kind', 'payload', 'ts'],
+    primaryKey: ['task_id', 'seq'],
+    collection: (state) => state.taskAudits,
+    rows: (state) =>
+      (state.taskAudits ?? []).map((a) => ({
+        task_id: a.taskId,
+        seq: a.seq,
+        kind: a.kind,
+        payload: JSON.stringify(a.payload),
+        ts: a.ts,
+      })),
+  },
+  {
+    table: 'briefs',
+    columns: ['id', 'object_id', 'task_id', 'blocks', 'created_at'],
+    primaryKey: ['id'],
+    collection: (state) => state.briefs,
+    rows: (state) =>
+      state.briefs.map((b) => ({
+        id: b.id,
+        object_id: b.objectId,
+        task_id: b.taskId,
+        blocks: JSON.stringify(b.blocks),
+        created_at: b.createdAt,
+      })),
+  },
+  {
+    table: 'ingest_jobs',
+    columns: [
+      'id',
+      'input_kind',
+      'input_json',
+      'status',
+      'title',
+      'locator',
+      'source_id',
+      'failure_kind',
+      'detail',
+      'attempt',
+      'workspace_id',
+      'created_at',
+      'updated_at',
+    ],
+    primaryKey: ['id'],
+    collection: (state) => state.ingestJobs,
+    rows: (state) =>
+      state.ingestJobs.map((job) => ({
+        id: job.id,
+        input_kind: job.inputKind,
+        input_json: job.input ? JSON.stringify(job.input) : null,
+        status: job.status,
+        title: job.title ?? null,
+        locator: job.locator ?? null,
+        source_id: job.sourceId ?? null,
+        failure_kind: job.failureKind ?? null,
+        detail: job.detail ?? null,
+        attempt: job.attempt,
+        workspace_id: job.workspaceId ?? null,
+        created_at: job.createdAt,
+        updated_at: job.updatedAt,
+      })),
+  },
+  {
+    table: 'chat_messages',
+    columns: ['id', 'object_id', 'role', 'text', 'claim_refs', 'card', 'created_at', 'seq'],
+    primaryKey: ['id'],
+    collection: (state) => state.chatByObject,
+    rows: (state) => {
+      // 全局 seq 重排保持在行构造器内（0056：两路共用）；seq 进 UPDATE 写集，不特判。
+      const rows: PersistRow[] = [];
+      let seq = 0;
+      for (const [objectId, msgs] of Object.entries(state.chatByObject)) {
+        for (const m of msgs) {
+          seq += 1;
+          rows.push({
+            id: m.id,
+            object_id: objectId,
+            role: m.role,
+            text: m.text,
+            claim_refs: m.claimRefs ? JSON.stringify(m.claimRefs) : null,
+            card: m.card ? JSON.stringify(m.card) : null,
+            created_at: stateStamp(state),
+            seq,
+          });
+        }
+      }
+      return rows;
+    },
+  },
+];
+
+function insertSql(table: PersistTable): string {
+  const placeholders = table.columns.map(() => '?').join(', ');
+  return `INSERT INTO ${table.table} (${table.columns.join(', ')}) VALUES (${placeholders})`;
+}
+
+function writeMeta(db: Database.Database, state: State): void {
+  metaSet(db, 'seq', String(state.seq));
+  metaSet(db, 'currentWorkspaceId', state.currentWorkspaceId);
+  metaSet(db, 'themePreference', state.themePreference);
+  metaSet(db, 'onboardingDone', state.onboardingDone ? '1' : '0');
+}
+
+function bindValues(table: PersistTable, row: PersistRow): PersistValue[] {
+  return table.columns.map((column) => row[column] ?? null);
+}
+
+/** 把出荷状态全量写入大脑文件（0056：保留为修复与等价对照通道）。账本真相源是 SQLite，不是内存。 */
 export function persistLedger(db: Database.Database, state: State): void {
   const tx = db.transaction(() => {
     db.exec(`
@@ -87,245 +495,92 @@ export function persistLedger(db: Database.Database, state: State): void {
       DELETE FROM slot_defs;
     `);
 
-    const insWs = db.prepare(
-      `INSERT INTO workspaces (id, name, scenario, created_at) VALUES (?, ?, ?, ?)`,
-    );
-    for (const w of state.workspaces) {
-      insWs.run(w.id, w.name, w.scenario, stateStamp(state));
-    }
-
-    const insObj = db.prepare(
-      `INSERT INTO objects (id, kind, name, note, workspace_id, archived, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`,
-    );
-    const insRel = db.prepare(`INSERT INTO object_relations (from_id, to_id) VALUES (?, ?)`);
-    for (const o of state.objects) {
-      insObj.run(
-        o.id,
-        o.kind,
-        o.name,
-        o.note ?? null,
-        o.workspaceId,
-        o.archived ? 1 : 0,
-        stateStamp(state),
-      );
-      for (const to of o.relationIds) {
-        insRel.run(o.id, to);
+    for (const table of PERSIST_TABLES) {
+      const insert = db.prepare(insertSql(table));
+      for (const row of table.rows(state)) {
+        insert.run(...bindValues(table, row));
       }
     }
 
-    const insSrc = db.prepare(
-      `INSERT INTO sources (
-        id, title, body, path, role, workspace_id, unparsed,
-        origin_json, segments_json, content_hash, fetched_at, created_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    );
-    const insBind = db.prepare(`INSERT INTO source_bindings (source_id, object_id) VALUES (?, ?)`);
-    for (const s of state.sources) {
-      if (s.virtual || s.id === 'user-stmt') continue;
-      insSrc.run(
-        s.id,
-        s.title,
-        s.body,
-        s.path,
-        s.role ?? null,
-        s.workspaceId ?? null,
-        s.unparsed ? 1 : 0,
-        s.origin ? JSON.stringify(s.origin) : null,
-        s.segments ? JSON.stringify(s.segments) : null,
-        s.contentHash ?? s.origin?.contentHash ?? null,
-        s.fetchedAt ?? s.origin?.fetchedAt ?? null,
-        stateStamp(state),
-      );
-      for (const oid of s.boundObjectIds) {
-        insBind.run(s.id, oid);
-      }
-    }
-
-    const insSlot = db.prepare(
-      `INSERT INTO slot_defs (id, name, kind, arity, scenarios, created_at)
-       VALUES (?, ?, ?, ?, ?, ?)`,
-    );
-    state.slotDefs.forEach((slot, i) => {
-      insSlot.run(
-        `slot-${String(i + 1).padStart(3, '0')}-${slot.kind}`,
-        slot.name,
-        slot.kind,
-        slot.arity,
-        JSON.stringify(slot.scenarios),
-        stateStamp(state),
-      );
-    });
-
-    const insClaim = db.prepare(
-      `INSERT INTO claims (
-        id, object_id, predicate, text, status, unverified, valid_from, valid_to,
-        close_reason, source_id, span, source_start, source_end, source_locator,
-        superseded_by, created_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    );
-    for (const c of state.claims) {
-      insClaim.run(
-        c.id,
-        c.objectId,
-        c.predicate,
-        c.text,
-        c.status,
-        c.unverified ? 1 : 0,
-        c.validFrom ?? null,
-        c.validTo ?? null,
-        c.closeReason ?? null,
-        c.sourceId,
-        c.span ?? null,
-        c.sourceStart ?? null,
-        c.sourceEnd ?? null,
-        c.sourceLocator ? JSON.stringify(c.sourceLocator) : null,
-        c.supersededBy ?? null,
-        c.createdAt,
-      );
-    }
-
-    const insMem = db.prepare(
-      `INSERT INTO memories (id, scope, object_id, kind, text, created_at)
-       VALUES (?, ?, ?, ?, ?, ?)`,
-    );
-    for (const m of state.memories) {
-      insMem.run(m.id, m.scope, m.objectId ?? null, m.kind, m.text, m.createdAt);
-    }
-
-    const insProp = db.prepare(
-      `INSERT INTO proposals (id, type, payload, pending, decision, created_at, title, detail)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-    );
-    for (const p of state.proposals) {
-      insProp.run(
-        p.id,
-        p.type,
-        JSON.stringify(p.payload),
-        p.pending ? 1 : 0,
-        p.decision ?? null,
-        stateStamp(state),
-        p.title,
-        p.detail,
-      );
-    }
-
-    const insWrite = db.prepare(
-      `INSERT INTO write_queue (
-        id, object_id, kind, task_id, headline, evidence, claim_id, claim_ids,
-        source_id, object_ids, target_predicate, outbound, position, created_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    );
-    state.writeQueue.forEach((write, position) => {
-      insWrite.run(
-        write.id,
-        write.objectId,
-        write.kind,
-        write.taskId ?? null,
-        write.headline,
-        write.evidence,
-        write.claimId ?? null,
-        write.claimIds ? JSON.stringify(write.claimIds) : null,
-        write.sourceId ?? null,
-        write.objectIds ? JSON.stringify(write.objectIds) : null,
-        write.targetPredicate ?? null,
-        typeof write.outbound === 'boolean' ? (write.outbound ? 1 : 0) : null,
-        position,
-        stateStamp(state),
-      );
-    });
-
-    const insTask = db.prepare(
-      `INSERT INTO tasks (
-        id, object_id, kind, status, stop_reason, budget_gear, query, interval_days,
-        next_due_at, last_run_at, parent_task_id, due_at, created_at, finished_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    );
-    for (const t of state.tasks) {
-      insTask.run(
-        t.id,
-        t.objectId,
-        t.kind,
-        t.status,
-        t.stopReason ?? null,
-        t.budgetGear ?? null,
-        t.query ?? null,
-        t.intervalDays ?? null,
-        t.nextDueAt ?? null,
-        t.lastRunAt ?? null,
-        t.parentTaskId ?? null,
-        t.dueAt ?? null,
-        t.createdAt,
-        t.status === '已完成' || t.status === '已停止' ? t.createdAt : null,
-      );
-    }
-
-    const insAudit = db.prepare(
-      `INSERT INTO task_audit (task_id, seq, kind, payload, ts) VALUES (?, ?, ?, ?, ?)`,
-    );
-    for (const a of state.taskAudits ?? []) {
-      insAudit.run(a.taskId, a.seq, a.kind, JSON.stringify(a.payload), a.ts);
-    }
-
-    const insBrief = db.prepare(
-      `INSERT INTO briefs (id, object_id, task_id, blocks, created_at) VALUES (?, ?, ?, ?, ?)`,
-    );
-    for (const b of state.briefs) {
-      insBrief.run(b.id, b.objectId, b.taskId, JSON.stringify(b.blocks), b.createdAt);
-    }
-
-    const insIngest = db.prepare(
-      `INSERT INTO ingest_jobs (
-        id, input_kind, input_json, status, title, locator, source_id,
-        failure_kind, detail, attempt, workspace_id, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    );
-    for (const job of state.ingestJobs) {
-      insIngest.run(
-        job.id,
-        job.inputKind,
-        job.input ? JSON.stringify(job.input) : null,
-        job.status,
-        job.title ?? null,
-        job.locator ?? null,
-        job.sourceId ?? null,
-        job.failureKind ?? null,
-        job.detail ?? null,
-        job.attempt,
-        job.workspaceId ?? null,
-        job.createdAt,
-        job.updatedAt,
-      );
-    }
-
-    const insMsg = db.prepare(
-      `INSERT INTO chat_messages (id, object_id, role, text, claim_refs, card, created_at, seq)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-    );
-    let seq = 0;
-    for (const [objectId, msgs] of Object.entries(state.chatByObject)) {
-      for (const m of msgs) {
-        seq += 1;
-        insMsg.run(
-          m.id,
-          objectId,
-          m.role,
-          m.text,
-          m.claimRefs ? JSON.stringify(m.claimRefs) : null,
-          m.card ? JSON.stringify(m.card) : null,
-          stateStamp(state),
-          seq,
-        );
-      }
-    }
-
-    metaSet(db, 'seq', String(state.seq));
-    metaSet(db, 'currentWorkspaceId', state.currentWorkspaceId);
-    metaSet(db, 'themePreference', state.themePreference);
-    metaSet(db, 'onboardingDone', state.onboardingDone ? '1' : '0');
+    writeMeta(db, state);
   });
   tx();
   rebuildFts(db);
+}
+
+/**
+ * 按表差异写入（0056）。prev 必须是本次 dispatch 起点从库现读的快照：
+ * 单写漏斗（dispatch → persist*）保证 diff(prev,next) ≡ diff(DB,next)。
+ * 引用相同整表跳过；引用不等才按主键三分自愈——presets 种子的旧格式槽 id 与迁移外直写行
+ * 会在首次触达该表时收敛为行构造器的规范形态。
+ */
+export function persistLedgerDiff(db: Database.Database, prev: State, next: State): void {
+  const claimsDirty = prev.claims !== next.claims;
+  const tx = db.transaction(() => {
+    for (const table of PERSIST_TABLES) {
+      if (table.collection(prev) === table.collection(next)) continue;
+      syncTable(db, table, table.rows(next));
+    }
+    // 0056：app_meta 的 4 键 upsert 每 dispatch 照写，不在判脏射程。
+    writeMeta(db, next);
+    // 0056 约束三：FTS 只在 claims 脏时重建，首版全量 rebuildFts 并移入同一事务收窄崩溃窗口。
+    if (claimsDirty) rebuildFts(db);
+  });
+  tx();
+}
+
+function rowKey(table: PersistTable, row: PersistRow): string {
+  return JSON.stringify(table.primaryKey.map((column) => row[column] ?? null));
+}
+
+/** 行级主键三分（0056）：库有 next 无→DELETE；next 有库无→INSERT；两侧都有但脏→UPDATE。 */
+function syncTable(db: Database.Database, table: PersistTable, wanted: PersistRow[]): void {
+  const stored = db
+    .prepare(`SELECT ${table.columns.join(', ')} FROM ${table.table}`)
+    .all() as PersistRow[];
+  const storedByKey = new Map<string, PersistRow>();
+  for (const row of stored) {
+    storedByKey.set(rowKey(table, row), row);
+  }
+  const wantedByKey = new Map<string, PersistRow>();
+  for (const row of wanted) {
+    wantedByKey.set(rowKey(table, row), row);
+  }
+
+  const keyWhere = table.primaryKey.map((column) => `${column} = ?`).join(' AND ');
+  const del = db.prepare(`DELETE FROM ${table.table} WHERE ${keyWhere}`);
+  for (const [key, row] of storedByKey) {
+    if (wantedByKey.has(key)) continue;
+    del.run(...table.primaryKey.map((column) => row[column] ?? null));
+  }
+
+  // 0056 约束一：created_at 语义是「首次落库时间」——UPDATE 写除它外的全部非主键列，
+  // 脏判也必须忽略它，否则 stateStamp 会让每次触达都全表假脏。
+  const dataColumns = table.columns.filter(
+    (column) => column !== 'created_at' && !table.primaryKey.includes(column),
+  );
+  // 关联表（object_relations / source_bindings）主键即全部列，dataColumns 为空：同键行必等，
+  // 只需补 INSERT，无 UPDATE 可言。
+  const upd =
+    dataColumns.length === 0
+      ? null
+      : db.prepare(
+          `UPDATE ${table.table} SET ${dataColumns.map((column) => `${column} = ?`).join(', ')} WHERE ${keyWhere}`,
+        );
+  const ins = db.prepare(insertSql(table));
+  for (const [key, row] of wantedByKey) {
+    const existing = storedByKey.get(key);
+    if (!existing) {
+      ins.run(...bindValues(table, row));
+      continue;
+    }
+    if (upd && dataColumns.some((column) => existing[column] !== row[column])) {
+      upd.run(
+        ...dataColumns.map((column) => row[column] ?? null),
+        ...table.primaryKey.map((column) => row[column] ?? null),
+      );
+    }
+  }
 }
 
 function rebuildFts(db: Database.Database): void {

@@ -17,6 +17,8 @@ import {
   listDeletedSourceRecoveries,
   loadLedger,
   persistLedger,
+  persistLedgerDiff,
+  type PersistMode,
 } from './persist';
 import { listBriefSpecs, listSlotDefs } from './presets';
 import { REQUIRED_TABLES } from './schema';
@@ -48,12 +50,18 @@ import {
 export type { Action };
 export { deriveConflicts, listBriefSpecs, listSlotDefs, projectionClaims, REQUIRED_TABLES };
 
+export interface BrainOptions {
+  /** 0056：默认按脏表差异写入；'full' 全量重写只留修复与等价对照通道。 */
+  persistMode?: PersistMode;
+}
+
 export class Brain {
   readonly db: Database.Database;
   readonly filePath: string;
   readonly secrets: SecretStore;
   readonly modelSettings: ModelSettingsStore;
   readonly qualificationStore: QualificationStore;
+  readonly persistMode: PersistMode;
   private ui: ReturnType<typeof emptyUiFields>;
   private runningQualification: { fingerprint: string; startedAt: string } | null = null;
 
@@ -62,11 +70,13 @@ export class Brain {
     secrets: SecretStore = createMemorySecrets(),
     modelSettings: ModelSettingsStore = createMemoryModelSettingsStore(),
     qualificationStore: QualificationStore = createMemoryQualificationStore(),
+    options: BrainOptions = {},
   ) {
     this.filePath = filePath;
     this.secrets = secrets;
     this.modelSettings = modelSettings;
     this.qualificationStore = qualificationStore;
+    this.persistMode = options.persistMode ?? 'diff';
     this.db = openDatabase(filePath);
     const legacy = loadLedger(this.db);
     const stored = modelSettings.load();
@@ -151,7 +161,12 @@ export class Brain {
     if (isModelSettingsAction(loggedAction)) {
       this.modelSettings.save(modelSettingsFromState(next));
     }
-    persistLedger(this.db, next);
+    // 0056：dispatch 是唯一写漏斗，prev 是本次起点从库现读的快照，diff(prev,next) ≡ diff(DB,next)。
+    if (this.persistMode === 'full') {
+      persistLedger(this.db, next);
+    } else {
+      persistLedgerDiff(this.db, prev, next);
+    }
     if (!isModelSettingsAction(loggedAction)) {
       appendOperation(
         this.db,
@@ -279,8 +294,9 @@ export function openBrain(
   secrets?: SecretStore,
   modelSettings?: ModelSettingsStore,
   qualificationStore?: QualificationStore,
+  options?: BrainOptions,
 ): Brain {
-  return new Brain(filePath, secrets, modelSettings, qualificationStore);
+  return new Brain(filePath, secrets, modelSettings, qualificationStore, options);
 }
 
 function hydrateProviders(
