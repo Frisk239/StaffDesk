@@ -14,7 +14,8 @@
 - M11 added one quality-regression runner for both Settings qualification and `npm run eval`: isolated fictional gold packs traverse acquisition, extraction, FTS recall, and outbound ledger rules, reporting extraction/span, Recall@k/Precision@k/MRR, faithfulness, unknown, conflict, correction, and fabrication metrics.
 - Model qualification is product-global and fingerprinted by normalized endpoint, model, thinking effort, effective model parameters, and suite/policy versions. Records live in `userData/quality-qualification.json`, never in the brain file; changing the target immediately returns the current configuration to unqualified without deleting old history.
 - M12 upgraded the desktop runtime security floor to Electron 44 and moved SQLite native validation to `native:check`: `better-sqlite3` 13 N-API prebuilds must load inside Electron before lint/typecheck/test/build. electron-builder packaging no longer forces local source rebuilds.
-- Current working branch for this cut: `codex/m12-electron-security`. Previous merged branch: `codex/m11-quality-regression`.
+- M13 added the Electron runtime security boundary: sandboxed main window, explicit app-page URL policy, http/https-only external opens, denied in-app navigation/new windows/webviews/permission requests, and trusted-frame checks for privileged IPC.
+- Current working branch for this cut: `codex/m13-runtime-security-hardening`. Previous merged branch: `codex/m12-electron-security`.
 
 ## Language
 

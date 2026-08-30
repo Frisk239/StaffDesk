@@ -1,5 +1,5 @@
 import { writeFileSync } from 'node:fs';
-import { BrowserWindow, dialog, ipcMain } from 'electron';
+import { BrowserWindow, dialog, ipcMain, type IpcMainInvokeEvent } from 'electron';
 import type { Action } from '@shared/actions';
 import { attachTurn } from '@shared/turn';
 import { createReachAdapter } from './adapters/reach';
@@ -23,13 +23,27 @@ import {
 } from './eval/fingerprint';
 import type { QualityQualificationRecord } from '@shared/types';
 
+type IpcSecurity = {
+  assertTrustedSender: (event: IpcMainInvokeEvent) => void;
+};
+
 function broadcast(next: unknown): void {
   for (const win of BrowserWindow.getAllWindows()) {
     win.webContents.send('state:changed', next);
   }
 }
 
-export function registerIpc(brain: Brain): void {
+export function registerIpc(brain: Brain, security?: IpcSecurity): void {
+  const assertTrustedSender = security?.assertTrustedSender ?? (() => undefined);
+  const handleTrusted = <Args extends unknown[], Result>(
+    channel: string,
+    handler: (event: IpcMainInvokeEvent, ...args: Args) => Result,
+  ): void => {
+    ipcMain.handle(channel, (event, ...args) => {
+      assertTrustedSender(event);
+      return handler(event, ...(args as Args));
+    });
+  };
   const executeExtractionJob = createExtractionJobExecutor({ brain, publish: broadcast });
   const executeIngest = createIngestionExecutor({ brain, publish: broadcast });
   const runResearchAndApply = async (
@@ -68,14 +82,14 @@ export function registerIpc(brain: Brain): void {
     return next;
   };
 
-  ipcMain.handle('brain:snapshot', () => brain.snapshot());
-  ipcMain.handle('brain:dispatch', (_event, action: Action) => {
+  handleTrusted('brain:snapshot', () => brain.snapshot());
+  handleTrusted('brain:dispatch', (_event, action: Action) => {
     const next = brain.dispatch(action);
     broadcast(next);
     return next;
   });
 
-  ipcMain.handle('chat:send', async (event, payload: { objectId: string; text: string }) => {
+  handleTrusted('chat:send', async (event, payload: { objectId: string; text: string }) => {
     const text = payload.text.trim();
     if (!text) return brain.snapshot();
     if (isWriteIntent(text)) {
@@ -143,7 +157,7 @@ export function registerIpc(brain: Brain): void {
     return finalState;
   });
 
-  ipcMain.handle(
+  handleTrusted(
     'ingest:text',
     async (_event, payload: { text: string; suggestedTitle?: string }) => {
       return executeIngest({
@@ -154,7 +168,7 @@ export function registerIpc(brain: Brain): void {
     },
   );
 
-  ipcMain.handle('ingest:url', async (_event, payload: { url: string }) => {
+  handleTrusted('ingest:url', async (_event, payload: { url: string }) => {
     return executeIngest({ kind: 'url', url: payload.url });
   });
 
@@ -166,7 +180,7 @@ export function registerIpc(brain: Brain): void {
     return next;
   };
 
-  ipcMain.handle('ingest:chooseFiles', async () => {
+  handleTrusted('ingest:chooseFiles', async () => {
     const picked = await dialog.showOpenDialog({
       title: '选择材料',
       properties: ['openFile', 'multiSelections'],
@@ -195,7 +209,7 @@ export function registerIpc(brain: Brain): void {
     return ingestFilePaths(picked.filePaths);
   });
 
-  ipcMain.handle('ingest:files', async (_event, payload: { filePaths?: unknown }) => {
+  handleTrusted('ingest:files', async (_event, payload: { filePaths?: unknown }) => {
     const filePaths = Array.isArray(payload.filePaths)
       ? payload.filePaths.filter((filePath): filePath is string => typeof filePath === 'string')
       : [];
@@ -203,17 +217,17 @@ export function registerIpc(brain: Brain): void {
     return ingestFilePaths(filePaths);
   });
 
-  ipcMain.handle('ingest:retry', async (_event, jobId: string) => {
+  handleTrusted('ingest:retry', async (_event, jobId: string) => {
     const job = brain.snapshot().ingestJobs.find((item) => item.id === jobId);
     if (!job?.input) return brain.snapshot();
     return executeIngest(job.input, job.id);
   });
 
-  ipcMain.handle('extract:run', async (_event, sourceId: string) => {
+  handleTrusted('extract:run', async (_event, sourceId: string) => {
     return executeExtractionJob(sourceId);
   });
 
-  ipcMain.handle(
+  handleTrusted(
     'settings:testProvider',
     async (_event, payload: { providerId: string; modelId: string }) => {
       const frozen = brain.snapshot();
@@ -298,7 +312,7 @@ export function registerIpc(brain: Brain): void {
     },
   );
 
-  ipcMain.handle('brief:generate', async (_event, objectId: string) => {
+  handleTrusted('brief:generate', async (_event, objectId: string) => {
     let state = brain.snapshot();
     if (!state.briefDraftingFor) {
       state = brain.dispatch({ type: 'GENERATE_BRIEF_START', objectId });
@@ -318,7 +332,7 @@ export function registerIpc(brain: Brain): void {
     return next;
   });
 
-  ipcMain.handle('brain:export', async () => {
+  handleTrusted('brain:export', async () => {
     const picked = await dialog.showSaveDialog({
       title: '导出大脑',
       defaultPath: 'staffdesk-brain.zip',
@@ -329,14 +343,14 @@ export function registerIpc(brain: Brain): void {
     return picked.filePath;
   });
 
-  ipcMain.handle(
+  handleTrusted(
     'task:startResearch',
     async (_event, payload: { objectId: string; gear?: BudgetGear }) => {
       return runResearchAndApply(payload.objectId, payload.gear ?? '快搜');
     },
   );
 
-  ipcMain.handle('task:createRadar', async (_event, payload: { objectId: string }) => {
+  handleTrusted('task:createRadar', async (_event, payload: { objectId: string }) => {
     const state = brain.snapshot();
     const query = defaultQuery(state, payload.objectId);
     const next = brain.dispatch({
@@ -350,7 +364,7 @@ export function registerIpc(brain: Brain): void {
     return next;
   });
 
-  ipcMain.handle('task:runRadar', async (_event, payload: { radarTaskId: string }) => {
+  handleTrusted('task:runRadar', async (_event, payload: { radarTaskId: string }) => {
     const state = brain.snapshot();
     const radar = state.tasks.find((task) => task.id === payload.radarTaskId);
     if (!radar || radar.kind !== '周期性雷达') {

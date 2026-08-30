@@ -1,9 +1,15 @@
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { app, BrowserWindow, safeStorage, shell } from 'electron';
+import { app, BrowserWindow, safeStorage } from 'electron';
 import { openBrain, type Brain } from './brain';
 import { registerIpc, unregisterIpc } from './ipc';
 import { createSafeStorageSecrets } from './keychain';
+import {
+  assertTrustedIpcSender,
+  createRuntimeSecurityPolicy,
+  installRuntimeSecurity,
+  trustedRendererDevServerUrl,
+} from './runtimeSecurity';
 import { destroyTray, installTray, isQuitting, markQuitting } from './tray';
 import { latestDueRadar, planRadarRun } from './tasks/radar';
 import { createReachAdapter } from './adapters/reach';
@@ -37,9 +43,15 @@ function secretsDir(): string {
   return dir;
 }
 
-function createWindow(): void {
+function rendererFilePath(): string {
+  return join(__dirname, '../renderer/index.html');
+}
+
+type RuntimeSecurityPolicy = ReturnType<typeof createRuntimeSecurityPolicy>;
+
+function createWindow(securityPolicy: RuntimeSecurityPolicy): void {
   const e2eWidth = Number(process.env.STAFFDESK_E2E_WINDOW_WIDTH);
-  mainWindow = new BrowserWindow({
+  const win = new BrowserWindow({
     width: Number.isFinite(e2eWidth) && e2eWidth >= 900 ? e2eWidth : 1280,
     height: 800,
     minWidth: 900,
@@ -52,23 +64,24 @@ function createWindow(): void {
         : join(__dirname, '../preload/index.mjs'),
       contextIsolation: true,
       nodeIntegration: false,
-      sandbox: false,
+      sandbox: true,
+      webSecurity: true,
+      allowRunningInsecureContent: false,
     },
   });
+  mainWindow = win;
 
-  mainWindow.on('ready-to-show', () => {
-    mainWindow?.show();
+  win.on('ready-to-show', () => {
+    win.show();
   });
 
-  mainWindow.webContents.setWindowOpenHandler((details) => {
-    void shell.openExternal(details.url);
-    return { action: 'deny' };
-  });
+  installRuntimeSecurity(win, securityPolicy);
 
-  if (process.env.ELECTRON_RENDERER_URL) {
-    void mainWindow.loadURL(process.env.ELECTRON_RENDERER_URL);
+  const devServerUrl = trustedRendererDevServerUrl(process.env.ELECTRON_RENDERER_URL);
+  if (devServerUrl) {
+    void win.loadURL(devServerUrl);
   } else {
-    void mainWindow.loadFile(join(__dirname, '../renderer/index.html'));
+    void win.loadFile(securityPolicy.rendererFilePath);
   }
 }
 
@@ -106,8 +119,14 @@ app.whenReady().then(() => {
   );
   brain = openBrain(path, secrets, modelSettings, qualificationStore);
   console.log('brain file created', existsSync(path));
-  registerIpc(brain);
-  createWindow();
+  const securityPolicy = createRuntimeSecurityPolicy({
+    rendererFilePath: rendererFilePath(),
+    devServerUrl: process.env.ELECTRON_RENDERER_URL,
+  });
+  registerIpc(brain, {
+    assertTrustedSender: (event) => assertTrustedIpcSender(event, mainWindow, securityPolicy),
+  });
+  createWindow(securityPolicy);
   installTray(
     () => mainWindow,
     () => {
@@ -132,8 +151,13 @@ app.whenReady().then(() => {
   }
 
   app.on('activate', () => {
-    if (BrowserWindow.getAllWindows().length === 0) createWindow();
-    else mainWindow?.show();
+    if (BrowserWindow.getAllWindows().length === 0) {
+      const securityPolicy = createRuntimeSecurityPolicy({
+        rendererFilePath: rendererFilePath(),
+        devServerUrl: process.env.ELECTRON_RENDERER_URL,
+      });
+      createWindow(securityPolicy);
+    } else mainWindow?.show();
   });
 });
 

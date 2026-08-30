@@ -16,6 +16,14 @@ export default defineConfig({
     resolve: {
       alias: { '@shared': shared },
     },
+    build: {
+      rollupOptions: {
+        output: {
+          entryFileNames: '[name].js',
+          format: 'cjs',
+        },
+      },
+    },
   },
   renderer: {
     resolve: {
