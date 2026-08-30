@@ -248,12 +248,17 @@ function ModelsWorkbench() {
   const selected = adding
     ? null
     : (state.providers.find((p) => p.id === selectedId) ?? state.providers[0] ?? null);
+  const currentProvider = state.providers.find(
+    (provider) => provider.id === state.activeProviderId,
+  );
+  const currentModel = currentProvider?.models.find((model) => model.id === state.activeModelId);
 
   return (
     <div className="models-work">
       <p className="models-lead">
         这里是产品唯一的模型配置入口。配置一次后，所有工作区和大脑文件共用。
       </p>
+      <QualificationSummary provider={currentProvider} model={currentModel} />
       <div className="models-card">
         <aside className="models-rail">
           <div className="models-rail-label">供应商</div>
@@ -306,6 +311,88 @@ function ModelsWorkbench() {
         </div>
       </div>
     </div>
+  );
+}
+
+function QualificationSummary({
+  provider,
+  model,
+}: {
+  provider: LlmProvider | undefined;
+  model: LlmModel | undefined;
+}) {
+  const { state } = useStore();
+  const qualification = state.qualification;
+  const metrics = qualification.report?.metrics;
+  const running = qualification.status === '认证中';
+  const ready = Boolean(provider?.apiKey.trim() && model && !running);
+  return (
+    <section className="cert-panel" aria-label="当前模型资格认证">
+      <div className="prov-title">
+        <strong>当前模型资格</strong>
+        <span className={`pill ${qualification.status === '已认证' ? 'on' : ''}`}>
+          {qualification.status}
+        </span>
+        {qualification.connect && (
+          <span className={`tag ${qualification.connect.status === '通过' ? 'green' : 'red'}`}>
+            连通{qualification.connect.status}
+          </span>
+        )}
+        {qualification.capability && (
+          <span className={`tag ${qualification.capability.status === '通过' ? 'green' : 'red'}`}>
+            能力{qualification.capability.status}
+          </span>
+        )}
+        <button
+          type="button"
+          className="primary small"
+          disabled={!ready}
+          onClick={() => {
+            if (provider && model) void window.staffdesk.testProvider(provider.id, model.id);
+          }}
+        >
+          {running ? '认证运行中…' : '运行资格认证'}
+        </button>
+      </div>
+      <p className="dim">
+        {provider && model
+          ? `${qualification.endpointIdentity ?? provider.baseUrl} · ${model.id}`
+          : '先启用一个端点并选择模型。未认证仍可使用。'}
+      </p>
+      {qualification.report && (
+        <div className="cert-chips">
+          {qualification.report.stages.map((stage) => (
+            <span key={stage.name} className={`tag ${stage.status === '通过' ? 'green' : 'red'}`}>
+              {stage.name}：{stage.status}
+            </span>
+          ))}
+        </div>
+      )}
+      {qualification.report?.stages
+        .filter((stage) => stage.status !== '通过')
+        .map((stage) => (
+          <p className="dim" key={stage.name}>
+            失败位置：{stage.name} · {stage.detail ?? '未运行'}
+          </p>
+        ))}
+      {qualification.detail && <p className="dim">{qualification.detail}</p>}
+      {metrics && (
+        <div className="cert-chips">
+          <span className="tag green">抽取召回 {metrics.extractionRecall}%</span>
+          <span className="tag green">出处命中 {metrics.spanHit}%</span>
+          <span className="tag green">Recall@k {metrics.ftsRecallAtK}%</span>
+          <span className="tag green">Precision@k {metrics.ftsPrecisionAtK}%</span>
+          <span className="tag green">MRR {metrics.mrr}</span>
+          <span className="tag green">简报忠实 {metrics.briefFaithfulness}%</span>
+          <span className="tag green">未知遵守 {metrics.unknownAdherence}%</span>
+          <span className="tag green">冲突检出 {metrics.conflictDetection}%</span>
+          <span className="tag green">纠正复发 {metrics.correctionRecurrence}%</span>
+          <span className={`tag ${metrics.fabrication > 5 ? 'red' : 'green'}`}>
+            编造率 {metrics.fabrication}%（红线 5%）
+          </span>
+        </div>
+      )}
+    </section>
   );
 }
 
@@ -406,7 +493,6 @@ function ProviderDetail({
   const [showKey, setShowKey] = useState(false);
   const [nameEdit, setNameEdit] = useState(false);
   const current = state.activeProviderId === provider.id && provider.enabled;
-  const cert = state.certByProvider[provider.id];
 
   return (
     <div className="prov-detail">
@@ -446,23 +532,6 @@ function ProviderDetail({
           {provider.enabled ? '禁用' : '启用'}
         </button>
         {current && <span className="tag green">当前</span>}
-        {/* 0039：认证徽章——未认证灰、认证中琥珀、已认证绿；编造率超标另标红。 */}
-        <span className={`pill ${cert?.status === '已认证' ? 'on' : ''}`}>
-          {cert?.status ?? '未认证'}
-        </span>
-        {cert?.connect && (
-          <span className={`tag ${cert.connect === 'ok' ? 'green' : 'red'}`}>
-            连通{cert.connect === 'ok' ? '通过' : '失败'}
-          </span>
-        )}
-        {cert?.capability && (
-          <span className={`tag ${cert.capability === 'ok' ? 'green' : 'red'}`}>
-            能力{cert.capability === 'ok' ? '通过' : '失败'}
-          </span>
-        )}
-        {cert?.status === '已认证' && cert.fabrication != null && cert.fabrication > 5 && (
-          <span className="tag red">编造率超标</span>
-        )}
         <button
           type="button"
           className="icon-ghost danger"
@@ -473,34 +542,6 @@ function ProviderDetail({
           <Trash size={16} />
         </button>
       </div>
-      {cert?.status === '认证中' && (
-        <div className="cert-panel">
-          <span className="pulse-dot" /> 正在检查端点、结构化能力与隔离样本
-        </div>
-      )}
-      {cert?.status === '未认证' && cert.certDetail && (
-        <div className="cert-panel">
-          <span className="tag red">检查未完成</span>
-          <span className="dim">{cert.certDetail}</span>
-        </div>
-      )}
-      {cert?.status === '已认证' && (
-        <div className="cert-panel">
-          <div className="cert-chips">
-            <span className="tag green">证据召回 {cert.recall}%</span>
-            <span className="tag green">简报忠实 {cert.faithful}%</span>
-            <span className="tag green">未知遵守 {cert.unknown}%</span>
-            <span className={`tag ${(cert.fabrication ?? 0) > 5 ? 'red' : 'green'}`}>
-              编造率 {cert.fabrication}%（唯一红线 5%）
-            </span>
-          </div>
-          {cert.fabrication != null && cert.fabrication > 5 && (
-            <p className="dim">
-              该配置会系统性编造来源没说的命题，不适合跑参谋台；其余指标只展示不设闸。
-            </p>
-          )}
-        </div>
-      )}
       <label className="field">
         Base URL
         <input
@@ -532,7 +573,18 @@ function ProviderDetail({
       <ModelList
         models={provider.models}
         onChange={(models) => onChange({ ...provider, models })}
-        onTest={() => void window.staffdesk.testProvider(provider.id)}
+        onTest={
+          provider.enabled && provider.apiKey.trim()
+            ? async (modelId) => {
+                await window.staffdesk.dispatch({
+                  type: 'SET_ACTIVE_MODEL',
+                  providerId: provider.id,
+                  modelId,
+                });
+                await window.staffdesk.testProvider(provider.id, modelId);
+              }
+            : undefined
+        }
       />
     </div>
   );
@@ -545,7 +597,7 @@ function ModelList({
 }: {
   models: LlmModel[];
   onChange: (models: LlmModel[]) => void;
-  onTest?: () => void;
+  onTest?: ((modelId: string) => void | Promise<void>) | undefined;
 }) {
   const [adding, setAdding] = useState(false);
   const [editing, setEditing] = useState<LlmModel | null>(null);
@@ -563,7 +615,8 @@ function ModelList({
               type="button"
               className="icon-ghost"
               title="三级自检（连通 / 能力探测 / 资格认证）"
-              onClick={onTest}
+              onClick={() => void onTest?.(m.id)}
+              disabled={!onTest}
             >
               <Plugs size={14} />
             </button>

@@ -384,19 +384,72 @@ export interface RightTab {
   kind: RightTabKind;
 }
 
-// 0039：三级自检（连通 → 能力探测 → 隔离样本验证）。样本不写入用户大脑文件。
-export interface ProviderCert {
-  status: '未认证' | '认证中' | '已认证';
-  startedAt?: number | undefined;
-  connect?: 'ok' | 'fail' | undefined;
-  capability?: 'ok' | 'fail' | undefined;
-  connectDetail?: string | undefined;
-  capabilityDetail?: string | undefined;
-  certDetail?: string | undefined;
-  recall?: number | undefined; // 证据召回 %
-  faithful?: number | undefined; // 简报忠实 %
-  unknown?: number | undefined; // 未知遵守 %
-  fabrication?: number | undefined; // 编造率 %（唯一红线，默认 5%）
+export type QualityStageName = '获取' | '抽取' | '召回' | '出站';
+export type QualityStageStatus = '通过' | '失败' | '未运行';
+
+export interface QualityStageResult {
+  name: QualityStageName;
+  status: QualityStageStatus;
+  durationMs: number;
+  detail?: string | undefined;
+}
+
+export interface QualityMetricSet {
+  extractionRecall: number;
+  spanHit: number;
+  ftsRecallAtK: number;
+  ftsPrecisionAtK: number;
+  mrr: number;
+  briefFaithfulness: number;
+  unknownAdherence: number;
+  conflictDetection: number;
+  correctionRecurrence: number;
+  fabrication: number;
+}
+
+export interface QualityPackResult {
+  packId: string;
+  stages: QualityStageResult[];
+  metrics: QualityMetricSet;
+}
+
+export interface QualityRegressionReport {
+  suiteVersion: string;
+  startedAt: string;
+  completedAt: string;
+  stages: QualityStageResult[];
+  metrics: QualityMetricSet;
+  packResults: QualityPackResult[];
+}
+
+export interface QualificationCheckResult {
+  status: '通过' | '失败';
+  detail: string;
+}
+
+export interface QualityQualificationRecord {
+  fingerprint: string;
+  endpointIdentity: string;
+  modelId: string;
+  suiteVersion: string;
+  completedAt: string;
+  connect: QualificationCheckResult;
+  capability: QualificationCheckResult;
+  report?: QualityRegressionReport | undefined;
+  detail?: string | undefined;
+}
+
+export interface CurrentQualification {
+  status: '未配置' | '未认证' | '认证中' | '已认证';
+  fingerprint?: string | undefined;
+  endpointIdentity?: string | undefined;
+  modelId?: string | undefined;
+  startedAt?: string | undefined;
+  completedAt?: string | undefined;
+  connect?: QualificationCheckResult | undefined;
+  capability?: QualificationCheckResult | undefined;
+  report?: QualityRegressionReport | undefined;
+  detail?: string | undefined;
 }
 
 export interface State {
@@ -430,7 +483,7 @@ export interface State {
   rightTabsByObject: Record<string, RightTab[]>;
   activeRightTabByObject: Record<string, string | null>;
   writeQueue: WriteProposal[];
-  certByProvider: Record<string, ProviderCert>;
+  qualification: CurrentQualification;
   onboardingDone: boolean;
   deletedSourceRecoveries: DeletedSourceRecovery[];
 }

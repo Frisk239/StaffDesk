@@ -139,49 +139,6 @@ function modelSelection(
   };
 }
 
-function providerRuntimeChanged(
-  before: State['providers'][number] | undefined,
-  after: State['providers'][number],
-): boolean {
-  if (!before) return false;
-  return (
-    before.baseUrl !== after.baseUrl ||
-    before.apiKey !== after.apiKey ||
-    before.enabled !== after.enabled ||
-    JSON.stringify(before.models) !== JSON.stringify(after.models)
-  );
-}
-
-function resetProviderCert(
-  certByProvider: State['certByProvider'],
-  providerId: string,
-): State['certByProvider'] {
-  if (!certByProvider[providerId]) return certByProvider;
-  return { ...certByProvider, [providerId]: { status: '未认证' } };
-}
-
-function removeProviderCert(
-  certByProvider: State['certByProvider'],
-  providerId: string,
-): State['certByProvider'] {
-  return Object.fromEntries(
-    Object.entries(certByProvider).filter(([id]) => id !== providerId),
-  ) as State['certByProvider'];
-}
-
-function resetSelectedCertIfChanged(
-  state: State,
-  certByProvider: State['certByProvider'],
-  selected: Pick<State, 'activeProviderId' | 'activeModelId'>,
-): State['certByProvider'] {
-  const changed =
-    state.activeProviderId !== selected.activeProviderId ||
-    state.activeModelId !== selected.activeModelId;
-  return changed && selected.activeProviderId
-    ? resetProviderCert(certByProvider, selected.activeProviderId)
-    : certByProvider;
-}
-
 function extractionResultText(
   outcome: ExtractionOutcomeKind,
   detail: string | undefined,
@@ -1308,8 +1265,7 @@ export function reducer(state: State, action: Action): State {
       return { ...state, themePreference: action.preference };
 
     case 'UPSERT_PROVIDER': {
-      const previous = state.providers.find((p) => p.id === action.provider.id);
-      const exists = Boolean(previous);
+      const exists = state.providers.some((provider) => provider.id === action.provider.id);
       const providers = exists
         ? state.providers.map((provider) =>
             provider.id === action.provider.id ? action.provider : provider,
@@ -1320,13 +1276,9 @@ export function reducer(state: State, action: Action): State {
         state.activeProviderId || action.provider.id,
         state.activeModelId,
       );
-      const runtimeCerts = providerRuntimeChanged(previous, action.provider)
-        ? resetProviderCert(state.certByProvider, action.provider.id)
-        : state.certByProvider;
       return {
         ...state,
         providers,
-        certByProvider: resetSelectedCertIfChanged(state, runtimeCerts, selected),
         ...selected,
         seq: state.seq + 1,
       };
@@ -1339,11 +1291,9 @@ export function reducer(state: State, action: Action): State {
         state.activeProviderId === action.id ? '' : state.activeProviderId,
         state.activeModelId,
       );
-      const remainingCerts = removeProviderCert(state.certByProvider, action.id);
       return {
         ...state,
         providers,
-        certByProvider: resetSelectedCertIfChanged(state, remainingCerts, selected),
         ...selected,
         seq: state.seq + 1,
       };
@@ -1354,7 +1304,6 @@ export function reducer(state: State, action: Action): State {
       const selected = modelSelection(state.providers, action.id, '');
       return {
         ...state,
-        certByProvider: resetSelectedCertIfChanged(state, state.certByProvider, selected),
         ...selected,
         seq: state.seq + 1,
       };
@@ -1369,10 +1318,6 @@ export function reducer(state: State, action: Action): State {
         ...state,
         activeProviderId: provider.id,
         activeModelId: action.modelId,
-        certByProvider:
-          state.activeProviderId === provider.id && state.activeModelId === action.modelId
-            ? state.certByProvider
-            : resetProviderCert(state.certByProvider, provider.id),
         seq: state.seq + 1,
       };
     }
@@ -1776,64 +1721,6 @@ export function reducer(state: State, action: Action): State {
         seq: state.seq + 1,
       };
 
-    case 'TEST_PROVIDER':
-      // 0039：三级自检只记录真实运行状态，结果由 IPC 的实际请求回写。
-      return {
-        ...state,
-        seq: state.seq + 1,
-        certByProvider: {
-          ...state.certByProvider,
-          [action.id]: { status: '认证中', startedAt: Date.now() },
-        },
-        toast: { text: '三级自检运行中：连通 → 能力探测 → 资格认证', id: state.seq + 1 },
-      };
-
-    case 'CERT_DONE': {
-      const scores = action.scores ?? { recall: 0, faithful: 0, unknown: 0, fabrication: 0 };
-      const fabrication = scores.fabrication;
-      const prev = state.certByProvider[action.id];
-      return {
-        ...state,
-        seq: state.seq + 1,
-        certByProvider: {
-          ...state.certByProvider,
-          [action.id]: {
-            status: '已认证',
-            connect: prev?.connect,
-            capability: prev?.capability,
-            recall: scores.recall,
-            faithful: scores.faithful,
-            unknown: scores.unknown,
-            fabrication,
-          },
-        },
-        toast: {
-          text:
-            fabrication > 5
-              ? `认证完成：编造率 ${fabrication}%，超过 5% 红线，该配置慎用`
-              : `认证完成：编造率 ${fabrication}%，达标`,
-          id: state.seq + 1,
-        },
-      };
-    }
-
-    case 'CERT_FAILED': {
-      const prev = state.certByProvider[action.id];
-      return {
-        ...state,
-        seq: state.seq + 1,
-        certByProvider: {
-          ...state.certByProvider,
-          [action.id]: {
-            ...prev,
-            status: '未认证',
-            certDetail: action.detail,
-          },
-        },
-        toast: { text: action.detail, id: state.seq + 1 },
-      };
-    }
-
     case 'SET_ONBOARDING':
       return { ...state, onboardingDone: action.done };
 
@@ -1986,30 +1873,6 @@ export function reducer(state: State, action: Action): State {
     case 'RUN_MEMORY_DREAM': {
       const result = dreamMemoryProposals(state);
       return result.changed ? { ...state, proposals: result.proposals } : state;
-    }
-
-    case 'SELF_CHECK': {
-      const prev = state.certByProvider[action.id] ?? { status: '未认证' as const };
-      const failed = action.connect === 'fail' || action.capability === 'fail';
-      return {
-        ...state,
-        certByProvider: {
-          ...state.certByProvider,
-          [action.id]: {
-            ...prev,
-            status: failed ? '未认证' : prev.status,
-            connect: action.connect,
-            capability: action.capability ?? prev.capability,
-            connectDetail:
-              action.connect === 'ok' || action.connect === 'fail'
-                ? action.detail
-                : prev.connectDetail,
-            capabilityDetail: action.capability ? action.detail : prev.capabilityDetail,
-          },
-        },
-        toast: { text: action.detail, id: state.seq },
-        seq: state.seq + 1,
-      };
     }
 
     case 'CREATE_RADAR': {

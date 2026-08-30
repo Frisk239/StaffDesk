@@ -7,7 +7,6 @@ import {
   normalizeLegacyModelSettings,
   normalizeModelSettings,
 } from '../../src/main/llm/settings';
-import { openBrain } from '../../src/main/brain';
 
 const dirs: string[] = [];
 
@@ -148,85 +147,5 @@ describe('全局模型配置', () => {
     );
 
     expect(store.load()?.providers.map((provider) => provider.id)).toEqual(['p-deepseek']);
-  });
-
-  it('端点或当前模型变更后认证状态回落', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'staffdesk-model-settings-'));
-    dirs.push(dir);
-    const brain = openBrain(join(dir, 'brain.db'));
-    try {
-      const provider = {
-        id: 'p-real',
-        name: '测试端点',
-        baseUrl: 'https://models.example.test/v1',
-        apiKey: 'test-secret',
-        enabled: true,
-        models: [
-          { id: 'model-a', name: 'model-a', contextWindow: 1000, maxOutput: 100 },
-          { id: 'model-b', name: 'model-b', contextWindow: 1000, maxOutput: 100 },
-        ],
-      };
-      brain.dispatch({ type: 'UPSERT_PROVIDER', provider });
-      brain.dispatch({ type: 'SET_ACTIVE_PROVIDER', id: provider.id });
-      brain.dispatch({ type: 'SET_ACTIVE_MODEL', providerId: provider.id, modelId: 'model-a' });
-      brain.dispatch({ type: 'CERT_DONE', id: provider.id });
-      expect(brain.snapshot().certByProvider[provider.id]?.status).toBe('已认证');
-
-      brain.dispatch({
-        type: 'UPSERT_PROVIDER',
-        provider: { ...provider, baseUrl: 'https://models-v2.example.test/v1' },
-      });
-      expect(brain.snapshot().certByProvider[provider.id]?.status).toBe('未认证');
-
-      brain.dispatch({ type: 'CERT_DONE', id: provider.id });
-      brain.dispatch({ type: 'SET_ACTIVE_MODEL', providerId: provider.id, modelId: 'model-b' });
-      expect(brain.snapshot().certByProvider[provider.id]?.status).toBe('未认证');
-    } finally {
-      brain.close();
-    }
-  });
-
-  it('切换供应商或移除当前供应商触发隐式选模时认证状态回落', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'staffdesk-model-settings-'));
-    dirs.push(dir);
-    const brain = openBrain(join(dir, 'brain.db'));
-    try {
-      const providerA = {
-        id: 'p-a',
-        name: '端点 A',
-        baseUrl: 'https://a.example.test/v1',
-        apiKey: 'secret-a',
-        enabled: true,
-        models: [{ id: 'model-a', name: 'model-a', contextWindow: 1000, maxOutput: 100 }],
-      };
-      const providerB = {
-        id: 'p-b',
-        name: '端点 B',
-        baseUrl: 'https://b.example.test/v1',
-        apiKey: 'secret-b',
-        enabled: true,
-        models: [
-          { id: 'model-b1', name: 'model-b1', contextWindow: 1000, maxOutput: 100 },
-          { id: 'model-b2', name: 'model-b2', contextWindow: 1000, maxOutput: 100 },
-        ],
-      };
-      brain.dispatch({ type: 'UPSERT_PROVIDER', provider: providerA });
-      brain.dispatch({ type: 'UPSERT_PROVIDER', provider: providerB });
-      brain.dispatch({ type: 'SET_ACTIVE_MODEL', providerId: providerB.id, modelId: 'model-b2' });
-      brain.dispatch({ type: 'CERT_DONE', id: providerB.id });
-      brain.dispatch({ type: 'SET_ACTIVE_PROVIDER', id: providerA.id });
-      brain.dispatch({ type: 'SET_ACTIVE_PROVIDER', id: providerB.id });
-      expect(brain.snapshot().activeModelId).toBe('model-b1');
-      expect(brain.snapshot().certByProvider[providerB.id]?.status).toBe('未认证');
-
-      brain.dispatch({ type: 'CERT_DONE', id: providerB.id });
-      brain.dispatch({ type: 'SET_ACTIVE_PROVIDER', id: providerA.id });
-      brain.dispatch({ type: 'CERT_DONE', id: providerB.id });
-      brain.dispatch({ type: 'REMOVE_PROVIDER', id: providerA.id });
-      expect(brain.snapshot().activeProviderId).toBe(providerB.id);
-      expect(brain.snapshot().certByProvider[providerB.id]?.status).toBe('未认证');
-    } finally {
-      brain.close();
-    }
   });
 });

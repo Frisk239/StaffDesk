@@ -180,8 +180,6 @@ describe('账本动作覆盖', () => {
     });
     brain.dispatch({ type: 'SET_ACTIVE_PROVIDER', id: 'p-custom' });
     brain.dispatch({ type: 'SET_ACTIVE_MODEL', providerId: 'p-custom', modelId: 'local' });
-    brain.dispatch({ type: 'TEST_PROVIDER', id: 'p-custom' });
-    brain.dispatch({ type: 'CERT_DONE', id: 'p-custom' });
     brain.dispatch({
       type: 'UPSERT_PROVIDER',
       provider: {
@@ -251,13 +249,6 @@ describe('账本动作覆盖', () => {
       if (wr) brain.dispatch({ type: 'CONFIRM_WRITE', writeId: wr.id });
     }
 
-    brain.dispatch({
-      type: 'SELF_CHECK',
-      id: 'p-deepseek',
-      connect: 'ok',
-      capability: 'ok',
-      detail: '连通与能力探测通过',
-    });
     brain.dispatch({
       type: 'APPLY_RESEARCH',
       task: {

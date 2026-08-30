@@ -1,6 +1,11 @@
 import type Database from 'better-sqlite3';
 import { emptyUiFields } from '@shared/defaults';
-import type { LlmProvider, State } from '@shared/types';
+import type {
+  CurrentQualification,
+  LlmProvider,
+  QualityQualificationRecord,
+  State,
+} from '@shared/types';
 import type { Action } from '@shared/actions';
 import { applyAction } from './applyAction';
 import { openDatabase } from './migrate';
@@ -29,6 +34,15 @@ import {
   type ModelSettings,
   type ModelSettingsStore,
 } from '../llm/settings';
+import {
+  createMemoryQualificationStore,
+  type QualificationStore,
+} from '../eval/qualificationStore';
+import {
+  buildQualificationTarget,
+  qualificationFingerprint,
+  type QualificationTarget,
+} from '../eval/fingerprint';
 
 export type { Action };
 export { deriveConflicts, listBriefSpecs, listSlotDefs, projectionClaims, REQUIRED_TABLES };
@@ -38,16 +52,20 @@ export class Brain {
   readonly filePath: string;
   readonly secrets: SecretStore;
   readonly modelSettings: ModelSettingsStore;
+  readonly qualificationStore: QualificationStore;
   private ui: ReturnType<typeof emptyUiFields>;
+  private runningQualification: { fingerprint: string; startedAt: string } | null = null;
 
   constructor(
     filePath: string,
     secrets: SecretStore = createMemorySecrets(),
     modelSettings: ModelSettingsStore = createMemoryModelSettingsStore(),
+    qualificationStore: QualificationStore = createMemoryQualificationStore(),
   ) {
     this.filePath = filePath;
     this.secrets = secrets;
     this.modelSettings = modelSettings;
+    this.qualificationStore = qualificationStore;
     this.db = openDatabase(filePath);
     const legacy = loadLedger(this.db);
     const stored = modelSettings.load();
@@ -79,6 +97,7 @@ export class Brain {
         virtual: true,
       });
     }
+    const providers = hydrateProviders(this.ui.providers, '', this.secrets);
     return {
       ...this.ui,
       workspaces: ledger.workspaces,
@@ -111,8 +130,8 @@ export class Brain {
       writeQueue: this.ui.writeQueue,
       rightTabsByObject: this.ui.rightTabsByObject,
       activeRightTabByObject: this.ui.activeRightTabByObject,
-      certByProvider: this.ui.certByProvider,
-      providers: hydrateProviders(this.ui.providers, '', this.secrets),
+      qualification: this.qualificationFor(providers),
+      providers,
       onboardingDone: ledger.onboardingDone,
     };
   }
@@ -154,10 +173,76 @@ export class Brain {
       writeQueue: next.writeQueue,
       rightTabsByObject: next.rightTabsByObject,
       activeRightTabByObject: next.activeRightTabByObject,
-      certByProvider: next.certByProvider,
+      qualification: next.qualification,
       deletedSourceRecoveries: next.deletedSourceRecoveries,
     };
     return this.snapshot();
+  }
+
+  startQualification(target: QualificationTarget): State {
+    this.runningQualification = {
+      fingerprint: qualificationFingerprint(target),
+      startedAt: new Date().toISOString(),
+    };
+    return this.snapshot();
+  }
+
+  finishQualification(record: QualityQualificationRecord): State {
+    this.qualificationStore.save(record);
+    if (this.runningQualification?.fingerprint === record.fingerprint) {
+      this.runningQualification = null;
+    }
+    return this.snapshot();
+  }
+
+  private qualificationFor(providers: LlmProvider[]): CurrentQualification {
+    const provider = providers.find(
+      (candidate) => candidate.id === this.ui.activeProviderId && candidate.enabled,
+    );
+    if (!provider || !this.ui.activeModelId) return { status: '未配置' };
+    let target: QualificationTarget;
+    try {
+      target = buildQualificationTarget(provider, this.ui.activeModelId, this.ui.thinkingEffort);
+    } catch {
+      return { status: '未配置' };
+    }
+    const fingerprint = qualificationFingerprint(target);
+    if (this.runningQualification?.fingerprint === fingerprint) {
+      return {
+        status: '认证中',
+        fingerprint,
+        endpointIdentity: target.endpointIdentity,
+        modelId: target.modelId,
+        startedAt: this.runningQualification.startedAt,
+      };
+    }
+    const record = this.qualificationStore.find(fingerprint);
+    if (!record) {
+      return {
+        status: '未认证',
+        fingerprint,
+        endpointIdentity: target.endpointIdentity,
+        modelId: target.modelId,
+      };
+    }
+    const complete =
+      record.suiteVersion === target.suiteVersion &&
+      record.connect.status === '通过' &&
+      record.capability.status === '通过' &&
+      Boolean(record.report) &&
+      record.report?.suiteVersion === target.suiteVersion &&
+      record.report?.stages.every((stage) => stage.status === '通过');
+    return {
+      status: complete ? '已认证' : '未认证',
+      fingerprint,
+      endpointIdentity: record.endpointIdentity,
+      modelId: record.modelId,
+      completedAt: record.completedAt,
+      connect: record.connect,
+      capability: record.capability,
+      report: record.report,
+      detail: record.detail,
+    };
   }
 
   /**
@@ -189,8 +274,9 @@ export function openBrain(
   filePath: string,
   secrets?: SecretStore,
   modelSettings?: ModelSettingsStore,
+  qualificationStore?: QualificationStore,
 ): Brain {
-  return new Brain(filePath, secrets, modelSettings);
+  return new Brain(filePath, secrets, modelSettings, qualificationStore);
 }
 
 function hydrateProviders(

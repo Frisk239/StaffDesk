@@ -10,6 +10,7 @@ import { createReachAdapter } from './adapters/reach';
 import { createExtractionJobExecutor } from './extraction';
 import { defaultQuery, runResearchTask } from './tasks/engine';
 import { createJsonModelSettingsStore } from './llm/settings';
+import { createJsonQualificationStore } from './eval/qualificationStore';
 
 let mainWindow: BrowserWindow | null = null;
 let brain: Brain | null = null;
@@ -100,7 +101,10 @@ app.whenReady().then(() => {
   const modelSettings = createJsonModelSettingsStore(
     join(app.getPath('userData'), 'model-settings.json'),
   );
-  brain = openBrain(path, secrets, modelSettings);
+  const qualificationStore = createJsonQualificationStore(
+    join(app.getPath('userData'), 'quality-qualification.json'),
+  );
+  brain = openBrain(path, secrets, modelSettings, qualificationStore);
   console.log('brain file created', existsSync(path));
   registerIpc(brain);
   createWindow();

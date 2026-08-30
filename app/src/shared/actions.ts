@@ -68,13 +68,6 @@ export type Action =
   | { type: 'ADD_CANDIDATE_MEMORIES'; objectId: string; candidates: CandidatePayload[] }
   | { type: 'RUN_MEMORY_DREAM' }
   | {
-      type: 'SELF_CHECK';
-      id: string;
-      connect: 'ok' | 'fail';
-      capability?: 'ok' | 'fail' | undefined;
-      detail: string;
-    }
-  | {
       type: 'APPLY_RESEARCH';
       task: DeskTask;
       audits: TaskAudit[];
@@ -147,13 +140,5 @@ export type Action =
   | { type: 'REJECT_WRITE'; writeId: string }
   | { type: 'UNDO_RESULT'; objectId: string; messageId: string }
   | { type: 'REMOVE_MEMORY'; id: string }
-  | { type: 'TEST_PROVIDER'; id: string }
-  | {
-      type: 'CERT_DONE';
-      id: string;
-      scores?:
-        { recall: number; faithful: number; unknown: number; fabrication: number } | undefined;
-    }
-  | { type: 'CERT_FAILED'; id: string; detail: string }
   | { type: 'SET_ONBOARDING'; done: boolean }
   | { type: 'MARK_TURN_PLAYED'; objectId: string; messageId: string };

@@ -11,7 +11,9 @@
 - Legacy `unparsed` sources are preserved for migration visibility, but they cannot be newly created through `ADD_SOURCE` and cannot be bound for extraction; users should re-import them through the real ingestion path.
 - M10 added the memory/research/radar completion slice: candidate memories now come from traceable user-message excerpts and require confirmation; research tasks run doctor/search/open through the real reach adapter and record replayable failures; radar plans can be created and run through the same research path.
 - Research Sources now carry `origin.kind=research`, final locator/hash/fetched metadata, and a body segment. Search failures, empty results, failed URLs, hard caps, late runs, and missed radar cycles stay in task audit rather than becoming Sources or Claims.
-- Current working branch for this cut: `codex/m10-memory-research-radar`. Previous stacked branch: `codex/m9-real-ingestion`.
+- M11 added one quality-regression runner for both Settings qualification and `npm run eval`: isolated fictional gold packs traverse acquisition, extraction, FTS recall, and outbound ledger rules, reporting extraction/span, Recall@k/Precision@k/MRR, faithfulness, unknown, conflict, correction, and fabrication metrics.
+- Model qualification is product-global and fingerprinted by normalized endpoint, model, thinking effort, effective model parameters, and suite/policy versions. Records live in `userData/quality-qualification.json`, never in the brain file; changing the target immediately returns the current configuration to unqualified without deleting old history.
+- Current working branch for this cut: `codex/m11-quality-regression`. Previous merged branch: `codex/m10-memory-research-radar`.
 
 ## Language
 

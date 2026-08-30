@@ -18,7 +18,7 @@ export function emptyUiFields(): Pick<
   | 'writeQueue'
   | 'rightTabsByObject'
   | 'activeRightTabByObject'
-  | 'certByProvider'
+  | 'qualification'
   | 'deletedSourceRecoveries'
 > {
   return {
@@ -38,7 +38,7 @@ export function emptyUiFields(): Pick<
     writeQueue: [],
     rightTabsByObject: {},
     activeRightTabByObject: {},
-    certByProvider: {},
+    qualification: { status: '未配置' },
     deletedSourceRecoveries: [],
   };
 }

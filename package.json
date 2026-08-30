@@ -9,6 +9,7 @@
     "typecheck": "npm run typecheck --prefix app",
     "test": "npm run test --prefix app",
     "test:watch": "npm run test:watch --prefix app",
+    "eval": "npm run eval --prefix app",
     "e2e": "npm run e2e --prefix app",
     "package": "npm run package --prefix app",
     "rebuild": "npm run rebuild --prefix app",
