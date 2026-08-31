@@ -1,5 +1,5 @@
-/** M1 schema。新版本走 schema_migrations，禁止裸改历史。 */
-export const SCHEMA_VERSION = 6;
+/** M1 schema。新版本走 schema_migrations，禁止裸改历史。v7 是 operations(action) 索引——只进迁移门次，不进 SCHEMA_SQL。 */
+export const SCHEMA_VERSION = 7;
 
 export const SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS schema_migrations (

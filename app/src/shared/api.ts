@@ -38,7 +38,7 @@ export interface StaffdeskApi {
     options?: { kind?: '调研' | '再搜一轮'; fromTaskId?: string },
   ) => Promise<State>;
   stopTask: (taskId: string) => Promise<State>;
-  createRadar: (objectId: string) => Promise<State>;
+  createRadar: (objectId: string, intervalDays?: number) => Promise<State>;
   runRadar: (radarTaskId: string) => Promise<State>;
   generateBrief: (objectId: string) => Promise<State>;
   exportBrain: () => Promise<BrainBackupExportResult | null>;

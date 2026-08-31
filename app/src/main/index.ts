@@ -1,7 +1,8 @@
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { app, BrowserWindow, safeStorage } from 'electron';
+import { app, BrowserWindow, powerMonitor, safeStorage } from 'electron';
 import type { BrainRestoreResult } from '@shared/api';
+import type { DeskTask } from '@shared/types';
 import { openBrain, type Brain } from './brain';
 import { registerIpc, unregisterIpc } from './ipc';
 import { createSafeStorageSecrets } from './keychain';
@@ -11,8 +12,9 @@ import {
   installRuntimeSecurity,
   trustedRendererDevServerUrl,
 } from './runtimeSecurity';
-import { destroyTray, installTray, isQuitting, markQuitting } from './tray';
-import { latestDueRadar, planRadarRun } from './tasks/radar';
+import { destroyTray, installTray, isQuitting, markQuitting, refreshTrayMenu } from './tray';
+import { dueRadars, latestDueRadar, planRadarRun } from './tasks/radar';
+import { createRadarWatchdog, type RadarWatchdog } from './tasks/radarWatchdog';
 import { applyResearchRun } from './tasks/applyResearchRun';
 import { safeDetail } from './redact';
 import { broadcastState } from './windowBroadcast';
@@ -28,6 +30,58 @@ import {
 
 let mainWindow: BrowserWindow | null = null;
 let brain: Brain | null = null;
+let radarWatchdog: RadarWatchdog | null = null;
+let onPowerResume: (() => void) | null = null;
+
+/** 单条雷达的执行编排：启动一次性补跑、常驻心跳、托盘「立即补跑」共用同一 run（0038）。
+ *  失败在 run 内收 TOAST 不外抛——watchdog 的 interval 不产生未处理 rejection。 */
+function runDueRadar(target: DeskTask): Promise<unknown> {
+  const plan = planRadarRun(target);
+  return applyResearchRun({
+    getBrain: () => brain,
+    publish: broadcastState,
+    objectId: target.objectId,
+    gear: target.budgetGear ?? '快搜',
+    options: plan.options,
+    // 有意的语义收紧：补跑也纳入单飞锁——与用户手动调研撞同一对象时让位，不双开任务。
+    onBusy: () => {
+      const skipped = brain?.dispatch({
+        type: 'TOAST',
+        text: '雷达补跑跳过：该对象已有调研在跑',
+      });
+      if (skipped) broadcastState(skipped);
+    },
+  }).catch((error) => {
+    // 泄密口收口：补跑失败文案走统一脱敏。
+    const next = brain?.dispatch({
+      type: 'TOAST',
+      text: `雷达补跑失败：${safeDetail(error, 120)}`,
+    });
+    if (next) broadcastState(next);
+  });
+}
+
+/** 最近的未停止雷达（按 nextDueAt 字典序，stamp 是 'YYYY-MM-DD HH:mm' 格式，字典序即时间序）。 */
+function earliestScheduledRadar(tasks: DeskTask[]): DeskTask | undefined {
+  return [...tasks]
+    .filter((task) => task.kind === '周期性雷达' && task.status !== '已停止' && task.nextDueAt)
+    .sort((a, b) => String(a.nextDueAt).localeCompare(String(b.nextDueAt)))[0];
+}
+
+/** 托盘雷达区刷新：下次到期文案与窗口内 tag 同格式；手动入口优先跑最早到期，
+ *  无到期则提前跑最近一班（planRadarRun 对未到期 late=false，不记迟跑）。 */
+function refreshRadarTray(): void {
+  const next = earliestScheduledRadar(brain?.snapshot().tasks ?? []);
+  refreshTrayMenu({
+    nextDueText: next?.nextDueAt ? next.nextDueAt.slice(5) : null,
+    runNow: () => {
+      const tasks = brain?.snapshot().tasks ?? [];
+      const target = dueRadars(tasks)[0] ?? earliestScheduledRadar(tasks);
+      if (!target) return;
+      void runDueRadar(target);
+    },
+  });
+}
 
 function brainPath(): string {
   if (process.env.STAFFDESK_BRAIN) return process.env.STAFFDESK_BRAIN;
@@ -203,33 +257,22 @@ app.whenReady().then(() => {
     },
   );
 
-  // 启动一次性补跑：latestDueRadar 只取最新一条（迟跑语义见 planRadarRun）。
+  // 启动一次性补跑：latestDueRadar 只取最新一条（迟跑语义见 planRadarRun）；
+  // 之后常驻心跳接管，按 due 全量——两条路径语义不同，不合并。
   const due = latestDueRadar(brain.snapshot().tasks);
-  if (due) {
-    const plan = planRadarRun(due);
-    void applyResearchRun({
-      getBrain: () => brain,
-      publish: broadcastState,
-      objectId: due.objectId,
-      gear: due.budgetGear ?? '快搜',
-      options: plan.options,
-      // 有意的语义收紧：补跑也纳入单飞锁——与用户手动调研撞同一对象时让位，不双开任务。
-      onBusy: () => {
-        const skipped = brain?.dispatch({
-          type: 'TOAST',
-          text: '雷达补跑跳过：该对象已有调研在跑',
-        });
-        if (skipped) broadcastState(skipped);
-      },
-    }).catch((error) => {
-      // 泄密口收口：补跑失败文案此前直接 slice 原文，现走统一脱敏。
-      const next = brain?.dispatch({
-        type: 'TOAST',
-        text: `雷达补跑失败：${safeDetail(error, 120)}`,
-      });
-      if (next) broadcastState(next);
-    });
-  }
+  if (due) void runDueRadar(due);
+  refreshRadarTray();
+
+  // 0038 常驻雷达心跳：托盘驻留期间每分钟看一眼到期队列，多对象各自到期都跑。
+  radarWatchdog = createRadarWatchdog({
+    getBrain: () => brain,
+    publish: broadcastState,
+    run: runDueRadar,
+    onTick: refreshRadarTray,
+  });
+  // 睡眠唤醒漏掉的周期不必等下一个整分钟 tick——resume 立刻补跑一次（0038）。
+  onPowerResume = () => void radarWatchdog?.tick();
+  powerMonitor.on('resume', onPowerResume);
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) {
@@ -248,6 +291,10 @@ app.on('window-all-closed', () => {
 
 app.on('before-quit', () => {
   markQuitting();
+  radarWatchdog?.stop();
+  radarWatchdog = null;
+  if (onPowerResume) powerMonitor.removeListener('resume', onPowerResume);
+  onPowerResume = null;
   unregisterIpc();
   destroyTray();
   brain?.close();
