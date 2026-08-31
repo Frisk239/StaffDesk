@@ -34,6 +34,9 @@ export function migrate(db: Database.Database): void {
   if (current < 4) {
     migrateToV4(db);
   }
+  if (current < 6) {
+    migrateToV6(db);
+  }
   if (current < SCHEMA_VERSION) {
     db.prepare('INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)').run(
       SCHEMA_VERSION,
@@ -60,6 +63,13 @@ function migrateToV4(db: Database.Database): void {
   addColumn(db, 'tasks', 'last_run_at', 'TEXT');
   addColumn(db, 'tasks', 'parent_task_id', 'TEXT');
   addColumn(db, 'tasks', 'due_at', 'TEXT');
+}
+
+/** 0054：禁写双路的结构化列。旧行留 NULL——原句路（text 子串）继续兜历史禁写。 */
+function migrateToV6(db: Database.Database): void {
+  addColumn(db, 'memories', 'banned_object_id', 'TEXT');
+  addColumn(db, 'memories', 'banned_predicate', 'TEXT');
+  addColumn(db, 'memories', 'banned_value', 'TEXT');
 }
 
 function addColumn(db: Database.Database, table: string, column: string, definition: string): void {

@@ -86,7 +86,9 @@ export type Action =
   | {
       type: 'PROPOSAL_DECIDE';
       proposalId: string;
-      decision: 'accept-merge' | 'accept-drop' | 'reject';
+      decision: 'accept-merge' | 'accept-drop' | 'accept-close' | 'reject';
+      // 编目提议（整理）人选槽：reducer 里仍须过受控表（0025），防自开槽。
+      targetPredicate?: string | undefined;
     }
   | {
       type: 'ADD_SOURCE';

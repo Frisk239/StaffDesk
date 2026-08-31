@@ -253,7 +253,17 @@ const PERSIST_TABLES: readonly PersistTable[] = [
   },
   {
     table: 'memories',
-    columns: ['id', 'scope', 'object_id', 'kind', 'text', 'created_at'],
+    columns: [
+      'id',
+      'scope',
+      'object_id',
+      'kind',
+      'text',
+      'created_at',
+      'banned_object_id',
+      'banned_predicate',
+      'banned_value',
+    ],
     primaryKey: ['id'],
     collection: (state) => state.memories,
     rows: (state) =>
@@ -264,6 +274,10 @@ const PERSIST_TABLES: readonly PersistTable[] = [
         kind: m.kind,
         text: m.text,
         created_at: m.createdAt,
+        // 0054：禁写结构化路三列；非禁写与历史行 NULL。
+        banned_object_id: m.bannedObjectId ?? null,
+        banned_predicate: m.bannedPredicate ?? null,
+        banned_value: m.bannedValue ?? null,
       })),
   },
   {
@@ -876,6 +890,9 @@ export function loadLedger(db: Database.Database): LedgerRows {
       kind: Memory['kind'];
       text: string;
       created_at: string;
+      banned_object_id: string | null;
+      banned_predicate: string | null;
+      banned_value: string | null;
     }[]
   ).map((m) => {
     const mem: Memory = {
@@ -886,6 +903,10 @@ export function loadLedger(db: Database.Database): LedgerRows {
       createdAt: m.created_at,
     };
     if (m.object_id) mem.objectId = m.object_id;
+    // 0054：历史禁写行结构化列为 NULL，读回即 undefined，原句路由 text 兜住。
+    if (m.banned_object_id) mem.bannedObjectId = m.banned_object_id;
+    if (m.banned_predicate) mem.bannedPredicate = m.banned_predicate;
+    if (m.banned_value) mem.bannedValue = m.banned_value;
     return mem;
   });
 

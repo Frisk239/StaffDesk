@@ -7,6 +7,7 @@ import type {
   ExtractionOutcomeKind,
   IngestJob,
   CandidatePayload,
+  Proposal,
   RightTab,
   Predicate,
   RightTabKind,
@@ -24,8 +25,13 @@ import {
 } from '@shared/taskClaims';
 import { outboundBrief, verifyBrief } from './briefOut';
 import { idempotencyKey } from '../loops/extract';
-import { proposeDropUnverified } from '../loops/tidy';
-import { deriveConflicts } from '@shared/scenario';
+import {
+  proposeCatalogUncataloged,
+  proposeDropUnverified,
+  proposeMarkStale,
+  proposeMergeDuplicates,
+} from '../loops/tidy';
+import { deriveConflicts, normalizeValue } from '@shared/scenario';
 import { scriptReply } from '@shared/chat';
 import { attachTurn } from '@shared/turn';
 import { dreamMemoryProposals } from '../loops/memoryDream';
@@ -79,9 +85,16 @@ function appendCard(state: State, objectId: string, card: ChatCard, text = ''): 
 function proposalTouchesClaims(state: State, proposalId: string, claimIds: Set<string>): boolean {
   const proposal = state.proposals.find((item) => item.id === proposalId);
   if (!proposal) return false;
-  if (proposal.payload.kind === '整理') return claimIds.has(proposal.payload.claimId);
+  if (proposal.payload.kind === '整理' || proposal.payload.kind === '标过时')
+    return claimIds.has(proposal.payload.claimId);
   if (proposal.payload.kind === '丢弃未核') {
     return proposal.payload.claimIds.some((id) => claimIds.has(id));
+  }
+  if (proposal.payload.kind === '合并重复') {
+    return (
+      claimIds.has(proposal.payload.keepId) ||
+      proposal.payload.dropIds.some((id) => claimIds.has(id))
+    );
   }
   return false;
 }
@@ -268,6 +281,10 @@ function proposalObjectId(state: State, proposalId: string): string | null {
       null
     );
   }
+  if (p.payload.kind === '合并重复') {
+    const keepId = p.payload.keepId;
+    return state.claims.find((c) => c.id === keepId)?.objectId ?? null;
+  }
   const claimId = p.payload.claimId;
   return (
     state.claims.find((c) => c.id === claimId)?.objectId ??
@@ -277,11 +294,12 @@ function proposalObjectId(state: State, proposalId: string): string | null {
 }
 
 function normalizeMemoryCandidateKey(payload: CandidatePayload): string {
+  // 0053：文本归一化收口到 normalizeValue；全半角折叠只影响键值，不改变判重语义（行为超集安全）。
   return [
     payload.scope,
     payload.memoryKind,
     payload.scope === '对象' ? (payload.fromObjectId ?? '') : '',
-    payload.text.replace(/\s+/g, ' ').trim().toLowerCase(),
+    normalizeValue(payload.text),
   ].join('\0');
 }
 
@@ -671,8 +689,17 @@ export function reducer(state: State, action: Action): State {
           { kind: '结果', result: '抽取', claimIds: incoming.map((c) => c.id) },
           text,
         );
-        const tidy = proposeDropUnverified(next, objectId, next.seq);
-        if (tidy) next = { ...next, proposals: [...next.proposals, tidy] };
+        // CONTEXT「整理」：抽取落账后的提议面——丢弃滞留未核（0037）、合并重复（0053）、
+        // 标过时复核、未编目编目。全部人确认才改账本，各提议器自带 pending 去重；
+        // id 前缀互不相同，天然不撞。
+        const tidySeq = next.seq;
+        const fresh = [
+          proposeDropUnverified(next, objectId, tidySeq),
+          ...proposeMergeDuplicates(next, objectId, tidySeq),
+          ...proposeMarkStale(next, objectId, tidySeq),
+          ...proposeCatalogUncataloged(next, objectId, tidySeq),
+        ].filter((p): p is Proposal => p !== null);
+        if (fresh.length > 0) next = { ...next, proposals: [...next.proposals, ...fresh] };
       }
       return enqueueTaskClaimReviewForSource(next, action.sourceId);
     }
@@ -699,13 +726,21 @@ export function reducer(state: State, action: Action): State {
     }
 
     case 'OPEN_PROPOSAL_CARD': {
-      // 候选记忆与「丢弃未核」不走对话流决策（仓位在待确认页），此入口只对并入类整理提议开放。
+      // 候选记忆、「丢弃未核」「合并重复」「标过时」不走对话流决策（仓位在待确认页）；
+      // 无预选槽的编目卡同样只在待确认页处理——转发链拿不到人选的槽。
       const prop = state.proposals.find((p) => p.id === action.proposalId);
       const objectId = proposalObjectId(state, action.proposalId);
       if (prop?.payload.kind === '丢弃未核') {
         return {
           ...state,
           toast: { text: '丢弃类提议请在待确认页处理', id: state.seq },
+          seq: state.seq + 1,
+        };
+      }
+      if (prop && (prop.payload.kind !== '整理' || !prop.payload.targetPredicate)) {
+        return {
+          ...state,
+          toast: { text: '这类提议请在待确认页处理', id: state.seq },
           seq: state.seq + 1,
         };
       }
@@ -824,7 +859,8 @@ export function reducer(state: State, action: Action): State {
         claims = claims.map((c) => (c.id === old.id ? { ...c, supersededBy: newId } : c));
       }
       const memId = `mem-${seq}`;
-      // 禁写粒度是精确子串。
+      // 0054：禁写双路——text 保留被纠正原句（原句路兜底），
+      // 结构化字段记（对象、谓词槽、归一化取值）拦换措辞复述与再抽取。
       const next: State = {
         ...state,
         seq: seq + 1,
@@ -837,6 +873,9 @@ export function reducer(state: State, action: Action): State {
             kind: '禁写',
             text: `出站不得再写：「${old.text}」（关闭原因：${action.closeReason}）`,
             createdAt: today,
+            bannedObjectId: old.objectId,
+            bannedPredicate: old.predicate,
+            bannedValue: normalizeValue(old.text),
           },
         ],
         toast: { text: '已纠正，禁写已生效', id: seq + 1 },
@@ -1115,12 +1154,121 @@ export function reducer(state: State, action: Action): State {
           '已驳回丢弃提议，主张保持未核',
         );
       }
+      // 0053：合并重复——只删 dropIds、keep 行不动；补偿复用批量整理丢弃（同构零新 undo kind）。
+      if (prop.payload.kind === '合并重复') {
+        if (!objectId) return state;
+        if (action.decision === 'accept-merge') {
+          const dropIds = new Set(prop.payload.dropIds);
+          const dropped = state.claims.filter((c) => dropIds.has(c.id));
+          return pushCard(
+            {
+              ...state,
+              claims: state.claims.filter((c) => !dropIds.has(c.id)),
+              proposals: state.proposals.map((p) =>
+                p.id === prop.id ? { ...p, pending: false, decision: 'accept-merge' } : p,
+              ),
+              toast: { text: `已合并重复，去掉 ${dropped.length} 条`, id: state.seq },
+              seq: state.seq + 1,
+            },
+            objectId,
+            {
+              kind: '结果',
+              claimIds: prop.payload.dropIds,
+              result: '整理',
+              undo:
+                dropped.length > 0
+                  ? { kind: '整理丢弃', claims: dropped.map((claim) => ({ ...claim })) }
+                  : undefined,
+            },
+            `已合并重复主张：保留首条，去掉 ${dropped.length} 条（派生冲突随之消失）`,
+          );
+        }
+        // 合并卡不提供 accept-drop / accept-close：非 accept-merge 一律驳回。
+        return pushCard(
+          {
+            ...state,
+            proposals: state.proposals.map((p) =>
+              p.id === prop.id ? { ...p, pending: false, decision: 'reject' } : p,
+            ),
+            toast: { text: '已驳回', id: state.seq },
+            seq: state.seq + 1,
+          },
+          objectId,
+          { kind: '结果', result: '拒绝' },
+          '已驳回合并提议，重复主张原样保留',
+        );
+      }
+      // 标过时——复核提示的落点：人确认才关窗（世界已变），undo 复用关窗补偿重开（历史不改写，0034）。
+      if (prop.payload.kind === '标过时') {
+        if (!objectId) return state;
+        const staleClaimId = prop.payload.claimId;
+        if (action.decision === 'accept-close') {
+          const today = new Date().toISOString().slice(0, 10);
+          return pushCard(
+            {
+              ...state,
+              claims: state.claims.map((c) =>
+                c.id === staleClaimId
+                  ? {
+                      ...c,
+                      status: '过时' as const,
+                      validTo: today,
+                      closeReason: '世界已变' as const,
+                    }
+                  : c,
+              ),
+              proposals: state.proposals.map((p) =>
+                p.id === prop.id ? { ...p, pending: false, decision: 'accept-close' } : p,
+              ),
+              toast: { text: '已关窗（世界已变）', id: state.seq },
+              seq: state.seq + 1,
+            },
+            objectId,
+            {
+              kind: '结果',
+              claimId: staleClaimId,
+              result: '关窗',
+              undo: { kind: '关窗', claimId: staleClaimId },
+            },
+            '已确认过时并关窗，有效期内仍是历史事实',
+          );
+        }
+        return pushCard(
+          {
+            ...state,
+            proposals: state.proposals.map((p) =>
+              p.id === prop.id ? { ...p, pending: false, decision: 'reject' } : p,
+            ),
+            toast: { text: '已驳回', id: state.seq },
+            seq: state.seq + 1,
+          },
+          objectId,
+          { kind: '结果', result: '拒绝' },
+          '已驳回复核提议，主张保持成立',
+        );
+      }
       const tidy = prop.payload;
       if (tidy.kind !== '整理' || !objectId) return state;
       if (action.decision === 'accept-merge') {
+        // 人选拖槽：决策载荷的槽优先，回落 payload 预选；0025 只能并入受控表已有槽。
+        const targetPredicate = action.targetPredicate ?? tidy.targetPredicate;
+        if (!targetPredicate) {
+          return {
+            ...state,
+            toast: { text: '请先选择要并入的槽', id: state.seq },
+            seq: state.seq + 1,
+          };
+        }
+        if (!slotIsControlled(state, targetPredicate)) {
+          return {
+            ...state,
+            toast: { text: '不许自开谓词槽，只能并入已有槽', id: state.seq },
+            seq: state.seq + 1,
+          };
+        }
         const fromPredicate = state.claims.find((c) => c.id === tidy.claimId)?.predicate;
         const claims = state.claims.map((c) =>
-          c.id === tidy.claimId ? { ...c, predicate: tidy.targetPredicate } : c,
+          c.id === tidy.claimId ? { ...c, predicate: targetPredicate } : c,
         );
         return pushCard(
           {
@@ -1129,7 +1277,7 @@ export function reducer(state: State, action: Action): State {
             proposals: state.proposals.map((p) =>
               p.id === prop.id ? { ...p, pending: false, decision: 'accept-merge' } : p,
             ),
-            toast: { text: `已并入「${tidy.targetPredicate}」`, id: state.seq },
+            toast: { text: `已并入「${targetPredicate}」`, id: state.seq },
             seq: state.seq + 1,
           },
           objectId,
@@ -1141,7 +1289,7 @@ export function reducer(state: State, action: Action): State {
               ? { kind: '整理并入', claimId: tidy.claimId, fromPredicate }
               : undefined,
           },
-          `已并入「${tidy.targetPredicate}」`,
+          `已并入「${targetPredicate}」`,
         );
       }
       if (action.decision === 'accept-drop') {
@@ -1908,9 +2056,14 @@ export function reducer(state: State, action: Action): State {
         ),
         pendingClaims: state.pendingClaims.filter((c) => c.objectId !== action.id),
         proposals: state.proposals.filter((p) => {
-          if (p.payload.kind === '整理') return !claimIds.has(p.payload.claimId);
+          if (p.payload.kind === '整理' || p.payload.kind === '标过时')
+            return !claimIds.has(p.payload.claimId);
           if (p.payload.kind === '丢弃未核')
             return !p.payload.claimIds.some((id) => claimIds.has(id));
+          if (p.payload.kind === '合并重复')
+            return (
+              !claimIds.has(p.payload.keepId) && !p.payload.dropIds.some((id) => claimIds.has(id))
+            );
           return p.payload.fromObjectId !== action.id;
         }),
         tasks: state.tasks.filter((t) => t.objectId !== action.id),
@@ -1975,12 +2128,13 @@ export function reducer(state: State, action: Action): State {
           .map((proposal) => normalizeMemoryCandidateKey(proposal.payload as CandidatePayload)),
       );
       for (const memory of state.memories) {
+        // 0053：与 normalizeMemoryCandidateKey 同口径，走 normalizeValue 收口。
         existing.add(
           [
             memory.scope,
             memory.kind,
             memory.scope === '对象' ? (memory.objectId ?? '') : '',
-            memory.text.replace(/\s+/g, ' ').trim().toLowerCase(),
+            normalizeValue(memory.text),
           ].join('\0'),
         );
       }

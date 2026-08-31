@@ -55,8 +55,8 @@ describe('资格认证配置指纹', () => {
     expect(new Set(fingerprints).size).toBe(fingerprints.length);
   });
 
-  it('出站政策版本已升至含未编目纪律与撤销补偿的 v2', () => {
-    expect(QUALITY_POLICY_VERSIONS.outbound).toBe('ledger-outbound-v2');
+  it('出站政策版本已升至含禁写双路的 v3', () => {
+    expect(QUALITY_POLICY_VERSIONS.outbound).toBe('ledger-outbound-v3');
   });
 
   it('每个指标都有合格下限，编造率的下限语义是上限', () => {

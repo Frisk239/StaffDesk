@@ -1,3 +1,4 @@
+import { normalizeValue } from '@shared/scenario';
 import type { Proposal, State } from '@shared/types';
 
 export interface MemoryDreamResult {
@@ -5,8 +6,9 @@ export interface MemoryDreamResult {
   changed: boolean;
 }
 
+// 0053：文本归一化收口到 normalizeValue；全半角折叠只影响键值，不改变判重语义（行为超集安全）。
 function normalizeMemoryText(text: string): string {
-  return text.replace(/\s+/g, ' ').trim().toLowerCase();
+  return normalizeValue(text);
 }
 
 function candidateKey(proposal: Proposal): string | null {

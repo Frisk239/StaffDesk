@@ -356,7 +356,58 @@ function correctionRecurrence(pack: GoldPack, brain: Brain, objectId: string): n
     const hasBan = after.memories.some(
       (memory) => memory.kind === '禁写' && memory.text.includes(claim.text.replace(/。$/, '')),
     );
-    if (!oldIsLive && hasBan && !text.includes(claim.text.replace(/。$/, ''))) obeyed += 1;
+    // 0054 双路重放：向同一来源再交一条同对象同槽、仅大小写/空白格式不同的主张——
+    // 其归一化取值与被纠正主张等值（结构化路必拦），原句子串必不命中（专测结构化路，
+    // 纯子串口径在 M21 及之前的行为下会放行）。span 置空使幂等键走 text，穿过再抽取去重。
+    const restated: Claim = {
+      ...claim,
+      id: `cl-restate-${claim.id}`,
+      text: `${claim.text.toUpperCase()} `,
+      status: '成立',
+      unverified: true,
+      validTo: undefined,
+      closeReason: undefined,
+      supersededBy: undefined,
+      span: undefined,
+      sourceStart: undefined,
+      sourceEnd: undefined,
+      sourceLocator: undefined,
+    };
+    brain.dispatch({ type: 'EXTRACT_DONE', sourceId: claim.sourceId, claims: [restated] });
+    const replayed = brain.snapshot().claims.find((candidate) => candidate.id === restated.id);
+    if (!replayed) continue;
+    const briefReplay = outboundBrief(
+      brain.snapshot(),
+      objectId,
+      `brief-restate-${pack.id}`,
+      `task-restate-${pack.id}`,
+    );
+    const textReplay = briefReplay.blocks
+      .flatMap((block) => block.sentences)
+      .map((sentence) => sentence.text)
+      .join('\n');
+    const outboundBlocked = !textReplay.includes(replayed.text.trim());
+    const beforeQueue = brain.snapshot().writeQueue.length;
+    brain.dispatch({
+      type: 'ENQUEUE_WRITE',
+      draft: {
+        objectId,
+        kind: '晋升',
+        claimId: replayed.id,
+        headline: `晋升「${replayed.text}」`,
+        evidence: `纠正复发评测剧本 · ${pack.id}`,
+      },
+    });
+    const proposalBlocked = brain.snapshot().writeQueue.length === beforeQueue;
+    if (
+      !oldIsLive &&
+      hasBan &&
+      !text.includes(claim.text.replace(/。$/, '')) &&
+      outboundBlocked &&
+      proposalBlocked
+    ) {
+      obeyed += 1;
+    }
   }
   return percent(obeyed, pack.correctionCases.length);
 }

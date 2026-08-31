@@ -1,5 +1,5 @@
 import type { Brief, BriefBlock, BriefSentence, Claim, State } from './types';
-import { BRIEF_SPECS, deriveConflicts, scenarioOfWorkspace } from './scenario';
+import { BRIEF_SPECS, deriveConflicts, normalizeValue, scenarioOfWorkspace } from './scenario';
 
 // 简报组装（纯函数，出站纪律都在这里）：
 // - 简报说明由工作区场景决定（0033）：BRIEF_SPECS 给块清单，本组装器按块 kind 装内容。
@@ -9,11 +9,26 @@ import { BRIEF_SPECS, deriveConflicts, scenarioOfWorkspace } from './scenario';
 // - 未核必须带标记；未编目不作单边定论（降级为「材料提到」，收进材料缺口）。
 // - 未知保持未知，缺口写清楚缺什么。
 
-/** 禁写命中的措辞，不得再当单边定论。提议生成处也要过。 */
+/**
+ * 0054：禁写按双路判定，任一命中即拦——
+ * 结构化路：同对象、同谓词槽、同归一化取值（拦换措辞复述与再抽取的同一结论）；
+ * 原句路：禁写文本对被纠正原句的精确子串命中。
+ * 原句路绝不能删：升级前的历史禁写行没有结构化列，只剩它兜住；只查新列即升级即静默解除历史禁写。
+ * 出站闸与提议生成（enqueueWrite）两处共用此判定。提议生成处也要过。
+ */
 export function bannedHit(state: State, claim: Claim): boolean {
-  return state.memories.some(
-    (m) => m.kind === '禁写' && m.text.includes('：「') && m.text.includes(claim.text),
-  );
+  const value = normalizeValue(claim.text);
+  return state.memories.some((m) => {
+    if (m.kind !== '禁写') return false;
+    if (
+      m.bannedObjectId === claim.objectId &&
+      m.bannedPredicate === claim.predicate &&
+      m.bannedValue === value
+    ) {
+      return true;
+    }
+    return m.text.includes('：「') && m.text.includes(claim.text);
+  });
 }
 
 /** 当时能出站的主张 */
@@ -37,7 +52,12 @@ function unknownSentence(text: string): BriefSentence {
   return { text, claimIds: [], unverified: false, kind: 'unknown' };
 }
 
-export function buildBrief(state: State, objectId: string, briefId?: string, taskId?: string): Brief {
+export function buildBrief(
+  state: State,
+  objectId: string,
+  briefId?: string,
+  taskId?: string,
+): Brief {
   const obj = state.objects.find((o) => o.id === objectId);
   const scenario = obj ? scenarioOfWorkspace(state.workspaces, obj.workspaceId) : '求职面试';
   const spec = BRIEF_SPECS[scenario];
@@ -49,7 +69,9 @@ export function buildBrief(state: State, objectId: string, briefId?: string, tas
   const blocks: BriefBlock[] = spec.map((blockSpec) => {
     if (blockSpec.kind === 'background') {
       // 背景块：不落入任何槽位块的主张；没有就停在未知。
-      const background = out.filter((c) => !slotPredicates.has(c.predicate) && c.predicate !== '未编目');
+      const background = out.filter(
+        (c) => !slotPredicates.has(c.predicate) && c.predicate !== '未编目',
+      );
       return {
         title: blockSpec.title,
         sentences: background.length
@@ -97,7 +119,9 @@ export function buildBrief(state: State, objectId: string, briefId?: string, tas
       if (base.length === 0) {
         return {
           title: blockSpec.title,
-          sentences: [unknownSentence(`未知：账本主张不足，给不出「${blockSpec.title}」的读法，不编。`)],
+          sentences: [
+            unknownSentence(`未知：账本主张不足，给不出「${blockSpec.title}」的读法，不编。`),
+          ],
         };
       }
       return {

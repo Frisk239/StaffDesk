@@ -7,12 +7,13 @@ import type {
 } from '@shared/types';
 
 export const QUALITY_SUITE_VERSION = 'staffdesk-quality-v1';
-// 0045：出站策略新增未编目纪律（0037 降级句）与撤销补偿（0034 takeover 回退）两条出站规则，
-// 换政策版本即让旧资格认证回落「未认证」——这是设计内行为，不许为兼容旧记录而保留 v1。
+// 0045：出站策略随出站规则演进——v2 加未编目纪律（0037）与撤销补偿（0034），
+// v3 加禁写双路（0054：结构化「对象+槽+归一化取值」拦出站与提议两闸）。
+// 换政策版本即让旧资格认证回落「未认证」——这是设计内行为，不许为兼容旧记录而保留旧版。
 export const QUALITY_POLICY_VERSIONS = {
   extraction: 'extract-v1',
   recall: 'fts-trigram-bm25-v1',
-  outbound: 'ledger-outbound-v2',
+  outbound: 'ledger-outbound-v3',
 } as const;
 
 /**
