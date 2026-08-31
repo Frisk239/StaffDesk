@@ -2,6 +2,7 @@ import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { expect, test, _electron as electron } from '@playwright/test';
+import { closeServer, installStubModel, serveStubModel } from './stub-model';
 
 const appDir = join(import.meta.dirname, '..');
 type ElectronApp = Awaited<ReturnType<typeof electron.launch>>;
@@ -41,8 +42,12 @@ async function quitApp(app: ElectronApp): Promise<void> {
 
 test('删除来源需要确认并说明绑定和主张影响', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'staffdesk-source-e2e-'));
+  // 自足桩模型 + 隔离 userData：BIND_CONFIRMED 触发的自动抽取走真实完成路径（成功·零主张），
+  // 不与本 spec 的手动 EXTRACT_DONE 种子竞态（干净机器上「未配置」终态曾覆盖种子；
+  // 桩若返回与种子同文的主张，会因 sourceStart 参与幂等键而双落账，故桩返回空列表）。
+  const stub = await serveStubModel([]);
   const app = await electron.launch({
-    args: ['.'],
+    args: ['.', `--user-data-dir=${join(dir, 'userData')}`],
     cwd: appDir,
     env: {
       ...process.env,
@@ -53,6 +58,7 @@ test('删除来源需要确认并说明绑定和主张影响', async () => {
   try {
     const win = await app.firstWindow();
     await skipWizardIfAny(win);
+    await installStubModel(win, stub.baseUrl);
     const seeded = await win.evaluate(async () => {
       const api = (globalThis as unknown as { staffdesk: StaffdeskApiForSeed }).staffdesk;
       let state = await api.dispatch({
@@ -147,5 +153,6 @@ test('删除来源需要确认并说明绑定和主张影响', async () => {
     expect(restored[0]?.closeReason).toBeUndefined();
   } finally {
     await quitApp(app);
+    await closeServer(stub.server);
   }
 });

@@ -33,7 +33,7 @@ npm run rebuild:force # 有 C++ 工具链时强制源码重编 better-sqlite3
 ```
 
 - 覆盖率硬门槛：`src/main/brain/**` 行覆盖 ≥ 80%（`app/vitest.config.ts`），不达标 CI 即红。
-- CI（`.github/workflows/ci.yml`）：check job（ubuntu）跑 native:check/lint/typecheck/test/build；package job（windows）仅 main/tag。better-sqlite3 13 走 N-API prebuild，不要求常规重编译。
+- CI（`.github/workflows/ci.yml`）三 job：check（ubuntu：commitlint PR 区间 / native:check / npm audit / lint / typecheck / test 含覆盖率门槛 / build）；e2e（windows，与交付平台一致，全量 Playwright）；package（windows，仅 main/tag，electron-builder 打 NSIS 并上传安装包 artifact，7 天保留）。better-sqlite3 13 走 N-API prebuild，不要求常规重编译。同分支连推自动取消旧跑；三 job 均设 timeout。
 - 路径别名：`@shared` → `app/src/shared`。
 
 ## 架构规则（ESLint 强制）
