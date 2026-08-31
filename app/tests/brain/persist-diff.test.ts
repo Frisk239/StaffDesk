@@ -554,7 +554,9 @@ function ftsClaimIds(db: Database.Database, objectId: string, query: string): st
   );
 }
 
-describe('按脏表差异写入与全量重写等价（0056）', () => {
+// 超时余量：剧本双库灌库是 tmpdir SQLite 密集 IO，本机（Windows）并行负载下贴着默认 5s 跑，
+// 断言语义不变，只放宽时限防抖红。
+describe('按脏表差异写入与全量重写等价（0056）', { timeout: 20_000 }, () => {
   it('同一动作剧本灌两颗 Brain 后：两库账本深相等、操作日志序列相等、FTS 语义相等', () => {
     const { full, diff } = openPair();
     const handles = playScript(full, diff);

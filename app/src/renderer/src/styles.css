@@ -2241,6 +2241,28 @@ textarea {
   gap: 8px;
   margin-top: 10px;
   flex-wrap: wrap;
+  align-items: center;
+}
+/* 编目卡人选拖槽的下拉：几何复用 prov-detail 输入口径，不新造色值。 */
+.proposal-select {
+  border: 1px solid var(--line-2);
+  border-radius: var(--radius-s);
+  padding: 6px 10px;
+  background: var(--bg-50);
+  outline: none;
+  color: var(--ink);
+  font-size: 13px;
+}
+.proposal-select:focus {
+  border-color: var(--brand);
+}
+.merge-line {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  font-size: 13px;
+  color: var(--ink-2);
+  line-height: 1.65;
 }
 .memories-box {
   margin-top: 14px;
