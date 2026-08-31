@@ -25,6 +25,9 @@ export interface ExtractionOutcome {
   draftCount: number;
   rejectedCount: number;
   detail?: string | undefined;
+  // 0052：draft.objectName 非空且未命中绑定对象名单的未知名（去重）。
+  // 只是建对象提议的信号；draftsToClaims 的归属回落语义不变。
+  unknownObjectNames?: string[] | undefined;
 }
 
 export interface ExtractionChunk {
@@ -188,6 +191,8 @@ export async function runExtractLoop(args: {
     .join('\n');
   const chunks = buildExtractionChunks(args.source);
   const claims: Claim[] = [];
+  const unknownObjectNames = new Set<string>();
+  const boundNames = new Set(boundObjects.map((object) => object.name));
   let draftCount = 0;
   for (const chunk of chunks) {
     let result: CompleteResult;
@@ -205,6 +210,13 @@ export async function runExtractLoop(args: {
       return outcome('invalid-output', [], 0, 0, parsed.detail);
     }
     draftCount += parsed.drafts.length;
+    for (const draft of parsed.drafts) {
+      // 0052 信号：模型写出的对象名不在绑定名单里 → 可能是未建对象的新主体。
+      // 撞上「既有但未绑定」对象的名字也先收进来，由提议层的撞名过滤兜底。
+      const raw = draft.objectName ?? '';
+      const name = raw.trim();
+      if (name && !boundNames.has(raw)) unknownObjectNames.add(name);
+    }
     const chunkClaims = draftsToClaims({
       drafts: parsed.drafts,
       source: args.source,
@@ -216,7 +228,14 @@ export async function runExtractLoop(args: {
     });
     claims.push(...chunkClaims);
   }
-  return outcome('success', claims, draftCount, Math.max(draftCount - claims.length, 0));
+  return outcome(
+    'success',
+    claims,
+    draftCount,
+    Math.max(draftCount - claims.length, 0),
+    undefined,
+    [...unknownObjectNames],
+  );
 }
 
 function extractionMessages(
@@ -298,8 +317,16 @@ function outcome(
   draftCount: number,
   rejectedCount: number,
   detail?: string,
+  unknownObjectNames?: string[],
 ): ExtractionOutcome {
-  return { status, claims, draftCount, rejectedCount, ...(detail ? { detail } : {}) };
+  return {
+    status,
+    claims,
+    draftCount,
+    rejectedCount,
+    ...(detail ? { detail } : {}),
+    ...(unknownObjectNames && unknownObjectNames.length > 0 ? { unknownObjectNames } : {}),
+  };
 }
 
 function parseDrafts(

@@ -6,6 +6,7 @@ import type {
   DeskTask,
   IngestJob,
   LlmProvider,
+  MemoryScope,
   ObjectKind,
   RightTabKind,
   ScenarioKind,
@@ -28,6 +29,8 @@ type ExtractDoneBase = {
   detail?: string | undefined;
   draftCount?: number | undefined;
   rejectedCount?: number | undefined;
+  // 0052：抽取发现的未建对象名——只喂建对象提议，不影响主张归属。
+  unknownObjectNames?: string[] | undefined;
 };
 
 type ExtractDoneAction =
@@ -89,6 +92,10 @@ export type Action =
       decision: 'accept-merge' | 'accept-drop' | 'accept-close' | 'reject';
       // 编目提议（整理）人选槽：reducer 里仍须过受控表（0025），防自开槽。
       targetPredicate?: string | undefined;
+      // 建对象提议（整理）人选种类：0052 对象只由人确认建立，确认载荷补齐种类。
+      objectKind?: ObjectKind | undefined;
+      // 候选记忆（0055）：范围以确认时的人选为准，未改动回落 payload 默认。
+      scope?: MemoryScope | undefined;
     }
   | {
       type: 'ADD_SOURCE';

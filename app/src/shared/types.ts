@@ -221,6 +221,19 @@ export type DropUnverifiedPayload = {
   claimIds: string[];
   reason?: string | undefined;
 };
+// 0052：对象只由人确认建立——抽取发现的未建对象名走整理提议；fromObjectId 是抽取语境
+// 对象（结果卡挂靠的账页），确认时不自动绑定来源（绑定须人确认，0028 精神）。
+export type NewObjectPayload = {
+  kind: '建对象';
+  name: string;
+  fromObjectId: string;
+};
+// 补关系：成立主张文本里出现另一既有对象 → 提议建边；确认走 ADD_RELATION 同款校验复刻。
+export type NewRelationPayload = {
+  kind: '建关系';
+  objectId: string;
+  targetId: string;
+};
 export type CandidatePayload = {
   kind: '候选记忆';
   text: string;
@@ -228,7 +241,7 @@ export type CandidatePayload = {
   fromObjectId?: string | undefined;
   fromMessageIds: string[];
   sourceExcerpt: string;
-  // 0055 已裁决：确认卡上可改范围；现状仍是 payload 给定，实现随后续里程碑落地。
+  // 0055：范围默认由提议给定，确认卡上可改，确认时以人选为准（已落地）。
   scope: MemoryScope;
 };
 export type ProposalPayload =
@@ -236,7 +249,9 @@ export type ProposalPayload =
   | CandidatePayload
   | DropUnverifiedPayload
   | MergeDuplicatesPayload
-  | MarkStalePayload;
+  | MarkStalePayload
+  | NewObjectPayload
+  | NewRelationPayload;
 
 export interface Proposal {
   id: string;
