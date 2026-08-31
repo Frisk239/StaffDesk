@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { expect, test, _electron as electron } from '@playwright/test';
 import { simplePdf } from '../tests/helpers/pdf';
+import { closeServer, installStubModel, serveStubModel } from './stub-model';
 
 const appDir = join(import.meta.dirname, '..');
 type ElectronApp = Awaited<ReturnType<typeof electron.launch>>;
@@ -65,8 +66,17 @@ async function serve(): Promise<{ server: Server; baseUrl: string }> {
 test('Inbox URL 导入失败不造来源，成功后可绑定并触发抽取', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'staffdesk-ingestion-e2e-'));
   const { server, baseUrl } = await serve();
+  // 自足桩模型 + 隔离 userData：抽取链路不依赖本机真实模型配置，CI 干净机器同样成立。
+  const stub = await serveStubModel([
+    {
+      objectName: '真实导入组织',
+      predicate: '使用技术',
+      text: '真实导入组织使用 Rust',
+      span: '使用 Rust',
+    },
+  ]);
   const app = await electron.launch({
-    args: ['.'],
+    args: ['.', `--user-data-dir=${join(dir, 'userData')}`],
     cwd: appDir,
     env: {
       ...process.env,
@@ -77,6 +87,7 @@ test('Inbox URL 导入失败不造来源，成功后可绑定并触发抽取', a
   try {
     const win = await app.firstWindow();
     await skipWizardIfAny(win);
+    await installStubModel(win, stub.baseUrl);
     await win.evaluate(async () => {
       const api = (globalThis as unknown as { staffdesk: StaffdeskApiForSeed }).staffdesk;
       await api.dispatch({ type: 'ADD_WORKSPACE', name: '导入验收区', scenario: '求职面试' });
@@ -114,12 +125,13 @@ test('Inbox URL 导入失败不造来源，成功后可绑定并触发抽取', a
       .poll(async () => {
         return win.evaluate(async () => {
           const api = (globalThis as unknown as { staffdesk: StaffdeskApiForSeed }).staffdesk;
-          if (!api) return 'loading';
           const snapshot = await api.snapshot();
-          return snapshot.extractJobs[0]?.status;
+          const status = snapshot.extractJobs[0]?.status;
+          // 桩模型下自动抽取可能很快完成，只要走上抽取路径（而非未配置）即算数。
+          return status === '抽取中' || status === '完成' ? 'engaged' : (status ?? '');
         });
       })
-      .toBe('抽取中');
+      .toBe('engaged');
 
     await win.evaluate(async () => {
       const api = (globalThis as unknown as { staffdesk: StaffdeskApiForSeed }).staffdesk;
@@ -148,6 +160,7 @@ test('Inbox URL 导入失败不造来源，成功后可绑定并触发抽取', a
   } finally {
     await quitApp(app);
     await new Promise((resolve) => server.close(resolve));
+    await closeServer(stub.server);
   }
 });
 
