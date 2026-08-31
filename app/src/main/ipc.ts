@@ -432,20 +432,23 @@ export function registerIpc(
     return next;
   });
 
-  handleTrusted('task:createRadar', async (_event, payload: { objectId: string }) => {
-    const brain = getBrain();
-    const state = brain.snapshot();
-    const query = defaultQuery(state, payload.objectId);
-    const next = brain.dispatch({
-      type: 'CREATE_RADAR',
-      objectId: payload.objectId,
-      query,
-      intervalDays: 1,
-      budgetGear: '快搜',
-    });
-    broadcast(next);
-    return next;
-  });
+  handleTrusted(
+    'task:createRadar',
+    async (_event, payload: { objectId: string; intervalDays?: number }) => {
+      const brain = getBrain();
+      const state = brain.snapshot();
+      const query = defaultQuery(state, payload.objectId);
+      const next = brain.dispatch({
+        type: 'CREATE_RADAR',
+        objectId: payload.objectId,
+        query,
+        intervalDays: payload.intervalDays ?? 1,
+        budgetGear: '快搜',
+      });
+      broadcast(next);
+      return next;
+    },
+  );
 
   handleTrusted('task:runRadar', async (_event, payload: { radarTaskId: string }) => {
     const brain = getBrain();

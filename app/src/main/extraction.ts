@@ -95,6 +95,7 @@ async function extractionAction(
     detail: result.detail,
     draftCount: result.draftCount,
     rejectedCount: result.rejectedCount,
+    unknownObjectNames: result.unknownObjectNames,
   };
 }
 

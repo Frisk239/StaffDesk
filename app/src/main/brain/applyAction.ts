@@ -30,6 +30,8 @@ import {
   proposeDropUnverified,
   proposeMarkStale,
   proposeMergeDuplicates,
+  proposeNewObjects,
+  proposeRelations,
 } from '../loops/tidy';
 import { deriveConflicts, normalizeValue } from '@shared/scenario';
 import { scriptReply } from '@shared/chat';
@@ -285,6 +287,9 @@ function proposalObjectId(state: State, proposalId: string): string | null {
     const keepId = p.payload.keepId;
     return state.claims.find((c) => c.id === keepId)?.objectId ?? null;
   }
+  // 建关系挂在锚对象账页；建对象挂在抽取语境对象（fromObjectId）的账页。
+  if (p.payload.kind === '建关系') return p.payload.objectId;
+  if (p.payload.kind === '建对象') return p.payload.fromObjectId;
   const claimId = p.payload.claimId;
   return (
     state.claims.find((c) => c.id === claimId)?.objectId ??
@@ -656,6 +661,9 @@ export function reducer(state: State, action: Action): State {
             action.rejectedCount ?? 0,
           );
           next = pushCard(next, objectId, { kind: '结果', result: '抽取' }, text);
+          // 零主张也可能发现新主体名（0052）：早退分支同样挂建对象提议器。
+          const newNames = proposeNewObjects(next, objectId, next.seq, action.unknownObjectNames);
+          if (newNames.length > 0) next = { ...next, proposals: [...next.proposals, ...newNames] };
         }
         return enqueueTaskClaimReviewForSource(next, action.sourceId);
       }
@@ -690,14 +698,16 @@ export function reducer(state: State, action: Action): State {
           text,
         );
         // CONTEXT「整理」：抽取落账后的提议面——丢弃滞留未核（0037）、合并重复（0053）、
-        // 标过时复核、未编目编目。全部人确认才改账本，各提议器自带 pending 去重；
-        // id 前缀互不相同，天然不撞。
+        // 标过时复核、未编目编目、建新对象（0052）与补关系。全部人确认才改账本，
+        // 各提议器自带 pending 去重；id 前缀互不相同，天然不撞。
         const tidySeq = next.seq;
         const fresh = [
           proposeDropUnverified(next, objectId, tidySeq),
           ...proposeMergeDuplicates(next, objectId, tidySeq),
           ...proposeMarkStale(next, objectId, tidySeq),
           ...proposeCatalogUncataloged(next, objectId, tidySeq),
+          ...proposeNewObjects(next, objectId, tidySeq, action.unknownObjectNames),
+          ...proposeRelations(next, objectId, tidySeq),
         ].filter((p): p is Proposal => p !== null);
         if (fresh.length > 0) next = { ...next, proposals: [...next.proposals, ...fresh] };
       }
@@ -1077,7 +1087,8 @@ export function reducer(state: State, action: Action): State {
         }
         const text = prop.payload.text;
         const dup = state.memories.some((m) => m.text === text);
-        const scope = prop.payload.scope;
+        // 0055：范围以确认时人选为准，未改动回落 payload 默认。
+        const scope = action.scope ?? prop.payload.scope;
         const memId = `mem-${state.seq}`;
         return pushCard(
           {
@@ -1245,6 +1256,131 @@ export function reducer(state: State, action: Action): State {
           objectId,
           { kind: '结果', result: '拒绝' },
           '已驳回复核提议，主张保持成立',
+        );
+      }
+      // 0052：建对象——对象身份只由人确认。内联复刻 ADD_OBJECT 的创建（nextId + append），
+      // 但不 openObject 不抢视图；确认后不自动绑定来源（绑定须人确认，0028 精神）。
+      // 免 undo：对齐关系裁决口径（对象可归档回退，operations 行留痕），不进 UndoPayload。
+      if (prop.payload.kind === '建对象') {
+        if (!objectId || !state.objects.some((o) => o.id === objectId)) return state;
+        if (action.decision !== 'accept-merge') {
+          return pushCard(
+            {
+              ...state,
+              proposals: state.proposals.map((p) =>
+                p.id === prop.id ? { ...p, pending: false, decision: 'reject' } : p,
+              ),
+              toast: { text: '已驳回', id: state.seq },
+              seq: state.seq + 1,
+            },
+            objectId,
+            { kind: '结果', result: '拒绝' },
+            `已驳回复核提议，未建立新对象「${prop.payload.name}」`,
+          );
+        }
+        const kind = action.objectKind;
+        if (!kind) {
+          return {
+            ...state,
+            toast: { text: '请先选择对象种类', id: state.seq },
+            seq: state.seq + 1,
+          };
+        }
+        const name = prop.payload.name.trim();
+        if (!state.currentWorkspaceId) {
+          return { ...state, toast: { text: '先建工作区', id: state.seq }, seq: state.seq + 1 };
+        }
+        if (state.objects.some((o) => o.name === name)) {
+          return {
+            ...state,
+            toast: { text: '已存在同名对象，未建立', id: state.seq },
+            seq: state.seq + 1,
+          };
+        }
+        const [newId, seq] = nextId(
+          state,
+          kind === '人' ? 'person' : kind === '组织' ? 'org' : 'proj',
+        );
+        const next: State = {
+          ...state,
+          seq,
+          objects: [
+            ...state.objects,
+            { id: newId, kind, name, workspaceId: state.currentWorkspaceId, relationIds: [] },
+          ],
+          proposals: state.proposals.map((p) =>
+            p.id === prop.id ? { ...p, pending: false, decision: 'accept-merge' } : p,
+          ),
+          toast: { text: `已建立对象「${name}」`, id: state.seq },
+        };
+        return pushCard(
+          next,
+          objectId,
+          { kind: '结果', result: '整理' },
+          `已建立${kind}对象「${name}」。来源不会自动绑定到新对象，需要时可手动绑定。`,
+        );
+      }
+      // 补关系——内联复刻 ADD_RELATION 的对称双侧 append；四重校验在提议层已滤，
+      // 这里仍要防确认间隙的变动（人可能先归档了对端）：查到不合法就 toast 拒、保持待确认。
+      // 免 undo：关系不进补偿写载荷（ADD_RELATION/REMOVE_RELATION 同口径，0034）。
+      if (prop.payload.kind === '建关系') {
+        if (!objectId || !state.objects.some((o) => o.id === objectId)) return state;
+        if (action.decision !== 'accept-merge') {
+          return pushCard(
+            {
+              ...state,
+              proposals: state.proposals.map((p) =>
+                p.id === prop.id ? { ...p, pending: false, decision: 'reject' } : p,
+              ),
+              toast: { text: '已驳回', id: state.seq },
+              seq: state.seq + 1,
+            },
+            objectId,
+            { kind: '结果', result: '拒绝' },
+            '已驳回复核提议，两个对象之间不建关系',
+          );
+        }
+        // 判定要用的字段先落到 const：payload 判别收窄进不了下面的 find 回调。
+        const relAId = prop.payload.objectId;
+        const relBId = prop.payload.targetId;
+        const a = state.objects.find((o) => o.id === relAId);
+        const b = state.objects.find((o) => o.id === relBId);
+        const invalid =
+          !a || !b
+            ? '对象不存在，无法建关系'
+            : a.id === b.id
+              ? '不能和对象自己建关系'
+              : a.archived || b.archived
+                ? '已归档对象不能建关系'
+                : a.kind === b.kind
+                  ? '同种类对象之间不建关系'
+                  : a.relationIds.includes(b.id) || b.relationIds.includes(a.id)
+                    ? '这两个对象已经关联'
+                    : null;
+        if (invalid) {
+          return { ...state, toast: { text: invalid, id: state.seq }, seq: state.seq + 1 };
+        }
+        if (!a || !b) return state;
+        const next: State = {
+          ...state,
+          seq: state.seq + 1,
+          objects: state.objects.map((o) =>
+            o.id === a.id
+              ? { ...o, relationIds: [...o.relationIds, b.id] }
+              : o.id === b.id
+                ? { ...o, relationIds: [...o.relationIds, a.id] }
+                : o,
+          ),
+          proposals: state.proposals.map((p) =>
+            p.id === prop.id ? { ...p, pending: false, decision: 'accept-merge' } : p,
+          ),
+          toast: { text: `已建立「${a.name}」与「${b.name}」的关系`, id: state.seq },
+        };
+        return pushCard(
+          next,
+          objectId,
+          { kind: '结果', result: '整理' },
+          `已建立「${a.name}」与「${b.name}」的关系，主张未动。`,
         );
       }
       const tidy = prop.payload;
@@ -2064,6 +2200,10 @@ export function reducer(state: State, action: Action): State {
             return (
               !claimIds.has(p.payload.keepId) && !p.payload.dropIds.some((id) => claimIds.has(id))
             );
+          // 补关系提议：任一端是被删对象就一并撤下，不留建不成的边。
+          if (p.payload.kind === '建关系')
+            return p.payload.objectId !== action.id && p.payload.targetId !== action.id;
+          // 候选记忆与建对象共享挂靠字段：挂靠对象没了就撤。
           return p.payload.fromObjectId !== action.id;
         }),
         tasks: state.tasks.filter((t) => t.objectId !== action.id),

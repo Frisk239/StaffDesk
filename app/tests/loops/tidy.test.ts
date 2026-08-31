@@ -6,9 +6,11 @@ import {
   proposeDropUnverified,
   proposeMarkStale,
   proposeMergeDuplicates,
+  proposeNewObjects,
+  proposeRelations,
   STALE_AFTER_DAYS,
 } from '../../src/main/loops/tidy';
-import type { Claim, Proposal, State } from '@shared/types';
+import type { Claim, DeskObject, Proposal, State } from '@shared/types';
 
 function claimOf(partial: Partial<Claim> & Pick<Claim, 'id' | 'text'>): Claim {
   return {
@@ -22,12 +24,22 @@ function claimOf(partial: Partial<Claim> & Pick<Claim, 'id' | 'text'>): Claim {
   };
 }
 
-function stateWith(claims: State['claims'], proposals: Proposal[] = []): State {
+function objectOf(
+  partial: Partial<DeskObject> & Pick<DeskObject, 'id' | 'kind' | 'name'>,
+): DeskObject {
+  return { relationIds: [], workspaceId: 'ws', ...partial };
+}
+
+function stateWith(
+  claims: State['claims'],
+  proposals: Proposal[] = [],
+  objects: DeskObject[] = [objectOf({ id: 'o1', kind: '组织', name: '甲' })],
+): State {
   return {
     ...emptyUiFields(),
     workspaces: [{ id: 'ws', name: '区', scenario: '求职面试' }],
     currentWorkspaceId: 'ws',
-    objects: [{ id: 'o1', kind: '组织', name: '甲', relationIds: [], workspaceId: 'ws' }],
+    objects,
     sources: [],
     claims,
     slotDefs: DEFAULT_SLOT_DEFS,
@@ -278,5 +290,154 @@ describe('未编目编目提议', () => {
 
   it('无残留返回空数组', () => {
     expect(proposeCatalogUncataloged(stateWith([]), 'o1', 1)).toEqual([]);
+  });
+});
+
+describe('建新对象提议 0052', () => {
+  it('未知名去重后每名一卡，payload 挂抽取语境对象', () => {
+    const out = proposeNewObjects(stateWith([]), 'o1', 8, ['乙公司', '乙公司', ' 丙团队 ']);
+    expect(out).toHaveLength(2);
+    expect(out[0]?.payload).toEqual({ kind: '建对象', name: '乙公司', fromObjectId: 'o1' });
+    expect(out[1]?.payload).toEqual({ kind: '建对象', name: '丙团队', fromObjectId: 'o1' });
+    expect(out.every((p) => p.type === '整理' && p.pending)).toBe(true);
+  });
+
+  it('与既有对象撞名（含已归档）不提', () => {
+    const state = stateWith(
+      [],
+      [],
+      [
+        objectOf({ id: 'o1', kind: '组织', name: '甲' }),
+        objectOf({ id: 'o2', kind: '人', name: '乙', archived: true }),
+      ],
+    );
+    expect(proposeNewObjects(state, 'o1', 8, ['甲', '乙', '丙'])).toHaveLength(1);
+  });
+
+  it('pending 已有同名提议不再重复提；已决定的不挡', () => {
+    const proposals: Proposal[] = [
+      {
+        id: 'prop-newobj-1-0',
+        type: '整理',
+        title: '旧',
+        detail: '',
+        payload: { kind: '建对象', name: '乙公司', fromObjectId: 'o1' },
+        pending: true,
+      },
+    ];
+    expect(proposeNewObjects(stateWith([], proposals), 'o1', 8, ['乙公司'])).toEqual([]);
+    proposals[0]!.pending = false;
+    proposals[0]!.decision = 'reject';
+    expect(proposeNewObjects(stateWith([], proposals), 'o1', 8, ['乙公司'])).toHaveLength(1);
+  });
+
+  it('无名单或全空名返回空数组', () => {
+    expect(proposeNewObjects(stateWith([]), 'o1', 8)).toEqual([]);
+    expect(proposeNewObjects(stateWith([]), 'o1', 8, [])).toEqual([]);
+    expect(proposeNewObjects(stateWith([]), 'o1', 8, ['  '])).toEqual([]);
+  });
+});
+
+describe('补关系提议', () => {
+  const objects = (): DeskObject[] => [
+    objectOf({ id: 'o1', kind: '组织', name: '甲组织' }),
+    objectOf({ id: 'o2', kind: '人', name: '乙同事' }),
+    objectOf({ id: 'o3', kind: '项目', name: '丙项目' }),
+    objectOf({ id: 'o4', kind: '组织', name: '丁组织' }),
+    objectOf({ id: 'o5', kind: '人', name: '戌' }),
+    objectOf({ id: 'o6', kind: '人', name: '己同事', archived: true }),
+  ];
+
+  it('成立主张文本包含另一对象全名 → 每对一卡，payload 带两端', () => {
+    const out = proposeRelations(
+      stateWith([claimOf({ id: 'c1', text: '乙同事在甲组织负责丙项目的迁移。' })], [], objects()),
+      'o1',
+      6,
+    );
+    expect(out.map((p) => p.payload)).toEqual([
+      { kind: '建关系', objectId: 'o1', targetId: 'o2' },
+      { kind: '建关系', objectId: 'o1', targetId: 'o3' },
+    ]);
+    expect(out.every((p) => p.type === '整理' && p.pending)).toBe(true);
+  });
+
+  it('同种类不提、单字名不提、已归档不提、已有双边不提、过时主张不提', () => {
+    const linked = objects().map((o) =>
+      o.id === 'o1'
+        ? { ...o, relationIds: ['o2'] }
+        : o.id === 'o2'
+          ? { ...o, relationIds: ['o1'] }
+          : o,
+    );
+    const out = proposeRelations(
+      stateWith(
+        [
+          claimOf({ id: 'c1', text: '丁组织和甲组织同场。' }),
+          claimOf({ id: 'c2', text: '戌也在场。' }),
+          claimOf({ id: 'c3', text: '己同事也在场。' }),
+          claimOf({ id: 'c4', text: '乙同事早已离开。', status: '过时' }),
+        ],
+        [],
+        linked,
+      ),
+      'o1',
+      6,
+    );
+    expect(out).toEqual([]);
+  });
+
+  it('全名匹配防前缀误配：出现「阿里巴巴」不当作提到了「阿里」', () => {
+    const state = stateWith(
+      [claimOf({ id: 'c1', text: '甲组织与阿里巴巴签了约。' })],
+      [],
+      [
+        objectOf({ id: 'o1', kind: '组织', name: '甲组织' }),
+        objectOf({ id: 'o2', kind: '人', name: '阿里' }),
+        objectOf({ id: 'o3', kind: '项目', name: '阿里巴巴' }),
+      ],
+    );
+    expect(proposeRelations(state, 'o1', 6).map((p) => p.payload)).toEqual([
+      { kind: '建关系', objectId: 'o1', targetId: 'o3' },
+    ]);
+  });
+
+  it('pending 里已有同对（含反向）提议不再重复提', () => {
+    const proposals: Proposal[] = [
+      {
+        id: 'prop-rel-1-0',
+        type: '整理',
+        title: '旧',
+        detail: '',
+        payload: { kind: '建关系', objectId: 'o2', targetId: 'o1' },
+        pending: true,
+      },
+    ];
+    expect(
+      proposeRelations(
+        stateWith([claimOf({ id: 'c1', text: '乙同事在甲组织任职。' })], proposals, objects()),
+        'o1',
+        6,
+      ),
+    ).toEqual([]);
+  });
+
+  it('锚对象不存在或已归档时不出提议；只扫本对象的成立主张', () => {
+    const base = objects();
+    expect(proposeRelations(stateWith([]), 'missing', 6)).toEqual([]);
+    const archivedAnchor = base.map((o) => (o.id === 'o1' ? { ...o, archived: true } : o));
+    expect(
+      proposeRelations(
+        stateWith([claimOf({ id: 'c1', text: '乙同事在场。' })], [], archivedAnchor),
+        'o1',
+        6,
+      ),
+    ).toEqual([]);
+    expect(
+      proposeRelations(
+        stateWith([claimOf({ id: 'c1', text: '乙同事在场。', objectId: 'o4' })], [], objects()),
+        'o1',
+        6,
+      ),
+    ).toEqual([]);
   });
 });

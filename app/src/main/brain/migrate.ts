@@ -37,6 +37,9 @@ export function migrate(db: Database.Database): void {
   if (current < 6) {
     migrateToV6(db);
   }
+  if (current < 7) {
+    migrateToV7(db);
+  }
   if (current < SCHEMA_VERSION) {
     db.prepare('INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)').run(
       SCHEMA_VERSION,
@@ -70,6 +73,12 @@ function migrateToV6(db: Database.Database): void {
   addColumn(db, 'memories', 'banned_object_id', 'TEXT');
   addColumn(db, 'memories', 'banned_predicate', 'TEXT');
   addColumn(db, 'memories', 'banned_value', 'TEXT');
+}
+
+/** v7：operations(action) 索引——listDeletedSourceRecoveries 每次 snapshot 双跑 WHERE action=? ORDER BY created_at。
+ *  只进迁移门次、不进 SCHEMA_SQL：CREATE INDEX IF NOT EXISTS 幂等，空库与旧库都经 migrate() 应用。 */
+function migrateToV7(db: Database.Database): void {
+  db.exec('CREATE INDEX IF NOT EXISTS idx_operations_action ON operations(action)');
 }
 
 function addColumn(db: Database.Database, table: string, column: string, definition: string): void {

@@ -510,6 +510,69 @@ function GearMenu({
   );
 }
 
+// M24 雷达周期入口：主按钮仍是每日档；箭头下拉给每日 / 每 3 天 / 每周三档（0038 常驻后按档跑）。
+// 词条口径：周期性雷达须显式创建，不是隐式爬虫；界面不出现内部机制名。
+const RADAR_INTERVALS = [
+  { days: 1, label: '每日', title: '每天自动搜一轮' },
+  { days: 3, label: '每 3 天', title: '每 3 天自动搜一轮' },
+  { days: 7, label: '每周', title: '每周自动搜一轮' },
+] as const;
+
+function RadarMenu({ objectId }: { objectId: string }) {
+  const [open, setOpen] = useState(false);
+  const root = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const onDoc = (e: MouseEvent) => {
+      if (!root.current?.contains(e.target as Node)) setOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setOpen(false);
+    };
+    document.addEventListener('mousedown', onDoc);
+    document.addEventListener('keydown', onKey);
+    return () => {
+      document.removeEventListener('mousedown', onDoc);
+      document.removeEventListener('keydown', onKey);
+    };
+  }, [open]);
+
+  return (
+    <div className="cmenu" ref={root}>
+      <button
+        type="button"
+        className={`btn outline sm gear-caret${open ? ' open' : ''}`}
+        aria-label="选择雷达周期"
+        aria-haspopup="listbox"
+        aria-expanded={open}
+        onClick={() => setOpen((v) => !v)}
+      >
+        <CaretDown size={10} weight="bold" />
+      </button>
+      {open && (
+        <div className="cmenu-pop gear-pop" role="listbox">
+          {RADAR_INTERVALS.map(({ days, label, title }) => (
+            <button
+              key={days}
+              type="button"
+              role="option"
+              aria-selected={false}
+              title={title}
+              onClick={() => {
+                setOpen(false);
+                void window.staffdesk.createRadar(objectId, days);
+              }}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function ChatTopbar({
   rightOpen,
   onToggleRight,
@@ -585,13 +648,16 @@ export function ChatTopbar({
             </button>
           </>
         ) : (
-          <button
-            type="button"
-            className="btn outline sm"
-            onClick={() => void window.staffdesk.createRadar(obj.id)}
-          >
-            每日雷达
-          </button>
+          <>
+            <button
+              type="button"
+              className="btn outline sm"
+              onClick={() => void window.staffdesk.createRadar(obj.id)}
+            >
+              每日雷达
+            </button>
+            <RadarMenu key={obj.id} objectId={obj.id} />
+          </>
         )}
         <button
           type="button"

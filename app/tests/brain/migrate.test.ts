@@ -135,6 +135,36 @@ describe('建库与迁移', () => {
     brain.close();
   });
 
+  it('v7 迁移为 operations.action 建索引，旧库重开同样补齐', () => {
+    const file = tmpBrain();
+    const fresh = openBrain(file);
+    expect(indexNames(fresh.db)).toContain('idx_operations_action');
+    const freshRow = fresh.db
+      .prepare('SELECT MAX(version) AS version FROM schema_migrations')
+      .get() as {
+      version: number;
+    };
+    expect(freshRow.version).toBeGreaterThanOrEqual(7);
+    fresh.close();
+
+    // 旧库路径：先开成 v7，再人工回退成 v6（撤索引、改版本行），重开必须经门次迁移补回索引。
+    const legacy = openBrain(file);
+    legacy.db.exec('DROP INDEX idx_operations_action');
+    legacy.db.exec('DELETE FROM schema_migrations WHERE version >= 7');
+    legacy.db
+      .prepare('INSERT INTO schema_migrations (version, applied_at) VALUES (6, ?)')
+      .run('2026-08-31T00:00:00.000Z');
+    legacy.close();
+
+    const upgraded = openBrain(file);
+    expect(indexNames(upgraded.db)).toContain('idx_operations_action');
+    const row = upgraded.db
+      .prepare('SELECT MAX(version) AS version FROM schema_migrations')
+      .get() as { version: number };
+    expect(row.version).toBeGreaterThanOrEqual(7);
+    upgraded.close();
+  });
+
   it('旧版 unparsed 来源迁移后保留但不会被绑定抽取', () => {
     const brain = openBrain(tmpBrain());
     brain.dispatch({ type: 'ADD_WORKSPACE', name: '旧库', scenario: '求职面试' });
@@ -247,4 +277,10 @@ function columnNames(db: import('better-sqlite3').Database, table: string): stri
   return (db.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[]).map(
     (row) => row.name,
   );
+}
+
+function indexNames(db: import('better-sqlite3').Database): string[] {
+  return (
+    db.prepare("SELECT name FROM sqlite_master WHERE type = 'index'").all() as { name: string }[]
+  ).map((row) => row.name);
 }

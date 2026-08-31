@@ -215,3 +215,79 @@ describe('主张抽取循环 0024', () => {
     expect(mapPredicate('后端主栈', '组织', DEFAULT_SLOT_DEFS)).toBe('后端主栈');
   });
 });
+
+describe('未建对象名信号 0052', () => {
+  it('objectName 未命中绑定名单的名字去重收集；命中的不收，主张归属照旧回落绑定对象', async () => {
+    const result = await runExtractLoop({
+      source,
+      objects: [org],
+      slotDefs: DEFAULT_SLOT_DEFS,
+      existing: [],
+      complete: async () => ({
+        content: JSON.stringify({
+          claims: [
+            {
+              objectName: '未知新公司',
+              predicate: '后端主栈',
+              text: '未知新公司主栈是 Go',
+              span: '团队主栈是 Go',
+            },
+            {
+              objectName: '未知新公司',
+              predicate: '未编目',
+              text: '未知新公司在推进平台化',
+              span: '团队正在推进内部平台化',
+            },
+            {
+              objectName: '验收组织',
+              predicate: '在招岗位',
+              text: '验收组织在招后端',
+              span: '该公司在招后端实习',
+            },
+          ],
+        }),
+        toolCalls: [],
+      }),
+    });
+    expect(result.status).toBe('success');
+    expect(result.unknownObjectNames).toEqual(['未知新公司']);
+    // 静默回落语义不变：未知名的主张仍归绑定对象，draftsToClaims 不因信号改变归属。
+    expect(result.claims.every((c) => c.objectId === org.id)).toBe(true);
+    expect(result.claims).toHaveLength(3);
+  });
+
+  it('全部命中或未写 objectName 时不产信号', async () => {
+    const noName = await runExtractLoop({
+      source,
+      objects: [org],
+      slotDefs: DEFAULT_SLOT_DEFS,
+      existing: [],
+      complete: async () => ({
+        content: JSON.stringify({
+          claims: [
+            { predicate: '后端主栈', text: '主栈是 Go', span: '团队主栈是 Go' },
+            {
+              objectName: '验收组织',
+              predicate: '在招岗位',
+              text: '在招后端',
+              span: '该公司在招后端实习',
+            },
+          ],
+        }),
+        toolCalls: [],
+      }),
+    });
+    expect(noName.unknownObjectNames).toBeUndefined();
+    const failed = await runExtractLoop({
+      source,
+      objects: [org],
+      slotDefs: DEFAULT_SLOT_DEFS,
+      existing: [],
+      complete: async () => {
+        throw new Error('endpoint unavailable');
+      },
+    });
+    expect(failed.status).toBe('failed');
+    expect(failed.unknownObjectNames).toBeUndefined();
+  });
+});
