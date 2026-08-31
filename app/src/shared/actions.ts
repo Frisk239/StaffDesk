@@ -128,6 +128,9 @@ export type Action =
   | { type: 'ADD_WORKSPACE'; name: string; scenario: ScenarioKind }
   | { type: 'REMOVE_WORKSPACE'; id: string }
   | { type: 'ADD_OBJECT'; kind: ObjectKind; name: string }
+  | { type: 'ADD_RELATION'; objectId: string; targetId: string }
+  | { type: 'REMOVE_RELATION'; objectId: string; targetId: string }
+  | { type: 'SET_OBJECT_NOTE'; objectId: string; note: string | null }
   | { type: 'ARCHIVE_OBJECT'; id: string }
   | { type: 'UNARCHIVE_OBJECT'; id: string }
   | { type: 'DELETE_OBJECT'; id: string }

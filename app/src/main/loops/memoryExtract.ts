@@ -2,6 +2,7 @@ import { z } from 'zod';
 import { isWriteIntent } from '@shared/chat';
 import type { CandidatePayload, ChatMessage, MemoryKind, MemoryScope, State } from '@shared/types';
 import type { ModelCompletion } from '../llm/runtime';
+import { safeDetail } from '../redact';
 
 const CandidateSchema = z.object({
   candidates: z
@@ -102,7 +103,7 @@ export async function extractCandidateMemories(args: {
     const candidates = draftsToCandidates(parsed.drafts, messages, args.objectId);
     return { status: 'success', candidates };
   } catch (error) {
-    return { status: 'failed', candidates: [], detail: safeErrorDetail(error) };
+    return { status: 'failed', candidates: [], detail: safeDetail(error) };
   }
 }
 
@@ -164,12 +165,4 @@ function parseCandidateDrafts(
     ok: false,
     detail: sawJson ? '模型返回的 JSON 不符合候选记忆结构' : '模型没有返回可解析的 JSON',
   };
-}
-
-function safeErrorDetail(error: unknown): string {
-  const raw = error instanceof Error ? error.message : String(error);
-  return raw
-    .replace(/Bearer\s+\S+/gi, 'Bearer ***')
-    .replace(/sk-[A-Za-z0-9_-]+/g, 'sk-***')
-    .slice(0, 180);
 }

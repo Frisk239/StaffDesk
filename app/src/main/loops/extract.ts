@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import type { Claim, DeskObject, ExtractionOutcomeKind, SlotDef, Source } from '@shared/types';
 import type { ChatMessageParam, CompleteResult } from '../llm/chatCompletions';
+import { safeDetail } from '../redact';
 
 const DraftSchema = z.object({
   claims: z
@@ -196,7 +197,7 @@ export async function runExtractLoop(args: {
         messages: extractionMessages(args.source.title, chunk, boundObjects, slots),
       });
     } catch (error) {
-      return outcome('failed', [], 0, 0, safeErrorDetail(error));
+      return outcome('failed', [], 0, 0, safeDetail(error));
     }
 
     const parsed = parseDrafts(result.content);
@@ -329,12 +330,4 @@ function parseDrafts(
     ok: false,
     detail: sawJson ? '模型返回的 JSON 不符合主张结构' : '模型没有返回可解析的 JSON',
   };
-}
-
-function safeErrorDetail(error: unknown): string {
-  const raw = error instanceof Error ? error.message : String(error);
-  return raw
-    .replace(/Bearer\s+\S+/gi, 'Bearer ***')
-    .replace(/sk-[A-Za-z0-9_-]+/g, 'sk-***')
-    .slice(0, 180);
 }

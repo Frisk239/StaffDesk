@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import type { ReactElement } from 'react';
 import { closedClaims, conflictsOf, isExtracting, projectionClaims, useStore } from '../store';
 import { scenarioOfWorkspace, slotsForScene } from '@shared/scenario';
-import type { Claim, Predicate } from '@shared/types';
+import type { Claim, DeskObject, Predicate } from '@shared/types';
 import { SourceDeleteDialog } from './SourceDeleteDialog';
 
 // 0033：谓词槽表是数据（state.slotDefs），按对象种类分区，再按对象所在工作区的场景过滤；通用槽恒显示。
@@ -63,13 +63,16 @@ export function Projection({ objectId }: { objectId: string }) {
         <span className="kind-chip">{obj.kind}</span>
         <h1 className="proj-name">{obj.name}</h1>
         <span className="tag grey">{scenario}</span>
-        {obj.note && <span className="dim">{obj.note}</span>}
+        {/* key：切换对象时重挂载，行内编辑/面板草稿不跨对象残留。 */}
+        <NoteEdit key={obj.id} obj={obj} />
       </div>
       {extracting && (
         <div className="extract-banner">
           <span className="pulse-dot" /> 抽取中
         </div>
       )}
+
+      <RelationsSection key={obj.id} obj={obj} />
 
       <div className="slot-grid">
         {slots.map((slot) => (
@@ -105,6 +108,185 @@ export function Projection({ objectId }: { objectId: string }) {
         </div>
       )}
     </section>
+  );
+}
+
+// note 行内编辑：Enter/失焦提交，Esc 取消；清空提交 null 而非空串（loadLedger 读不回 ''）。
+function NoteEdit({ obj }: { obj: DeskObject }) {
+  const { dispatch } = useStore();
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState('');
+  const escaped = useRef(false);
+
+  const start = () => {
+    setDraft(obj.note ?? '');
+    setEditing(true);
+  };
+  const commit = () => {
+    dispatch({ type: 'SET_OBJECT_NOTE', objectId: obj.id, note: draft.trim() || null });
+    setEditing(false);
+  };
+
+  if (!editing) {
+    return obj.note ? (
+      <button type="button" className="proj-note dim" title="点击编辑备注" onClick={start}>
+        {obj.note}
+      </button>
+    ) : (
+      <button type="button" className="link" onClick={start}>
+        加备注
+      </button>
+    );
+  }
+  return (
+    <input
+      className="note-edit-input"
+      autoFocus
+      value={draft}
+      placeholder="一句话备注"
+      onChange={(e) => setDraft(e.target.value)}
+      onBlur={() => {
+        if (escaped.current) {
+          escaped.current = false;
+          return;
+        }
+        commit();
+      }}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter') commit();
+        else if (e.key === 'Escape') {
+          escaped.current = true;
+          setEditing(false);
+        }
+      }}
+    />
+  );
+}
+
+// CONTEXT「关系」：裸边、无类型标签；界面不出现任何内部机制名或图谱类词。
+function RelationsSection({ obj }: { obj: DeskObject }) {
+  const { state, dispatch } = useStore();
+  const [panelOpen, setPanelOpen] = useState(false);
+  const [checked, setChecked] = useState<Set<string>>(new Set());
+
+  // 悬边容错：find 不到的 id 直接跳过，不让对象页崩。
+  const related = obj.relationIds.flatMap((id) => {
+    const target = state.objects.find((o) => o.id === id);
+    return target ? [target] : [];
+  });
+
+  // 仅跨种类边：候选池 = 当前工作区、未归档、异种、非自身、未关联，按种类分组（bind-panel 同款骨架）。
+  const candidates = (['组织', '项目', '人'] as const)
+    .filter((k) => k !== obj.kind)
+    .map((kind) => ({
+      kind,
+      items: state.objects.filter(
+        (o) =>
+          o.workspaceId === state.currentWorkspaceId &&
+          !o.archived &&
+          o.kind === kind &&
+          o.id !== obj.id &&
+          !obj.relationIds.includes(o.id),
+      ),
+    }))
+    .filter((g) => g.items.length > 0);
+
+  const toggle = (id: string) => {
+    setChecked((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
+  const confirmAdd = () => {
+    // 一次确认可加多条边：逐条 dispatch，对称双侧 append 由 reducer 负责。
+    for (const id of checked) dispatch({ type: 'ADD_RELATION', objectId: obj.id, targetId: id });
+    setChecked(new Set());
+    setPanelOpen(false);
+  };
+
+  const closePanel = () => {
+    setChecked(new Set());
+    setPanelOpen(false);
+  };
+
+  return (
+    <div className="relations-section">
+      <div className="relations-head">
+        <span className="slot-title">关系</span>
+        <button type="button" className="btn outline sm" onClick={() => setPanelOpen((v) => !v)}>
+          {panelOpen ? '收起' : '添加关系'}
+        </button>
+      </div>
+      {related.length === 0 ? (
+        <div className="dim">还没有关系</div>
+      ) : (
+        <div className="chip-row">
+          {related.map((r) => (
+            <span className="chip rel-chip" key={r.id}>
+              <button
+                type="button"
+                className="rel-jump"
+                onClick={() =>
+                  dispatch({ type: 'SET_VIEW', view: { kind: 'object', objectId: r.id } })
+                }
+              >
+                {r.name}
+              </button>
+              <span className="kind-chip">{r.kind}</span>
+              {/* 关系不做撤销：边可即时重建，不进补偿写载荷（0034 只覆盖账本写入类动作）。 */}
+              <button
+                type="button"
+                className="rel-remove"
+                title="移除"
+                aria-label={`移除关系 ${r.name}`}
+                onClick={() =>
+                  dispatch({ type: 'REMOVE_RELATION', objectId: obj.id, targetId: r.id })
+                }
+              >
+                ×
+              </button>
+            </span>
+          ))}
+        </div>
+      )}
+      {panelOpen && (
+        <div className="bind-panel">
+          <div className="bind-panel-title">添加关系</div>
+          {candidates.length === 0 && <div className="dim">本工作区没有可关联的对象</div>}
+          {candidates.map((g) => (
+            <div className="bind-group" key={g.kind}>
+              <div className="bind-group-title">{g.kind}</div>
+              {g.items.map((o) => (
+                <label key={o.id} className={`bind-option${checked.has(o.id) ? ' on' : ''}`}>
+                  <input
+                    type="checkbox"
+                    checked={checked.has(o.id)}
+                    onChange={() => toggle(o.id)}
+                  />
+                  <span>{o.name}</span>
+                </label>
+              ))}
+            </div>
+          ))}
+          <div className="bind-actions">
+            <button type="button" className="ghost" onClick={closePanel}>
+              取消
+            </button>
+            <button
+              type="button"
+              className="primary"
+              disabled={checked.size === 0}
+              onClick={confirmAdd}
+            >
+              确认添加（{checked.size}）
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
   );
 }
 

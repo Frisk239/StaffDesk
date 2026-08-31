@@ -4,8 +4,10 @@ import { join } from 'node:path';
 import { deriveConflicts, openBrain, type Brain } from '../brain';
 import { outboundBrief } from '../brain/briefOut';
 import { resolveFtsHits, searchClaimsFts } from '../brain/fts';
+import { listOperations } from '../brain/persist';
 import { parseIngestInput } from '../ingestion';
 import type { ModelCompletion } from '../llm/runtime';
+import { safeDetail } from '../redact';
 import { runExtractLoop } from '../loops/extract';
 import type {
   Brief,
@@ -16,11 +18,27 @@ import type {
   QualityStageName,
   QualityStageResult,
 } from '@shared/types';
-import { QUALITY_SUITE_VERSION } from './fingerprint';
+import { QUALITY_METRIC_FLOORS, QUALITY_SUITE_VERSION, STAGE_FLOORED_METRICS } from './fingerprint';
 import type { GoldPack } from './goldPacks';
 import { validateGoldPacks } from './goldPacks';
 
 const STAGES: QualityStageName[] = ['获取', '抽取', '召回', '出站'];
+
+/** 展示名与设置页指标标签、CONTEXT.md 词条逐字一致；括号内为接口字段名。 */
+const METRIC_LABELS: Record<keyof QualityMetricSet, string> = {
+  extractionRecall: '抽取召回',
+  spanHit: '出处命中',
+  ftsRecallAtK: 'Recall@k',
+  ftsPrecisionAtK: 'Precision@k',
+  mrr: 'MRR',
+  briefFaithfulness: '简报忠实',
+  unknownAdherence: '未知遵守',
+  conflictDetection: '冲突检出',
+  correctionRecurrence: '纠正复发',
+  uncatDiscipline: '未编目纪律',
+  undoCompensation: '撤销补偿',
+  fabrication: '编造率',
+};
 
 export interface QualityRegressionOptions {
   packs: readonly GoldPack[];
@@ -113,7 +131,7 @@ async function runPack(
     metrics.extractionRecall = extractionRecall(pack, extracted);
     metrics.spanHit = spanHit(pack, extracted, source.body);
     metrics.fabrication = fabrication(pack, extracted);
-    pass(stages, '抽取', extractionStarted);
+    settle(stages, '抽取', extractionStarted, metrics);
 
     const recallStarted = Date.now();
     try {
@@ -121,7 +139,7 @@ async function runPack(
       metrics.ftsRecallAtK = recall.recall;
       metrics.ftsPrecisionAtK = recall.precision;
       metrics.mrr = recall.mrr;
-      pass(stages, '召回', recallStarted);
+      settle(stages, '召回', recallStarted, metrics);
     } catch (error) {
       fail(stages, '召回', recallStarted, error);
       return { packId: pack.id, stages, metrics };
@@ -143,8 +161,11 @@ async function runPack(
         beforeCorrection.claims,
         beforeCorrection.slotDefs,
       );
+      metrics.uncatDiscipline = uncatDiscipline(pack, beforeCorrection.claims, brief);
+      // 纠正与撤销都会写账本；撤销补偿放最后，保证 UNDO_RESULT 是本包末笔操作。
       metrics.correctionRecurrence = correctionRecurrence(pack, brain, object.id);
-      pass(stages, '出站', outboundStarted);
+      metrics.undoCompensation = undoCompensation(pack, brain, object.id);
+      settle(stages, '出站', outboundStarted, metrics);
     } catch (error) {
       fail(stages, '出站', outboundStarted, error);
     }
@@ -340,12 +361,136 @@ function correctionRecurrence(pack: GoldPack, brain: Brain, objectId: string): n
   return percent(obeyed, pack.correctionCases.length);
 }
 
+/** 未编目纪律（0037）：引用未编目主张的简报句必须带「未编目·不作定论」降级，不许当单边定论。 */
+function uncatDiscipline(pack: GoldPack, claims: Claim[], brief: Brief): number {
+  const cases = pack.uncatCases ?? [];
+  if (cases.length === 0) return 100;
+  const sentences = brief.blocks.flatMap((block) => block.sentences);
+  let obeyed = 0;
+  for (const uncat of cases) {
+    const uncataloged = claims.filter(
+      (claim) => claim.predicate === '未编目' && claim.text.includes(uncat.textIncludes),
+    );
+    const violated = sentences.some(
+      (sentence) =>
+        sentence.kind === 'claim' &&
+        sentence.flag !== '未编目·不作定论' &&
+        uncataloged.some((claim) => sentence.claimIds.includes(claim.id)),
+    );
+    if (!violated) obeyed += 1;
+  }
+  return percent(obeyed, cases.length);
+}
+
+/**
+ * 撤销补偿（0034）：晋升提议走 takeover 写队列 → 确认后结果卡必须带 undo 载荷 →
+ * 撤销后主张回到未核、operations 留下补偿写审计、重出简报不再单边定论。
+ */
+function undoCompensation(pack: GoldPack, brain: Brain, objectId: string): number {
+  const cases = pack.undoCases ?? [];
+  if (cases.length === 0) return 100;
+  let obeyed = 0;
+  for (const undoCase of cases) {
+    const claim = brain
+      .snapshot()
+      .claims.find(
+        (candidate) =>
+          candidate.status === '成立' && candidate.text.includes(undoCase.claimTextIncludes),
+      );
+    if (!claim) continue;
+    brain.dispatch({
+      type: 'ENQUEUE_WRITE',
+      draft: {
+        objectId,
+        kind: '晋升',
+        claimId: claim.id,
+        headline: `晋升「${claim.text}」`,
+        evidence: `撤销补偿评测剧本 · ${pack.id}`,
+      },
+    });
+    const queued = brain.snapshot().writeQueue.at(-1);
+    if (!queued || queued.kind !== '晋升' || queued.claimId !== claim.id) continue;
+    brain.dispatch({ type: 'CONFIRM_WRITE', writeId: queued.id });
+    const confirmed = brain.snapshot();
+    const promoted = confirmed.claims.find((candidate) => candidate.id === claim.id);
+    const undoCard = (confirmed.chatByObject[objectId] ?? []).find(
+      (message) =>
+        message.card?.kind === '结果' &&
+        message.card.result === '晋升' &&
+        message.card.claimId === claim.id &&
+        message.card.undo?.kind === '晋升',
+    );
+    if (!promoted || promoted.unverified || !undoCard) continue;
+    brain.dispatch({ type: 'UNDO_RESULT', objectId, messageId: undoCard.id });
+    const after = brain.snapshot();
+    const undone = after.claims.find((candidate) => candidate.id === claim.id);
+    // 末笔操作断言用「补偿行」而非位置：同毫秒 dispatch 下 created_at 排序对并列行不保证稳定。
+    const operations = listOperations(brain.db);
+    const compensating = operations.filter((row) => row.undo_of === 'compensating');
+    const briefBefore = outboundBrief(
+      confirmed,
+      objectId,
+      `brief-undo-before-${pack.id}`,
+      `task-undo-before-${pack.id}`,
+    );
+    const briefAfter = outboundBrief(
+      after,
+      objectId,
+      `brief-undo-${pack.id}`,
+      `task-undo-${pack.id}`,
+    );
+    const claimSentenceIn = (source: Brief, claimId: string) =>
+      source.blocks
+        .flatMap((block) => block.sentences)
+        .find((sentence) => sentence.kind === 'claim' && sentence.claimIds.includes(claimId));
+    const settledSentence = claimSentenceIn(briefBefore, claim.id);
+    const undoneSentence = claimSentenceIn(briefAfter, claim.id);
+    if (
+      undone &&
+      undone.status === '成立' &&
+      undone.unverified &&
+      compensating.length === 1 &&
+      compensating[0]?.action === 'UNDO_RESULT' &&
+      settledSentence &&
+      undoneSentence &&
+      !settledSentence.unverified &&
+      undoneSentence.unverified
+    )
+      obeyed += 1;
+  }
+  return percent(obeyed, cases.length);
+}
+
 function unrunStages(): QualityStageResult[] {
   return STAGES.map((name) => ({ name, status: '未运行', durationMs: 0 }));
 }
 
 function pass(stages: QualityStageResult[], name: QualityStageName, started: number): void {
   replaceStage(stages, { name, status: '通过', durationMs: Math.max(Date.now() - started, 0) });
+}
+
+/**
+ * 0045：stage 收尾既查异常也查分数线——该 stage 名下任一指标未达 QUALITY_METRIC_FLOORS
+ * 即失败，detail 点名指标、实际值、下限与差距。fabrication 的 floor 语义是上限。
+ */
+function settle(
+  stages: QualityStageResult[],
+  name: QualityStageName,
+  started: number,
+  metrics: QualityMetricSet,
+): void {
+  const breaches: string[] = [];
+  for (const key of STAGE_FLOORED_METRICS[name]) {
+    const floor = QUALITY_METRIC_FLOORS[key];
+    const value = metrics[key];
+    if (key === 'fabrication' ? value > floor : value < floor) {
+      const gap = round(Math.abs(value - floor), 3);
+      const direction = key === 'fabrication' ? '超过上限' : '低于下限';
+      breaches.push(`${METRIC_LABELS[key]} ${key}=${value}，${direction} ${floor}（差 ${gap}）`);
+    }
+  }
+  if (breaches.length === 0) pass(stages, name, started);
+  else fail(stages, name, started, new Error(`指标未达合格线：${breaches.join('；')}`));
 }
 
 function fail(
@@ -406,6 +551,8 @@ function emptyMetrics(): QualityMetricSet {
     unknownAdherence: 0,
     conflictDetection: 0,
     correctionRecurrence: 0,
+    uncatDiscipline: 0,
+    undoCompensation: 0,
     fabrication: 0,
   };
 }
@@ -439,12 +586,4 @@ function average(values: number[], fallback: number): number {
 function round(value: number, digits: number): number {
   const scale = 10 ** digits;
   return Math.round(value * scale) / scale;
-}
-
-function safeDetail(error: unknown): string {
-  const raw = error instanceof Error ? error.message : String(error);
-  return raw
-    .replace(/Bearer\s+\S+/gi, 'Bearer ***')
-    .replace(/sk-[A-Za-z0-9_-]+/g, 'sk-***')
-    .slice(0, 180);
 }

@@ -9,6 +9,7 @@ import type {
   State,
 } from '@shared/types';
 import type { Brain } from '../brain';
+import { safeDetail } from '../redact';
 
 const DEFAULT_LIMITS = {
   urlBytes: 5 * 1024 * 1024,
@@ -186,7 +187,7 @@ function normalizeFailure(error: unknown): {
       locator: error.locator,
     };
   }
-  return { kind: 'parse-failed', detail: safeErrorDetail(error) };
+  return { kind: 'parse-failed', detail: safeDetail(error) };
 }
 
 async function parseUrlInput(
@@ -242,7 +243,7 @@ async function parseUrlInput(
     if (error instanceof IngestFailure) throw error;
     const timedOut = controller.signal.aborted || isAbortLike(error);
     if (timedOut) throw timeoutFailure(undefined, url.toString());
-    throw new IngestFailure('fetch-failed', safeErrorDetail(error), {
+    throw new IngestFailure('fetch-failed', safeDetail(error), {
       locator: url.toString(),
     });
   } finally {
@@ -293,7 +294,7 @@ async function parseFileInput(
   } catch (error) {
     if (error instanceof IngestFailure) throw error;
     if (controller.signal.aborted) throw timeoutFailure(fileName, fileName);
-    throw new IngestFailure('invalid-input', safeErrorDetail(error), { title: fileName });
+    throw new IngestFailure('invalid-input', safeDetail(error), { title: fileName });
   } finally {
     clearTimeout(timer);
   }
@@ -363,7 +364,7 @@ async function parsePdf(args: {
     }) as typeof loadingTask;
   } catch (error) {
     if (error instanceof IngestFailure) throw error;
-    throw new IngestFailure('parse-failed', safeErrorDetail(error), {
+    throw new IngestFailure('parse-failed', safeDetail(error), {
       title: args.titleHint,
       locator: args.origin.locator,
     });
@@ -450,7 +451,7 @@ async function parsePdf(args: {
     };
   } catch (error) {
     if (error instanceof IngestFailure) throw error;
-    throw new IngestFailure('parse-failed', safeErrorDetail(error), {
+    throw new IngestFailure('parse-failed', safeDetail(error), {
       title: args.titleHint,
       locator: args.origin.locator,
     });
@@ -631,12 +632,4 @@ function hasTextStr(value: unknown): value is { str: string } {
   return Boolean(
     value && typeof value === 'object' && typeof (value as { str?: unknown }).str === 'string',
   );
-}
-
-function safeErrorDetail(error: unknown): string {
-  const raw = error instanceof Error ? error.message : String(error);
-  return raw
-    .replace(/Bearer\s+\S+/gi, 'Bearer ***')
-    .replace(/sk-[A-Za-z0-9_-]+/g, 'sk-***')
-    .slice(0, 180);
 }

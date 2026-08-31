@@ -1,8 +1,7 @@
-import { BrowserWindow, dialog, ipcMain, type IpcMainInvokeEvent } from 'electron';
+import { dialog, ipcMain, type IpcMainInvokeEvent } from 'electron';
 import type { BrainBackupExportResult, BrainRestoreResult } from '@shared/api';
 import type { Action } from '@shared/actions';
 import { attachTurn } from '@shared/turn';
-import { createReachAdapter } from './adapters/reach';
 import type { Brain } from './brain';
 import { createIngestionExecutor } from './ingestion';
 import { checkCapability, checkConnect } from './llm/selfCheck';
@@ -11,14 +10,11 @@ import { createExtractionJobExecutor } from './extraction';
 import { generateBrief } from './loops/briefGen';
 import { isWriteIntent, runSessionTurn } from './loops/session';
 import { extractCandidateMemories } from './loops/memoryExtract';
-import {
-  createResearchTask,
-  defaultQuery,
-  runResearchTask,
-  type BudgetGear,
-  type ResearchRunOptions,
-} from './tasks/engine';
+import { defaultQuery, type BudgetGear, type ResearchRunOptions } from './tasks/engine';
+import { applyResearchRun } from './tasks/applyResearchRun';
 import { planRadarRun } from './tasks/radar';
+import { safeDetail } from './redact';
+import { broadcastState as broadcast } from './windowBroadcast';
 import { createBrainBackupArchive, writeBrainBackupFile } from './brainBackup';
 import { GOLD_PACKS } from './eval/goldPacks';
 import { runQualityRegression } from './eval/runner';
@@ -81,12 +77,6 @@ export function researchOptionsFor(
   return { kind: '再搜一轮', parentTaskId: parent.id, query: parent.query };
 }
 
-function broadcast(next: unknown): void {
-  for (const win of BrowserWindow.getAllWindows()) {
-    win.webContents.send('state:changed', next);
-  }
-}
-
 export function registerIpc(
   brainHandle: BrainHandle,
   security: IpcSecurity,
@@ -94,7 +84,6 @@ export function registerIpc(
 ): void {
   const getBrain = typeof brainHandle === 'function' ? brainHandle : () => brainHandle;
   const assertTrustedSender = security.assertTrustedSender;
-  const runningResearchByObject = new Map<string, string>();
   const handleTrusted = <Args extends unknown[], Result>(
     channel: HandledChannel,
     handler: (event: IpcMainInvokeEvent, ...args: Args) => Result,
@@ -104,78 +93,25 @@ export function registerIpc(
       return handler(event, ...(args as Args));
     });
   };
+  // 薄壳：编排与单飞锁在 tasks/applyResearchRun（与启动雷达补跑共用同一把锁）；这里只落用户入口语义。
   const runResearchAndApply = async (
     objectId: string,
     gear: BudgetGear,
-    options: Parameters<typeof runResearchTask>[4] = {},
-  ) => {
-    const brain = getBrain();
-    if (runningResearchByObject.has(objectId)) {
-      const next = brain.dispatch({ type: 'TOAST', text: '这个对象已有调研正在收口' });
-      broadcast(next);
-      return next;
-    }
-    const executeExtractionJob = createExtractionJobExecutor({ brain, publish: broadcast });
-    const state = brain.snapshot();
-    const reach = createReachAdapter();
-    const task = createResearchTask(
-      state,
+    options: ResearchRunOptions = {},
+  ): Promise<State> => {
+    const next = await applyResearchRun({
+      getBrain,
+      publish: broadcast,
       objectId,
       gear,
-      {
-        reach,
-        queryFor: defaultQuery,
-      },
       options,
-    );
-    runningResearchByObject.set(objectId, task.id);
-    let next = brain.dispatch({ type: 'TASK_RUN_STARTED', task });
-    broadcast(next);
-    try {
-      const result = await runResearchTask(
-        brain.snapshot(),
-        objectId,
-        gear,
-        {
-          reach,
-          queryFor: defaultQuery,
-          onAudit: (audit) => {
-            const updated = brain.dispatch({
-              type: 'TASK_AUDIT_APPENDED',
-              taskId: task.id,
-              audits: [audit],
-            });
-            broadcast(updated);
-          },
-          shouldStop: () => {
-            const current = brain.snapshot().tasks.find((item) => item.id === task.id);
-            return current?.status === '已停止' && current.stopReason === '手动';
-          },
-        },
-        { ...options, task },
-      );
-      next = brain.dispatch({
-        type: 'APPLY_RESEARCH',
-        task: result.task,
-        audits: result.audits,
-        sources: result.sources,
-      });
-      for (const src of result.sources) {
-        if (src.boundObjectIds.length === 0) continue;
-        next = brain.dispatch({
-          type: 'BIND_CONFIRMED',
-          sourceId: src.id,
-          objectIds: src.boundObjectIds,
-        });
-        next = await executeExtractionJob(src.id);
-      }
-      broadcast(next);
-      return next;
-    } finally {
-      if (runningResearchByObject.get(objectId) === task.id) {
-        runningResearchByObject.delete(objectId);
-      }
-    }
+      onBusy: () => {
+        const busy = getBrain().dispatch({ type: 'TOAST', text: '这个对象已有调研正在收口' });
+        broadcast(busy);
+      },
+    });
+    // busy/brain 已关时统一函数返回 null；busy 路径的 TOAST 已在 onBusy 广播，回最新快照即可。
+    return next ?? getBrain().snapshot();
   };
 
   handleTrusted('brain:snapshot', () => getBrain().snapshot());
@@ -262,7 +198,7 @@ export function registerIpc(
       // 0030：本轮失败如实告知（脱敏 TOAST），不编造回复；invoke 正常 resolve，渲染端不悬挂。
       const failed = brain.dispatch({
         type: 'TOAST',
-        text: `本轮回复失败：${safeDetail(error)}`,
+        text: `本轮回复失败：${safeDetail(error, 120)}`,
       });
       broadcast(failed);
       return failed;
@@ -418,7 +354,7 @@ export function registerIpc(
           ...(failed ? { detail: `${failed.name}失败：${failed.detail ?? '未完成'}` } : {}),
         });
       } catch (error) {
-        const detail = safeDetail(error);
+        const detail = safeDetail(error, 120);
         next = finishQualificationAttempt(brain, {
           fingerprint,
           endpointIdentity: target.endpointIdentity,
@@ -536,16 +472,8 @@ function finishQualificationAttempt(
     record.report?.stages.every((stage) => stage.status === '通过');
   return brain.dispatch({
     type: 'TOAST',
-    text: complete ? '资格认证完成' : safeDetail(record.detail ?? '资格认证未完成'),
+    text: complete ? '资格认证完成' : safeDetail(record.detail ?? '资格认证未完成', 120),
   });
-}
-
-function safeDetail(error: unknown): string {
-  const raw = error instanceof Error ? error.message : String(error);
-  return raw
-    .replace(/Bearer\s+\S+/gi, 'Bearer ***')
-    .replace(/sk-[A-Za-z0-9_-]+/g, 'sk-***')
-    .slice(0, 120);
 }
 
 export function unregisterIpc(): void {

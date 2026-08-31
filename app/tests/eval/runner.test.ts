@@ -35,9 +35,43 @@ describe('质量回归 runner', () => {
       unknownAdherence: 100,
       conflictDetection: 100,
       correctionRecurrence: 100,
+      uncatDiscipline: 100,
+      undoCompensation: 100,
       fabrication: 0,
     });
     expect(report.packResults).toHaveLength(GOLD_PACKS.length);
+  });
+
+  it('指标低于合格下限时对应阶段失败并在原因里点名差距', async () => {
+    const report = await runQualityRegression({
+      packs: GOLD_PACKS,
+      complete: createDeterministicEvalCompletion(GOLD_PACKS, { mode: 'sabotaged' }),
+    });
+
+    const extraction = report.stages.find((stage) => stage.name === '抽取');
+    expect(extraction?.status).toBe('失败');
+    expect(extraction?.detail).toContain('extractionRecall');
+    expect(extraction?.detail).toContain('低于下限');
+    const recall = report.stages.find((stage) => stage.name === '召回');
+    expect(recall?.status).toBe('失败');
+    expect(report.stages.find((stage) => stage.name === '获取')?.status).toBe('通过');
+
+    const sabotagedTech = report.packResults.find((result) => result.packId === 'gold-tech');
+    const outboundDetail = sabotagedTech?.stages.find((stage) => stage.name === '出站')?.detail;
+    expect(sabotagedTech?.stages.find((stage) => stage.name === '出站')?.status).toBe('失败');
+    expect(outboundDetail).toContain('undoCompensation');
+    expect(outboundDetail).toContain('低于下限');
+  });
+
+  it('健康金标下未编目降级与撤销补偿链路全部合规', async () => {
+    const report = await runQualityRegression({
+      packs: [GOLD_PACKS[2]!],
+      complete: createDeterministicEvalCompletion(GOLD_PACKS),
+    });
+
+    expect(report.metrics.uncatDiscipline).toBe(100);
+    expect(report.metrics.undoCompensation).toBe(100);
+    expect(report.stages.every((stage) => stage.status === '通过')).toBe(true);
   });
 
   it('阶段失败会定位短原因并把下游标成未运行', async () => {
@@ -109,5 +143,7 @@ describe('质量回归 runner', () => {
     }
     expect(GOLD_PACKS.some((pack) => pack.conflicts.length > 0)).toBe(true);
     expect(GOLD_PACKS.some((pack) => pack.correctionCases.length > 0)).toBe(true);
+    expect(GOLD_PACKS.some((pack) => (pack.uncatCases?.length ?? 0) > 0)).toBe(true);
+    expect(GOLD_PACKS.some((pack) => (pack.undoCases?.length ?? 0) > 0)).toBe(true);
   });
 });

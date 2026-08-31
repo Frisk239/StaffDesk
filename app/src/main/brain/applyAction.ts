@@ -1433,6 +1433,102 @@ export function reducer(state: State, action: Action): State {
       return openObject({ ...state, seq, objects: [...state.objects, obj] }, id);
     }
 
+    case 'ADD_RELATION': {
+      // CONTEXT「关系」：对象之间可跳转的裸边，无类型标签；仅人↔组织、项目↔组织、人↔项目
+      // 三种跨种类边（三种种类两两即全部，同种类/自指拒绝）。对称双侧存储：两端 relationIds
+      // 各 append 对方，读侧任查一侧即可。
+      const a = state.objects.find((o) => o.id === action.objectId);
+      const b = state.objects.find((o) => o.id === action.targetId);
+      if (!a || !b)
+        return {
+          ...state,
+          seq: state.seq + 1,
+          toast: { text: '对象不存在，无法建关系', id: state.seq },
+        };
+      if (a.id === b.id)
+        return {
+          ...state,
+          seq: state.seq + 1,
+          toast: { text: '不能和对象自己建关系', id: state.seq },
+        };
+      if (a.archived || b.archived)
+        return {
+          ...state,
+          seq: state.seq + 1,
+          toast: { text: '已归档对象不能建关系', id: state.seq },
+        };
+      if (a.kind === b.kind)
+        return {
+          ...state,
+          seq: state.seq + 1,
+          toast: { text: '同种类对象之间不建关系', id: state.seq },
+        };
+      if (a.relationIds.includes(b.id) || b.relationIds.includes(a.id))
+        return {
+          ...state,
+          seq: state.seq + 1,
+          toast: { text: '这两个对象已经关联', id: state.seq },
+        };
+      return {
+        ...state,
+        seq: state.seq + 1,
+        objects: state.objects.map((o) =>
+          o.id === a.id
+            ? { ...o, relationIds: [...o.relationIds, b.id] }
+            : o.id === b.id
+              ? { ...o, relationIds: [...o.relationIds, a.id] }
+              : o,
+        ),
+      };
+    }
+
+    case 'REMOVE_RELATION': {
+      const a = state.objects.find((o) => o.id === action.objectId);
+      const b = state.objects.find((o) => o.id === action.targetId);
+      if (!a || !b)
+        return {
+          ...state,
+          seq: state.seq + 1,
+          toast: { text: '对象不存在，无法解除关系', id: state.seq },
+        };
+      if (!a.relationIds.includes(b.id) && !b.relationIds.includes(a.id))
+        return {
+          ...state,
+          seq: state.seq + 1,
+          toast: { text: '这两个对象之间没有关系', id: state.seq },
+        };
+      // 关系不做撤销（0034 的补偿写只覆盖账本写入类动作；边可即时重建，不进撤销载荷）。
+      return {
+        ...state,
+        seq: state.seq + 1,
+        objects: state.objects.map((o) =>
+          o.id === a.id || o.id === b.id
+            ? { ...o, relationIds: o.relationIds.filter((id) => id !== a.id && id !== b.id) }
+            : o,
+        ),
+        toast: { text: '已移除关系', id: state.seq },
+      };
+    }
+
+    case 'SET_OBJECT_NOTE': {
+      // 清空写 null 不写空串：loadLedger 只对非空 note 读回（persist 行构造器 `o.note ?? null`）。
+      const obj = state.objects.find((o) => o.id === action.objectId);
+      if (!obj)
+        return {
+          ...state,
+          seq: state.seq + 1,
+          toast: { text: '对象不存在，无法写备注', id: state.seq },
+        };
+      const note = action.note?.trim() ?? '';
+      return {
+        ...state,
+        seq: state.seq + 1,
+        objects: state.objects.map((o) =>
+          o.id === action.objectId ? { ...o, note: note || undefined } : o,
+        ),
+      };
+    }
+
     case 'REMOVE_WORKSPACE': {
       const rest = state.workspaces.filter((w) => w.id !== action.id);
       if (rest.length === state.workspaces.length) return state;
@@ -1797,7 +1893,14 @@ export function reducer(state: State, action: Action): State {
       const leaving = state.view.kind === 'object' && state.view.objectId === action.id;
       return {
         ...state,
-        objects: state.objects.filter((o) => o.id !== action.id),
+        // 0032 同精神：不留幽灵——对端 relationIds 里指向被删对象的悬边一并清掉。
+        objects: state.objects
+          .filter((o) => o.id !== action.id)
+          .map((o) =>
+            o.relationIds.includes(action.id)
+              ? { ...o, relationIds: o.relationIds.filter((id) => id !== action.id) }
+              : o,
+          ),
         claims: state.claims.map((c) =>
           c.objectId === action.id
             ? { ...c, status: '过时' as const, validTo: today, closeReason: '对象误建' as const }

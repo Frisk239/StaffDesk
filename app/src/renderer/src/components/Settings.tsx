@@ -473,6 +473,8 @@ function QualificationSummary({
           <span className="tag green">未知遵守 {metrics.unknownAdherence}%</span>
           <span className="tag green">冲突检出 {metrics.conflictDetection}%</span>
           <span className="tag green">纠正复发 {metrics.correctionRecurrence}%</span>
+          <span className="tag green">未编目纪律 {metrics.uncatDiscipline}%</span>
+          <span className="tag green">撤销补偿 {metrics.undoCompensation}%</span>
           <span className={`tag ${metrics.fabrication > 5 ? 'red' : 'green'}`}>
             编造率 {metrics.fabrication}%（红线 5%）
           </span>

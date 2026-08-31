@@ -2,6 +2,9 @@ import { describe, expect, it } from 'vitest';
 import {
   buildQualificationTarget,
   qualificationFingerprint,
+  QUALITY_METRIC_FLOORS,
+  QUALITY_POLICY_VERSIONS,
+  STAGE_FLOORED_METRICS,
 } from '../../src/main/eval/fingerprint';
 import type { LlmProvider } from '../../src/shared/types';
 
@@ -50,6 +53,27 @@ describe('资格认证配置指纹', () => {
       qualificationFingerprint,
     );
     expect(new Set(fingerprints).size).toBe(fingerprints.length);
+  });
+
+  it('出站政策版本已升至含未编目纪律与撤销补偿的 v2', () => {
+    expect(QUALITY_POLICY_VERSIONS.outbound).toBe('ledger-outbound-v2');
+  });
+
+  it('每个指标都有合格下限，编造率的下限语义是上限', () => {
+    const keys = Object.keys(QUALITY_METRIC_FLOORS);
+    expect(keys).toHaveLength(12);
+    expect(QUALITY_METRIC_FLOORS.extractionRecall).toBe(70);
+    expect(QUALITY_METRIC_FLOORS.mrr).toBe(0.5);
+    expect(QUALITY_METRIC_FLOORS.uncatDiscipline).toBe(90);
+    expect(QUALITY_METRIC_FLOORS.undoCompensation).toBe(90);
+    expect(QUALITY_METRIC_FLOORS.fabrication).toBe(10);
+  });
+
+  it('各 stage 闸门指标并集恰等于合格线全集：无重复无遗漏', () => {
+    // 0045：新指标若没挂进任何 stage 的闸门就永远不会被分数线拦住——这条钉住并集恒等。
+    const gated = Object.values(STAGE_FLOORED_METRICS).flat();
+    expect(new Set(gated).size).toBe(gated.length);
+    expect([...gated].sort()).toEqual(Object.keys(QUALITY_METRIC_FLOORS).sort());
   });
 
   it('模型行显式指定 modelId，不回退到 active 或首个模型', () => {

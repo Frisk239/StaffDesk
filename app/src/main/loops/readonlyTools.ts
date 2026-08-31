@@ -29,7 +29,9 @@ export function executeReadonlyTool(
     case 'recall_claims':
       return JSON.stringify(recallClaims(state, objectId, String(args.query ?? '')));
     case 'read_source_span':
-      return JSON.stringify(readSourceSpan(state, objectId, String(args.sourceId ?? ''), String(args.span ?? '')));
+      return JSON.stringify(
+        readSourceSpan(state, objectId, String(args.sourceId ?? ''), String(args.span ?? '')),
+      );
     case 'list_conflicts':
       return JSON.stringify(listConflicts(state, objectId));
     case 'read_brief':
@@ -41,18 +43,81 @@ export function executeReadonlyTool(
   }
 }
 
-export function recallClaims(state: State, objectId: string, query: string): { id: string; text: string; predicate: string; unverified: boolean }[] {
-  const live = projectionFrom(state.claims, state.sources, objectId);
+/** 召回条目：一跳（关联对象）条目带 objectName 标明来源对象；本对象条目不带。 */
+export interface RecallEntry {
+  id: string;
+  text: string;
+  predicate: string;
+  unverified: boolean;
+  objectName?: string | undefined;
+}
+
+export const RECALL_LIMIT = 12;
+
+/**
+ * CONTEXT「关系」：一跳邻居 = 与本对象有边的对象。边对称双侧存储，
+ * 但读时任一方向命中即算邻居（容错旧库或半写状态），并跳过悬边 id。
+ */
+export function relatedObjectIds(state: State, objectId: string): string[] {
+  const out: string[] = [];
+  const self = state.objects.find((o) => o.id === objectId);
+  for (const id of self?.relationIds ?? []) {
+    if (id !== objectId && state.objects.some((o) => o.id === id) && !out.includes(id)) {
+      out.push(id);
+    }
+  }
+  for (const o of state.objects) {
+    if (o.id !== objectId && o.relationIds.includes(objectId) && !out.includes(o.id)) {
+      out.push(o.id);
+    }
+  }
+  return out;
+}
+
+function claimMatches(c: Claim, q: string): boolean {
+  return !q || c.text.includes(q) || c.predicate.includes(q) || (c.span ?? '').includes(q);
+}
+
+function toEntry(c: Claim, objectName?: string): RecallEntry {
+  return objectName === undefined
+    ? { id: c.id, text: c.text, predicate: c.predicate, unverified: c.unverified }
+    : { id: c.id, text: c.text, predicate: c.predicate, unverified: c.unverified, objectName };
+}
+
+/** 本对象优先、一跳补位到上限；projectionFrom 已按各自对象过滤绑定来源，未绑定来源不进语境。 */
+export function fillOneHop(
+  state: State,
+  objectId: string,
+  query: string,
+  own: RecallEntry[],
+): RecallEntry[] {
   const q = query.trim();
-  const ranked = q
-    ? live.filter((c) => c.text.includes(q) || c.predicate.includes(q) || (c.span ?? '').includes(q))
-    : live;
-  return ranked.slice(0, 12).map((c) => ({
-    id: c.id,
-    text: c.text,
-    predicate: c.predicate,
-    unverified: c.unverified,
-  }));
+  const out = own.slice(0, RECALL_LIMIT);
+  if (out.length >= RECALL_LIMIT) return out;
+  for (const rid of relatedObjectIds(state, objectId)) {
+    const rel = state.objects.find((o) => o.id === rid);
+    if (!rel) continue;
+    const extra = projectionFrom(state.claims, state.sources, rid).filter((c) =>
+      claimMatches(c, q),
+    );
+    for (const c of extra) {
+      if (out.length >= RECALL_LIMIT) return out;
+      out.push(toEntry(c, rel.name));
+    }
+  }
+  return out;
+}
+
+export function recallClaims(state: State, objectId: string, query: string): RecallEntry[] {
+  const q = query.trim();
+  const live = projectionFrom(state.claims, state.sources, objectId);
+  const ranked = q ? live.filter((c) => claimMatches(c, q)) : live;
+  return fillOneHop(
+    state,
+    objectId,
+    q,
+    ranked.slice(0, RECALL_LIMIT).map((c) => toEntry(c)),
+  );
 }
 
 export function readSourceSpan(
@@ -110,7 +175,8 @@ export const READONLY_TOOL_DEFS = [
     type: 'function' as const,
     function: {
       name: 'recall_claims',
-      description: '在当前对象已绑定来源的主张里召回。',
+      description:
+        '在当前对象已绑定来源的主张里召回；本对象优先，不足时也会带出关联对象的主张补位，跳对象来的条目标注来源对象 objectName。',
       parameters: {
         type: 'object',
         properties: { query: { type: 'string' } },

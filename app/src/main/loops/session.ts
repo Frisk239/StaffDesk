@@ -6,8 +6,16 @@ import type { ModelCompletion } from '../llm/runtime';
 import type { ChatMessageParam } from '../llm/chatCompletions';
 import { searchClaimsFts, resolveFtsHits } from '../brain/fts';
 import type Database from 'better-sqlite3';
-import { executeReadonlyTool, READONLY_TOOL_DEFS, recallClaims } from './readonlyTools';
+import {
+  executeReadonlyTool,
+  READONLY_TOOL_DEFS,
+  recallClaims,
+  fillOneHop,
+  RECALL_LIMIT,
+  type RecallEntry,
+} from './readonlyTools';
 import { projectionFrom } from '../brain/projection';
+import type { Claim } from '@shared/types';
 
 export interface SessionDeps {
   db?: Database.Database;
@@ -41,9 +49,13 @@ export async function runSessionTurn(
     `当前对象：${obj ? `${obj.kind}「${obj.name}」` : objectId}`,
     '只根据下列主张回答。没有就说未知，不准编造新事实。',
     '引用只能写成 [ref:主张ID]，ID 必须出现在下列清单。',
+    '带「（关联·对象名）」前缀的条目来自关联对象，引用时注意口径。',
     recalled.length
       ? recalled
-          .map((c) => `- ${c.id}｜${c.predicate}｜${c.text}${c.unverified ? '（未核）' : ''}`)
+          .map(
+            (c) =>
+              `- ${c.id}｜${c.objectName ? `（关联·${c.objectName}）` : ''}${c.predicate}｜${c.text}${c.unverified ? '（未核）' : ''}`,
+          )
           .join('\n')
       : '（当前没有可引用的主张）',
   ].join('\n');
@@ -97,18 +109,31 @@ export async function runSessionTurn(
   };
 }
 
-function recallForPrompt(state: State, objectId: string, text: string, db?: Database.Database) {
+/**
+ * 引用白名单只认这里返回的 id（runSessionTurn 的 allowed），所以一跳条目必须在此带出，
+ * 否则 recall_claims 工具里的一跳引用会不可点。本对象优先、一跳补位，总上限仍 12。
+ */
+function recallForPrompt(
+  state: State,
+  objectId: string,
+  text: string,
+  db?: Database.Database,
+): RecallEntry[] {
   const projected = projectionFrom(state.claims, state.sources, objectId);
   if (db) {
     const hits = searchClaimsFts(db, objectId, text);
     const resolved = resolveFtsHits(projected, hits);
-    if (resolved.length > 0) return resolved.slice(0, 12);
+    if (resolved.length > 0) {
+      return fillOneHop(state, objectId, text, resolved.slice(0, RECALL_LIMIT).map(entryOf));
+    }
   }
   const recalled = recallClaims(state, objectId, text);
-  if (recalled.length > 0) {
-    return projected.filter((c) => recalled.some((r) => r.id === c.id));
-  }
-  return projected.slice(0, 12);
+  if (recalled.length > 0) return recalled;
+  return fillOneHop(state, objectId, '', projected.slice(0, RECALL_LIMIT).map(entryOf));
+}
+
+function entryOf(c: Claim): RecallEntry {
+  return { id: c.id, text: c.text, predicate: c.predicate, unverified: c.unverified };
 }
 
 export { isWriteIntent };

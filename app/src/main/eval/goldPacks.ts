@@ -23,6 +23,16 @@ export interface GoldCorrectionCase {
   replacementText: string;
 }
 
+/** 未编目纪律用例（0037）：正文里映射不上受控槽的话，出站必须带降级标记而非单边定论。 */
+export interface GoldUncatCase {
+  textIncludes: string;
+}
+
+/** 撤销补偿用例（0034）：晋升确认后必须能经结果卡 undo 回到未核。 */
+export interface GoldUndoCase {
+  claimTextIncludes: string;
+}
+
 export interface GoldPack {
   id: string;
   scenario: ScenarioKind;
@@ -32,6 +42,8 @@ export interface GoldPack {
   retrievalCases: GoldRetrievalCase[];
   conflicts: GoldConflictCase[];
   correctionCases: GoldCorrectionCase[];
+  uncatCases?: GoldUncatCase[] | undefined;
+  undoCases?: GoldUndoCase[] | undefined;
   unknownSlots: string[];
   negatives: string[];
 }
@@ -92,11 +104,13 @@ export const GOLD_PACKS: GoldPack[] = [
     object: { kind: '项目', name: '镜川' },
     source: {
       title: '镜川文档摘录（虚构）',
-      body: '镜川以 MIT 许可证发布。项目保持每月一次例行发布。',
+      body: '镜川以 MIT 许可证发布。项目保持每月一次例行发布。团队还在用内部脚本做发布。',
     },
     expected: [
       { predicate: '许可证', textIncludes: 'MIT', spanIncludes: 'MIT 许可证' },
       { predicate: '发布节奏', textIncludes: '每月', spanIncludes: '每月一次例行发布' },
+      // 「内部脚本做发布」映射不上任何受控槽：抽取环归入未编目，出站只许降级为「材料提到」。
+      { predicate: '未编目', textIncludes: '内部脚本', spanIncludes: '内部脚本' },
     ],
     retrievalCases: [{ query: 'MIT 许可证', expectedRanking: ['MIT'], k: 3 }],
     conflicts: [],
@@ -106,6 +120,8 @@ export const GOLD_PACKS: GoldPack[] = [
         replacementText: '镜川项目改为每季度一次例行发布。',
       },
     ],
+    uncatCases: [{ textIncludes: '内部脚本' }],
+    undoCases: [{ claimTextIncludes: 'MIT' }],
     unknownSlots: ['性能口径'],
     negatives: ['吞吐百万 QPS', '已经停更'],
   },
@@ -149,6 +165,21 @@ export function validateGoldPacks(packs: readonly GoldPack[]): string[] {
       if (conflict.textIncludes[0] === conflict.textIncludes[1]) {
         errors.push(`${pack.id}：冲突两侧相同`);
       }
+    }
+    // 未编目纪律与撤销补偿用例必须锚在期望主张上，否则评测剧本永远空跑成 100。
+    for (const uncat of pack.uncatCases ?? []) {
+      const covered = pack.expected.some(
+        (item) => item.predicate === '未编目' && item.textIncludes.includes(uncat.textIncludes),
+      );
+      if (!covered)
+        errors.push(`${pack.id}：未编目用例没有对应的期望未编目主张：${uncat.textIncludes}`);
+    }
+    for (const undo of pack.undoCases ?? []) {
+      const covered = pack.expected.some((item) =>
+        item.textIncludes.includes(undo.claimTextIncludes),
+      );
+      if (!covered)
+        errors.push(`${pack.id}：撤销补偿用例没有对应的期望主张：${undo.claimTextIncludes}`);
     }
   }
   return errors;
