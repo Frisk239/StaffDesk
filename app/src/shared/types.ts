@@ -152,6 +152,11 @@ export interface Memory {
   kind: MemoryKind;
   createdAt: string;
   objectId?: string | undefined;
+  // 0054：禁写的结构化路——（对象、谓词槽、归一化取值）；原句路由 text 承载。
+  // 非禁写记忆与升级前的历史行为 undefined/NULL，读取端不得假设必有。
+  bannedObjectId?: string | undefined;
+  bannedPredicate?: string | undefined;
+  bannedValue?: string | undefined;
 }
 
 export interface ExtractJob {
@@ -194,9 +199,22 @@ export interface IngestJob {
   updatedAt: string;
 }
 
-export type ProposalDecision = 'accept-merge' | 'accept-drop' | 'reject';
+export type ProposalDecision = 'accept-merge' | 'accept-drop' | 'accept-close' | 'reject';
 
-export type TidyPayload = { kind: '整理'; claimId: string; targetPredicate: Predicate };
+// targetPredicate 缺省 = 编目提议未预选槽：由人在提议卡上选拖（0025 只能并入受控槽），决策载荷补齐。
+export type TidyPayload = {
+  kind: '整理';
+  claimId: string;
+  targetPredicate?: Predicate | undefined;
+};
+// 0053：归一化等值 = 同一值的重复主张，走合并提议消解，不走冲突路径；keep 行不动，drop 行接受后删除。
+export type MergeDuplicatesPayload = {
+  kind: '合并重复';
+  keepId: string;
+  dropIds: string[];
+};
+// 复核提示阈值由整理提议承担：只有人确认 accept-close 才关窗（世界已变），历史不改写（0034）。
+export type MarkStalePayload = { kind: '标过时'; claimId: string };
 // 0037：整理提议的「丢弃未核」类型——未核积压的兜底出口（单条起，批量留待真链）。
 export type DropUnverifiedPayload = {
   kind: '丢弃未核';
@@ -213,7 +231,12 @@ export type CandidatePayload = {
   // 0055 已裁决：确认卡上可改范围；现状仍是 payload 给定，实现随后续里程碑落地。
   scope: MemoryScope;
 };
-export type ProposalPayload = TidyPayload | CandidatePayload | DropUnverifiedPayload;
+export type ProposalPayload =
+  | TidyPayload
+  | CandidatePayload
+  | DropUnverifiedPayload
+  | MergeDuplicatesPayload
+  | MarkStalePayload;
 
 export interface Proposal {
   id: string;

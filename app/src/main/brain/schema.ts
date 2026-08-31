@@ -1,5 +1,5 @@
 /** M1 schema。新版本走 schema_migrations，禁止裸改历史。 */
-export const SCHEMA_VERSION = 5;
+export const SCHEMA_VERSION = 6;
 
 export const SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -91,7 +91,12 @@ CREATE TABLE IF NOT EXISTS memories (
   object_id TEXT,
   kind TEXT NOT NULL CHECK (kind IN ('偏好', '禁写', '习惯')),
   text TEXT NOT NULL,
-  created_at TEXT NOT NULL
+  created_at TEXT NOT NULL,
+  -- 0054：禁写结构化路三列（对象、谓词槽、归一化取值）。不加 CHECK：SQLite 不能 ALTER CHECK，
+  -- 且非禁写记忆与迁移前的历史行留 NULL 合法，原句路由 text 兜住。
+  banned_object_id TEXT,
+  banned_predicate TEXT,
+  banned_value TEXT
 );
 
 CREATE TABLE IF NOT EXISTS proposals (

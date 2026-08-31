@@ -108,6 +108,33 @@ describe('建库与迁移', () => {
     brain.close();
   });
 
+  it('v6 迁移为禁写补结构化三列，旧行 NULL 读回不炸且不误拦（0054）', () => {
+    const brain = openBrain(tmpBrain());
+    const columns = columnNames(brain.db, 'memories');
+    expect(columns).toEqual(
+      expect.arrayContaining(['banned_object_id', 'banned_predicate', 'banned_value']),
+    );
+    // 旧行路径：迁移前的禁写只有 text，三列 NULL；loadLedger 读回不带 banned 字段，
+    // 原句路（text 子串）继续兜住它——升级不得静默解除历史禁写。
+    brain.db
+      .prepare(
+        `INSERT INTO memories (id, scope, kind, text, created_at)
+         VALUES ('mem-legacy', '全局', '禁写', '出站不得再写：「团队主栈是 Go」（关闭原因：世界已变）', '2026-08-30')`,
+      )
+      .run();
+    const st = brain.snapshot();
+    const legacy = st.memories.find((m) => m.id === 'mem-legacy');
+    expect(legacy).toBeDefined();
+    expect(legacy?.bannedObjectId).toBeUndefined();
+    expect(legacy?.bannedPredicate).toBeUndefined();
+    expect(legacy?.bannedValue).toBeUndefined();
+    const row = brain.db.prepare('SELECT MAX(version) AS version FROM schema_migrations').get() as {
+      version: number;
+    };
+    expect(row.version).toBeGreaterThanOrEqual(6);
+    brain.close();
+  });
+
   it('旧版 unparsed 来源迁移后保留但不会被绑定抽取', () => {
     const brain = openBrain(tmpBrain());
     brain.dispatch({ type: 'ADD_WORKSPACE', name: '旧库', scenario: '求职面试' });

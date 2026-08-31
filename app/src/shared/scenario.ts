@@ -64,13 +64,21 @@ export const BRIEF_SPECS: Record<ScenarioKind, BriefSpecBlock[]> = {
   ],
   技术选型: [
     { title: '是什么', kind: 'background' },
-    { title: '成熟度', kind: 'slots', predicates: ['活跃度', '发布节奏', '许可证', '维护方', '商业支持'] },
+    {
+      title: '成熟度',
+      kind: 'slots',
+      predicates: ['活跃度', '发布节奏', '许可证', '维护方', '商业支持'],
+    },
     { title: '风险与依赖', kind: 'slots', predicates: ['风险信号', '性能口径'] },
     { title: '材料缺口', kind: 'gaps' },
   ],
   尽调研究: [
     { title: '对象是谁', kind: 'background' },
-    { title: '关键事实', kind: 'slots', predicates: ['主营业务', '团队规模', '融资轮次', '标的要点'] },
+    {
+      title: '关键事实',
+      kind: 'slots',
+      predicates: ['主营业务', '团队规模', '融资轮次', '标的要点'],
+    },
     { title: '风险与冲突', kind: 'slots', predicates: ['风险信号'] },
     { title: '材料缺口', kind: 'gaps' },
   ],
@@ -81,12 +89,19 @@ export const BRIEF_SPECS: Record<ScenarioKind, BriefSpecBlock[]> = {
 };
 
 /** 当前工作区的场景（0033：场景挂工作区，区内对象继承）。 */
-export function scenarioOfWorkspace(workspaces: { id: string; scenario: ScenarioKind }[], workspaceId: string): ScenarioKind {
+export function scenarioOfWorkspace(
+  workspaces: { id: string; scenario: ScenarioKind }[],
+  workspaceId: string,
+): ScenarioKind {
   return workspaces.find((w) => w.id === workspaceId)?.scenario ?? '求职面试';
 }
 
 /** 对象页投影的槽：谓词表按种类分区后，再按对象所在工作区的场景过滤；通用槽恒显示（0033）。 */
-export function slotsForScene(slotDefs: SlotDef[], kind: ObjectKind, scenario: ScenarioKind): Predicate[] {
+export function slotsForScene(
+  slotDefs: SlotDef[],
+  kind: ObjectKind,
+  scenario: ScenarioKind,
+): Predicate[] {
   return slotDefs
     .filter((d) => d.kind === kind)
     .filter((d) => d.scenarios.length === 0 || d.scenarios.includes(scenario))
@@ -94,18 +109,39 @@ export function slotsForScene(slotDefs: SlotDef[], kind: ObjectKind, scenario: S
 }
 
 /**
- * 0029：冲突完全派生——同对象、同单值谓词槽、都未关窗、有效期重叠、取值不同。
+ * 0053：归一化取值——只做大小写、空白与全半角（NFKC），不做同义改写。
+ * 「北京」与「北京市」归一化后仍不同，冲突照建，由人关窗或纠正消解。
+ * 互斥判定（deriveConflicts）与禁写结构化路（0054 bannedValue）共用此函数，是唯一收口点。
+ */
+export function normalizeValue(value: string): string {
+  return value.normalize('NFKC').replace(/\s+/g, ' ').trim().toLowerCase();
+}
+
+/**
+ * 0029：冲突完全派生——同对象、同单值谓词槽、都未关窗、有效期重叠、取值互斥。
+ * 0053：互斥 = 归一化取值不同（大小写、空白、全半角差异不算互斥），不做语义判断。
  * 不存独立状态；关窗后冲突自动消失。多值槽并存不互斥，不建冲突。
  */
-export function deriveConflicts(claims: Claim[], slotDefs: SlotDef[]): { claimIdA: string; claimIdB: string }[] {
+export function deriveConflicts(
+  claims: Claim[],
+  slotDefs: SlotDef[],
+): { claimIdA: string; claimIdB: string }[] {
   const single = new Set(slotDefs.filter((d) => d.arity === '单值').map((d) => d.name));
-  const live = claims.filter((c) => c.status !== '过时' && c.predicate !== '未编目' && single.has(c.predicate));
+  const live = claims.filter(
+    (c) => c.status !== '过时' && c.predicate !== '未编目' && single.has(c.predicate),
+  );
   const out: { claimIdA: string; claimIdB: string }[] = [];
   for (let i = 0; i < live.length; i++) {
     for (let j = i + 1; j < live.length; j++) {
       const a = live[i]!;
       const b = live[j]!;
-      if (a.objectId !== b.objectId || a.predicate !== b.predicate || a.text === b.text) continue;
+      // 0053：互斥按归一化取值判定，裸文本相等口径已废。
+      if (
+        a.objectId !== b.objectId ||
+        a.predicate !== b.predicate ||
+        normalizeValue(a.text) === normalizeValue(b.text)
+      )
+        continue;
       const aFrom = a.validFrom ?? '0000';
       const bFrom = b.validFrom ?? '0000';
       const aTo = a.validTo ?? '9999';

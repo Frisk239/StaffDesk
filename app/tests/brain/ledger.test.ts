@@ -130,6 +130,53 @@ describe('deriveConflicts 0029', () => {
     expect(deriveConflicts(claims, slots)).toEqual([{ claimIdA: 'a', claimIdB: 'b' }]);
   });
 
+  it('0053 反例：归一化等值（大小写、全半角、空白差）不算互斥，不建冲突', () => {
+    const claims = [
+      claim({
+        id: 'a',
+        objectId: 'o1',
+        predicate: '后端主栈',
+        text: '主栈是 Go。',
+        sourceId: 's1',
+      }),
+      claim({
+        id: 'b',
+        objectId: 'o1',
+        predicate: '后端主栈',
+        text: '主栈是 ｇｏ。',
+        sourceId: 's2',
+      }),
+      claim({
+        id: 'c',
+        objectId: 'o1',
+        predicate: '后端主栈',
+        text: ' 主栈是 Go。 ',
+        sourceId: 's3',
+      }),
+    ];
+    expect(deriveConflicts(claims, slots)).toEqual([]);
+  });
+
+  it('0053 正例：归一化后仍不同（北京 vs 北京市）照建冲突，由人消解', () => {
+    const claims = [
+      claim({
+        id: 'a',
+        objectId: 'o1',
+        predicate: '办公地点',
+        text: '办公地点是北京。',
+        sourceId: 's1',
+      }),
+      claim({
+        id: 'b',
+        objectId: 'o1',
+        predicate: '办公地点',
+        text: '办公地点是北京市。',
+        sourceId: 's2',
+      }),
+    ];
+    expect(deriveConflicts(claims, slots)).toEqual([{ claimIdA: 'a', claimIdB: 'b' }]);
+  });
+
   it('反例：多值槽不建冲突', () => {
     const claims = [
       claim({ id: 'a', objectId: 'o1', predicate: '在招岗位', text: '招后端。', sourceId: 's1' }),
