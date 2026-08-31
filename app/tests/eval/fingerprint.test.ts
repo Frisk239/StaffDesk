@@ -4,6 +4,7 @@ import {
   qualificationFingerprint,
   QUALITY_METRIC_FLOORS,
   QUALITY_POLICY_VERSIONS,
+  STAGE_FLOORED_METRICS,
 } from '../../src/main/eval/fingerprint';
 import type { LlmProvider } from '../../src/shared/types';
 
@@ -66,6 +67,13 @@ describe('资格认证配置指纹', () => {
     expect(QUALITY_METRIC_FLOORS.uncatDiscipline).toBe(90);
     expect(QUALITY_METRIC_FLOORS.undoCompensation).toBe(90);
     expect(QUALITY_METRIC_FLOORS.fabrication).toBe(10);
+  });
+
+  it('各 stage 闸门指标并集恰等于合格线全集：无重复无遗漏', () => {
+    // 0045：新指标若没挂进任何 stage 的闸门就永远不会被分数线拦住——这条钉住并集恒等。
+    const gated = Object.values(STAGE_FLOORED_METRICS).flat();
+    expect(new Set(gated).size).toBe(gated.length);
+    expect([...gated].sort()).toEqual(Object.keys(QUALITY_METRIC_FLOORS).sort());
   });
 
   it('模型行显式指定 modelId，不回退到 active 或首个模型', () => {

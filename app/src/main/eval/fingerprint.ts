@@ -1,5 +1,10 @@
 import { createHash } from 'node:crypto';
-import type { LlmProvider, QualityMetricSet, ThinkingEffort } from '@shared/types';
+import type {
+  LlmProvider,
+  QualityMetricSet,
+  QualityStageName,
+  ThinkingEffort,
+} from '@shared/types';
 
 export const QUALITY_SUITE_VERSION = 'staffdesk-quality-v1';
 // 0045：出站策略新增未编目纪律（0037 降级句）与撤销补偿（0034 takeover 回退）两条出站规则，
@@ -27,6 +32,24 @@ export const QUALITY_METRIC_FLOORS: Record<keyof QualityMetricSet, number> = {
   uncatDiscipline: 90,
   undoCompensation: 90,
   fabrication: 10,
+};
+
+/**
+ * 每个 stage 名下受合格线约束的指标（0045 的政策面，与 QUALITY_METRIC_FLOORS 同家）。
+ * 并集必须恰等于 QUALITY_METRIC_FLOORS 全集——新增指标漏挂 stage 即回归红（见 fingerprint.test）。
+ */
+export const STAGE_FLOORED_METRICS: Record<QualityStageName, (keyof QualityMetricSet)[]> = {
+  获取: [],
+  抽取: ['extractionRecall', 'spanHit', 'fabrication'],
+  召回: ['ftsRecallAtK', 'ftsPrecisionAtK', 'mrr'],
+  出站: [
+    'briefFaithfulness',
+    'unknownAdherence',
+    'conflictDetection',
+    'correctionRecurrence',
+    'uncatDiscipline',
+    'undoCompensation',
+  ],
 };
 
 export interface QualificationTarget {

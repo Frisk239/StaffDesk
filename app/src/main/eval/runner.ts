@@ -18,26 +18,11 @@ import type {
   QualityStageName,
   QualityStageResult,
 } from '@shared/types';
-import { QUALITY_METRIC_FLOORS, QUALITY_SUITE_VERSION } from './fingerprint';
+import { QUALITY_METRIC_FLOORS, QUALITY_SUITE_VERSION, STAGE_FLOORED_METRICS } from './fingerprint';
 import type { GoldPack } from './goldPacks';
 import { validateGoldPacks } from './goldPacks';
 
 const STAGES: QualityStageName[] = ['获取', '抽取', '召回', '出站'];
-
-/** 0045：低分即失败——每个 stage 结束后比对其名下指标的合格下限，不只看异常。 */
-const STAGE_FLOORED_METRICS: Record<QualityStageName, (keyof QualityMetricSet)[]> = {
-  获取: [],
-  抽取: ['extractionRecall', 'spanHit', 'fabrication'],
-  召回: ['ftsRecallAtK', 'ftsPrecisionAtK', 'mrr'],
-  出站: [
-    'briefFaithfulness',
-    'unknownAdherence',
-    'conflictDetection',
-    'correctionRecurrence',
-    'uncatDiscipline',
-    'undoCompensation',
-  ],
-};
 
 /** 展示名与设置页指标标签、CONTEXT.md 词条逐字一致；括号内为接口字段名。 */
 const METRIC_LABELS: Record<keyof QualityMetricSet, string> = {
