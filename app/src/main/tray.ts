@@ -66,7 +66,15 @@ export function installTray(getWindow: () => BrowserWindow | null, onFirstHide: 
   if (tray) return;
   getWindowRef = getWindow;
   const icon = nativeImage.createFromBuffer(PNG_16);
-  tray = new Tray(icon.isEmpty() ? nativeImage.createEmpty() : icon);
+  // 无任务栏环境（CI runner、精简桌面）创建 Tray 会抛——托盘是增强不是前提，
+  // 失败时降级为普通关窗行为，绝不让应用起不来。
+  try {
+    tray = new Tray(icon.isEmpty() ? nativeImage.createEmpty() : icon);
+  } catch (error) {
+    getWindowRef = null;
+    console.warn('tray unavailable, running without tray', error);
+    return;
+  }
   tray.setToolTip('StaffDesk');
   tray.on('click', () => {
     const win = getWindow();
