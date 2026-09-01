@@ -6,7 +6,12 @@ import type Database from 'better-sqlite3';
 import type { Action } from '../../src/shared/actions';
 import type { DeskTask, Source } from '../../src/shared/types';
 import { openBrain, type Brain } from '../../src/main/brain';
-import { loadLedger, listOperations, type LedgerRows } from '../../src/main/brain/persist';
+import {
+  loadLedger,
+  listOperations,
+  takeSyncTableStats,
+  type LedgerRows,
+} from '../../src/main/brain/persist';
 import { searchClaimsFts } from '../../src/main/brain/fts';
 import { completeExtraction } from '../helpers/extraction';
 
@@ -662,8 +667,7 @@ describe('按脏表差异写入与全量重写等价（0056）', { timeout: 20_0
     expect(aliveIds.length).toBeGreaterThan(0);
     expect(ftsClaimIds(full.db, handles.objId, '数据平台')).toEqual(aliveIds);
 
-    // 绑定撤销删掉的主张不得残留在任一库的 FTS 里（全量库每 dispatch 重建、diff 库 claims 脏时
-    // 事务内重建——两边都搜不到，证明「跳过重建」≠「漏重建」）。
+    // 绑定撤销删掉的主张不得残留在任一库的 FTS 里（全量库走修复重建，diff 库走 claims 触发器）。
     expect(ftsClaimIds(full.db, handles.objId, '在招后端实习')).toEqual([]);
     expect(ftsClaimIds(diff.db, handles.objId, '在招后端实习')).toEqual([]);
   });
@@ -759,5 +763,31 @@ describe('按脏表差异写入与全量重写等价（0056）', { timeout: 20_0
       comparableLedger(loadLedger(reopenedDiff.db)),
     );
     expect(listOperations(reopenedFull.db)).toEqual(listOperations(reopenedDiff.db));
+  });
+
+  it('syncTable 按内存主键集读行：全列查询行数不超过内存行，库内多余行仍自愈删除', () => {
+    const diff = track(openBrain(brainFile('inc.db')));
+    diff.dispatch({ type: 'ADD_WORKSPACE', name: '区甲', scenario: '求职面试' });
+    diff.dispatch({
+      type: 'ADD_SOURCE',
+      title: '材料',
+      body: '短正文，用来脏 sources 表。',
+    });
+    diff.db
+      .prepare(
+        `INSERT INTO sources (id, title, body, path, created_at)
+         VALUES ('user-stmt', '不该落库', ?, '手给', '2026-01-01T00:00:00.000Z')`,
+      )
+      .run('x'.repeat(50_000));
+
+    takeSyncTableStats();
+    diff.dispatch({ type: 'ADD_SOURCE', title: '第二份', body: '另一段短正文。' });
+    const stats = takeSyncTableStats();
+    const sourceStats = stats.filter((row) => row.table === 'sources');
+    expect(sourceStats.length).toBeGreaterThan(0);
+    for (const row of sourceStats) {
+      expect(row.fullRowReads).toBeLessThanOrEqual(row.wantedRows);
+    }
+    expect(diff.db.prepare("SELECT id FROM sources WHERE id = 'user-stmt'").get()).toBeUndefined();
   });
 });

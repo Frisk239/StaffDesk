@@ -2,6 +2,7 @@ import type Database from 'better-sqlite3';
 import { emptyUiFields } from '@shared/defaults';
 import type {
   CurrentQualification,
+  DeletedSourceRecovery,
   LlmProvider,
   QualityQualificationRecord,
   State,
@@ -18,10 +19,10 @@ import {
   loadLedger,
   persistLedger,
   persistLedgerDiff,
+  type LedgerRows,
   type PersistMode,
 } from './persist';
 import { listSlotDefs } from './presets';
-import { REQUIRED_TABLES } from './schema';
 import {
   closedClaims,
   conflictsOf,
@@ -29,6 +30,8 @@ import {
   isExtracting,
   projectionClaims,
 } from './projection';
+import { REQUIRED_TABLES } from './schema';
+import { pruneTaskAudits } from './taskAuditRetention';
 import { createMemorySecrets, type SecretStore } from '../keychain';
 import {
   createMemoryModelSettingsStore,
@@ -64,6 +67,8 @@ export class Brain {
   readonly persistMode: PersistMode;
   private ui: ReturnType<typeof emptyUiFields>;
   private runningQualification: { fingerprint: string; startedAt: string } | null = null;
+  /** operations 扫描结果缓存：snapshot 构造不再扫 DELETE_SOURCE 日志（0051）。 */
+  private cachedRecoveries: DeletedSourceRecovery[] = [];
 
   constructor(
     filePath: string,
@@ -79,6 +84,7 @@ export class Brain {
     this.persistMode = options.persistMode ?? 'diff';
     this.db = openDatabase(filePath);
     const legacy = loadLedger(this.db);
+    this.cachedRecoveries = listDeletedSourceRecoveries(this.db, legacy.sources);
     const stored = modelSettings.load();
     const legacyConfigured = normalizeLegacyModelSettings({
       providers: hydrateProviders([], legacy.providersJson, secrets),
@@ -97,7 +103,69 @@ export class Brain {
   }
 
   snapshot(): State {
-    const ledger = loadLedger(this.db);
+    // 0051：snapshot 从 SQLite 读账本；operations 扫描不在构造路径里。
+    return this.stateFromLedger(loadLedger(this.db));
+  }
+
+  dispatch(action: Action): State {
+    const prev = this.stateFromLedger(loadLedger(this.db));
+    if (action.type === 'UPSERT_PROVIDER') {
+      this.secrets.set(action.provider.id, action.provider.apiKey);
+    }
+    if (action.type === 'REMOVE_PROVIDER') {
+      this.secrets.remove(action.id);
+    }
+    const loggedAction = withRecoveryPayload(action, prev);
+    let next = applyAction(prev, loggedAction);
+    if (next.taskAudits !== prev.taskAudits) {
+      const pruned = pruneTaskAudits(next.taskAudits);
+      if (pruned !== next.taskAudits) next = { ...next, taskAudits: pruned };
+    }
+    if (isModelSettingsAction(loggedAction)) {
+      this.modelSettings.save(modelSettingsFromState(next));
+    }
+    // 0056：dispatch 是唯一写漏斗，prev 是本次起点从库现读的快照，diff(prev,next) ≡ diff(DB,next)。
+    if (this.persistMode === 'full') {
+      persistLedger(this.db, next);
+    } else {
+      persistLedgerDiff(this.db, prev, next);
+    }
+    if (!isModelSettingsAction(loggedAction)) {
+      appendOperation(
+        this.db,
+        loggedAction.type,
+        loggedAction,
+        loggedAction.type === 'UNDO_RESULT' ? 'compensating' : null,
+      );
+    }
+    if (loggedAction.type === 'DELETE_SOURCE' || loggedAction.type === 'RESTORE_DELETED_SOURCE') {
+      this.cachedRecoveries = listDeletedSourceRecoveries(this.db, next.sources);
+      next = { ...next, deletedSourceRecoveries: this.cachedRecoveries };
+    }
+    this.ui = {
+      view: next.view,
+      selectedClaimId: next.selectedClaimId,
+      sourceFocusId: next.sourceFocusId,
+      toast: next.toast,
+      briefDraftingFor: next.briefDraftingFor,
+      ingestJobs: next.ingestJobs,
+      extractJobs: next.extractJobs,
+      pendingClaims: next.pendingClaims,
+      themePreference: next.themePreference,
+      providers: next.providers,
+      activeProviderId: next.activeProviderId,
+      activeModelId: next.activeModelId,
+      thinkingEffort: next.thinkingEffort,
+      writeQueue: next.writeQueue,
+      rightTabsByObject: next.rightTabsByObject,
+      activeRightTabByObject: next.activeRightTabByObject,
+      qualification: next.qualification,
+      deletedSourceRecoveries: next.deletedSourceRecoveries,
+    };
+    return next;
+  }
+
+  private stateFromLedger(ledger: LedgerRows): State {
     const sources = [...ledger.sources];
     if (!sources.some((s) => s.id === 'user-stmt')) {
       sources.push({
@@ -117,7 +185,7 @@ export class Brain {
       objects: ledger.objects,
       sources,
       ingestJobs: ledger.ingestJobs,
-      deletedSourceRecoveries: listDeletedSourceRecoveries(this.db, ledger.sources),
+      deletedSourceRecoveries: this.cachedRecoveries,
       claims: ledger.claims,
       slotDefs: ledger.slotDefs,
       scenarioTemplates: ledger.scenarioTemplates,
@@ -147,56 +215,6 @@ export class Brain {
       providers,
       onboardingDone: ledger.onboardingDone,
     };
-  }
-
-  dispatch(action: Action): State {
-    const prev = this.snapshot();
-    if (action.type === 'UPSERT_PROVIDER') {
-      this.secrets.set(action.provider.id, action.provider.apiKey);
-    }
-    if (action.type === 'REMOVE_PROVIDER') {
-      this.secrets.remove(action.id);
-    }
-    const loggedAction = withRecoveryPayload(action, prev);
-    const next = applyAction(prev, loggedAction);
-    if (isModelSettingsAction(loggedAction)) {
-      this.modelSettings.save(modelSettingsFromState(next));
-    }
-    // 0056：dispatch 是唯一写漏斗，prev 是本次起点从库现读的快照，diff(prev,next) ≡ diff(DB,next)。
-    if (this.persistMode === 'full') {
-      persistLedger(this.db, next);
-    } else {
-      persistLedgerDiff(this.db, prev, next);
-    }
-    if (!isModelSettingsAction(loggedAction)) {
-      appendOperation(
-        this.db,
-        loggedAction.type,
-        loggedAction,
-        loggedAction.type === 'UNDO_RESULT' ? 'compensating' : null,
-      );
-    }
-    this.ui = {
-      view: next.view,
-      selectedClaimId: next.selectedClaimId,
-      sourceFocusId: next.sourceFocusId,
-      toast: next.toast,
-      briefDraftingFor: next.briefDraftingFor,
-      ingestJobs: next.ingestJobs,
-      extractJobs: next.extractJobs,
-      pendingClaims: next.pendingClaims,
-      themePreference: next.themePreference,
-      providers: next.providers,
-      activeProviderId: next.activeProviderId,
-      activeModelId: next.activeModelId,
-      thinkingEffort: next.thinkingEffort,
-      writeQueue: next.writeQueue,
-      rightTabsByObject: next.rightTabsByObject,
-      activeRightTabByObject: next.activeRightTabByObject,
-      qualification: next.qualification,
-      deletedSourceRecoveries: next.deletedSourceRecoveries,
-    };
-    return this.snapshot();
   }
 
   startQualification(target: QualificationTarget): State {

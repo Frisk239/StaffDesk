@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { chatComplete, maskSecret } from '../../src/main/llm/chatCompletions';
+import { chatComplete, maskSecret, parseChatUsage } from '../../src/main/llm/chatCompletions';
 
 function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
@@ -67,6 +67,76 @@ describe('chat-completions 客户端', () => {
       },
     });
     expect(body).toContain('json_object');
+  });
+
+  it('解析 usage.prompt_tokens / completion_tokens，缺字段或非正数视为未回传', () => {
+    expect(parseChatUsage({ prompt_tokens: 10, completion_tokens: 2 })).toEqual({
+      promptTokens: 10,
+      completionTokens: 2,
+    });
+    expect(parseChatUsage({ prompt_tokens: 7 })).toEqual({
+      promptTokens: 7,
+      completionTokens: 0,
+    });
+    expect(parseChatUsage(undefined)).toBeUndefined();
+    expect(parseChatUsage({ prompt_tokens: 0, completion_tokens: 0 })).toBeUndefined();
+    expect(parseChatUsage({ prompt_tokens: -3, completion_tokens: 4 })).toEqual({
+      promptTokens: 0,
+      completionTokens: 4,
+    });
+  });
+
+  it('非流式成功回传 usage，缺失则结果没有 usage 字段', async () => {
+    const withUsage = await chatComplete({
+      baseUrl: 'https://api.example.test/v1',
+      apiKey: 'k',
+      model: 'demo',
+      messages: [{ role: 'user', content: 'hi' }],
+      fetch: async () =>
+        jsonResponse({
+          choices: [{ message: { content: 'ok' } }],
+          usage: { prompt_tokens: 11, completion_tokens: 3 },
+        }),
+    });
+    expect(withUsage.usage).toEqual({ promptTokens: 11, completionTokens: 3 });
+
+    const missing = await chatComplete({
+      baseUrl: 'https://api.example.test/v1',
+      apiKey: 'k',
+      model: 'demo',
+      messages: [{ role: 'user', content: 'hi' }],
+      fetch: async () => jsonResponse({ choices: [{ message: { content: 'ok' } }] }),
+    });
+    expect(missing.usage).toBeUndefined();
+  });
+
+  it('流式末包 usage 会回传，畸形行跳过', async () => {
+    const encoder = new TextEncoder();
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(encoder.encode('data: {"choices":[{"delta":{"content":"hi"}}]}\n'));
+        controller.enqueue(encoder.encode('data: not-json\n'));
+        controller.enqueue(
+          encoder.encode(
+            'data: {"choices":[],"usage":{"prompt_tokens":3,"completion_tokens":1}}\n',
+          ),
+        );
+        controller.enqueue(encoder.encode('data: [DONE]\n'));
+        controller.close();
+      },
+    });
+    const result = await chatComplete({
+      baseUrl: 'https://api.example.test/v1',
+      apiKey: 'k',
+      model: 'demo',
+      messages: [{ role: 'user', content: 'hi' }],
+      stream: true,
+      onDelta: () => undefined,
+      fetch: async () =>
+        new Response(stream, { status: 200, headers: { 'Content-Type': 'text/event-stream' } }),
+    });
+    expect(result.content).toBe('hi');
+    expect(result.usage).toEqual({ promptTokens: 3, completionTokens: 1 });
   });
 
   it('请求超时会结束并返回可行动错误，不无限挂起', async () => {

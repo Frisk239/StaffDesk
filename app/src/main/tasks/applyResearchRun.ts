@@ -1,10 +1,15 @@
-import type { State } from '@shared/types';
+import { FEE_AUDIT_KIND, emptyFeeSpend, feeAuditPayload, recordFeeSpend } from '@shared/taskFee';
+import type { State, TaskAudit } from '@shared/types';
 import { createReachAdapter, type ReachAdapter } from '../adapters/reach';
 import type { Brain } from '../brain';
 import { createExtractionJobExecutor } from '../extraction';
+import type { TokenUsage } from '@shared/taskFee';
+import { activeModelCompletion, type ModelCompletion } from '../llm/runtime';
 import {
+  budgetFor,
   createResearchTask,
   defaultQuery,
+  hitFeeCap,
   runResearchTask,
   type BudgetGear,
   type ResearchDeps,
@@ -28,6 +33,11 @@ export interface ApplyResearchRunDeps {
   queryFor?: ResearchDeps['queryFor'] | undefined;
   /** 时钟注入 seam：缺省引擎真钟（epoch 毫秒），不传即由 engine 自取 Date.now。 */
   now?: (() => number) | undefined;
+  /**
+   * 抽取 complete 注入 seam：缺省 activeModelCompletion。
+   * 仅调研/再搜一轮/雷达抽取走计量包装；用户手发 chat 不经本函数，不进任务预算（ADR 0059）。
+   */
+  complete?: ModelCompletion | undefined;
 }
 
 // 单飞锁：对象 → 在跑 task id。模块级而非 registerIpc 闭包级——用户入口与启动雷达补跑共抢同一把锁。
@@ -76,6 +86,7 @@ export async function applyResearchRun(deps: ApplyResearchRunDeps): Promise<Stat
     runningResearchByObject.set(objectId, task.id);
     next = start.dispatch({ type: 'TASK_RUN_STARTED', task });
     publish(next);
+    let spend = emptyFeeSpend();
     const result = await runResearchTask(
       start.snapshot(),
       objectId,
@@ -84,6 +95,7 @@ export async function applyResearchRun(deps: ApplyResearchRunDeps): Promise<Stat
         reach,
         queryFor,
         ...(now ? { now } : {}),
+        usageSpend: () => spend,
         onAudit: (audit) => {
           // 查到哪个实例就 dispatch 哪个：恢复后审计行写进新库，退出则让位不写。
           const current = live();
@@ -113,20 +125,110 @@ export async function applyResearchRun(deps: ApplyResearchRunDeps): Promise<Stat
       audits: result.audits,
       sources: result.sources,
     });
+    const budget = budgetFor(gear);
+    let feeCapped = result.stopReason === '费用触顶';
+    let auditSeq = result.audits.reduce((max, audit) => Math.max(max, audit.seq), 0);
+    const feeCapNow = () => hitFeeCap(budget, spend);
+
     for (const src of result.sources) {
       if (src.boundObjectIds.length === 0) continue;
-      // 每轮现取 live brain、就地构造 executor；注入的 executeExtractionJob 保留原 seam 优先。
       const current = live();
       if (!current) return null;
-      const executeExtractionJob =
-        deps.executeExtractionJob ?? createExtractionJobExecutor({ brain: current, publish });
+      const running = current.snapshot().tasks.find((item) => item.id === task.id);
+      if (running?.status === '已停止' && running.stopReason === '手动') break;
+
+      if (deps.executeExtractionJob) {
+        next = current.dispatch({
+          type: 'BIND_CONFIRMED',
+          sourceId: src.id,
+          objectIds: src.boundObjectIds,
+        });
+        next = await deps.executeExtractionJob(src.id);
+        continue;
+      }
+
+      if (feeCapped || feeCapNow()) {
+        feeCapped = true;
+        // 硬顶：已打开的照写；跳过的抽取保持未知，作业记完成以免悬挂。
+        next = current.dispatch({
+          type: 'EXTRACT_DONE',
+          sourceId: src.id,
+          claims: [],
+          outcome: 'success',
+        });
+        publish(next);
+        continue;
+      }
+
+      const inner = deps.complete ?? activeModelCompletion(current.snapshot());
+      const metered = inner
+        ? wrapMeteredCompletion(inner, (usage) => {
+            spend = recordFeeSpend(spend, usage);
+          })
+        : undefined;
       next = current.dispatch({
         type: 'BIND_CONFIRMED',
         sourceId: src.id,
         objectIds: src.boundObjectIds,
       });
-      next = await executeExtractionJob(src.id);
+      next = await createExtractionJobExecutor({
+        brain: current,
+        publish,
+        ...(metered ? { complete: metered } : {}),
+      })(src.id);
+      if (inner) {
+        const feeTarget = live();
+        if (!feeTarget) return null;
+        auditSeq += 1;
+        const feeAudit: TaskAudit = {
+          taskId: task.id,
+          seq: auditSeq,
+          kind: FEE_AUDIT_KIND,
+          payload: feeAuditPayload(spend, src.id),
+          ts: new Date().toISOString(),
+        };
+        next = feeTarget.dispatch({
+          type: 'TASK_AUDIT_APPENDED',
+          taskId: task.id,
+          audits: [feeAudit],
+        });
+        publish(next);
+      }
+      if (feeCapNow()) feeCapped = true;
     }
+
+    if (feeCapped && result.task.stopReason !== '手动' && result.task.stopReason !== '失败') {
+      const feeStopTarget = live();
+      if (!feeStopTarget) return null;
+      auditSeq += 1;
+      next = feeStopTarget.dispatch({
+        type: 'TASK_AUDIT_APPENDED',
+        taskId: task.id,
+        audits: [
+          {
+            taskId: task.id,
+            seq: auditSeq,
+            kind: '费用触顶',
+            payload: {
+              tokens: spend.totalTokens,
+              missingUsageCalls: spend.missingUsageCalls,
+            },
+            ts: new Date().toISOString(),
+          },
+        ],
+      });
+      const audits = withFeeStopReason(
+        feeStopTarget.snapshot().taskAudits.filter((audit) => audit.taskId === task.id),
+        '费用触顶',
+      );
+      next = feeStopTarget.dispatch({
+        type: 'APPLY_RESEARCH',
+        task: { ...result.task, status: '已完成', stopReason: '费用触顶' },
+        audits,
+        sources: [],
+      });
+    }
+
     publish(next);
     return next;
   } finally {
@@ -134,4 +236,26 @@ export async function applyResearchRun(deps: ApplyResearchRunDeps): Promise<Stat
       runningResearchByObject.delete(objectId);
     }
   }
+}
+
+function wrapMeteredCompletion(
+  complete: ModelCompletion,
+  onUsage: (usage: TokenUsage | undefined) => void,
+): ModelCompletion {
+  return async (request) => {
+    const result = await complete(request);
+    onUsage(result.usage);
+    return result;
+  };
+}
+
+function withFeeStopReason(audits: TaskAudit[], reason: '费用触顶'): TaskAudit[] {
+  return audits.map((audit) => {
+    if (audit.kind !== '停止') return audit;
+    const base =
+      audit.payload && typeof audit.payload === 'object'
+        ? { ...(audit.payload as Record<string, unknown>) }
+        : {};
+    return { ...audit, payload: { ...base, reason } };
+  });
 }

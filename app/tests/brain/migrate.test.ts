@@ -334,6 +334,127 @@ describe('建库与迁移', () => {
     brain.close();
   });
 
+  it('v10 迁移给 task_audit 加主键与索引、去重撞键行，并放开 tasks.stop_reason 收「费用触顶」', () => {
+    const file = tmpBrain();
+    const legacy = new Database(file);
+    legacy.pragma('journal_mode = WAL');
+    legacy.exec(`
+      CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL);
+      CREATE TABLE tasks (
+        id TEXT PRIMARY KEY,
+        object_id TEXT NOT NULL,
+        kind TEXT NOT NULL CHECK (kind IN ('调研', '出简报', '再搜一轮', '周期性雷达')),
+        status TEXT NOT NULL CHECK (status IN ('待启动', '进行中', '已完成', '已停止')),
+        stop_reason TEXT CHECK (stop_reason IN ('手动', '触顶', '失败')),
+        budget_gear TEXT CHECK (budget_gear IN ('快搜', '深挖')),
+        query TEXT,
+        interval_days INTEGER,
+        next_due_at TEXT,
+        last_run_at TEXT,
+        parent_task_id TEXT,
+        due_at TEXT,
+        created_at TEXT NOT NULL,
+        finished_at TEXT
+      );
+      CREATE TABLE task_audit (
+        task_id TEXT NOT NULL,
+        seq INTEGER NOT NULL,
+        kind TEXT NOT NULL,
+        payload TEXT NOT NULL,
+        ts TEXT NOT NULL
+      );
+      CREATE TABLE app_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+    `);
+    legacy
+      .prepare("INSERT INTO schema_migrations (version, applied_at) VALUES (9, '2026-09-01')")
+      .run();
+    legacy
+      .prepare(
+        `INSERT INTO tasks (id, object_id, kind, status, stop_reason, created_at)
+         VALUES ('task-1', 'obj-1', '调研', '已停止', '触顶', '2026-09-01')`,
+      )
+      .run();
+    // 撞主键：同一 (task_id, seq) 两行。合并规则 = ts 最新；ts 相同取后写入（rowid 更大）。
+    legacy
+      .prepare(
+        `INSERT INTO task_audit (task_id, seq, kind, payload, ts)
+         VALUES ('task-1', 1, '搜索', '{"keep":false}', '2026-09-01T00:00:00.000Z')`,
+      )
+      .run();
+    legacy
+      .prepare(
+        `INSERT INTO task_audit (task_id, seq, kind, payload, ts)
+         VALUES ('task-1', 1, '搜索', '{"keep":true}', '2026-09-01T01:00:00.000Z')`,
+      )
+      .run();
+    legacy
+      .prepare(
+        `INSERT INTO task_audit (task_id, seq, kind, payload, ts)
+         VALUES ('task-2', 1, '开始', '{"n":1}', '2026-09-01T00:00:00.000Z')`,
+      )
+      .run();
+    legacy
+      .prepare(
+        `INSERT INTO task_audit (task_id, seq, kind, payload, ts)
+         VALUES ('task-2', 1, '开始', '{"n":2}', '2026-09-01T00:00:00.000Z')`,
+      )
+      .run();
+    legacy
+      .prepare(
+        `INSERT INTO task_audit (task_id, seq, kind, payload, ts)
+         VALUES ('task-1', 2, '触顶', '{}', '2026-09-01T02:00:00.000Z')`,
+      )
+      .run();
+    legacy.prepare("INSERT INTO app_meta VALUES ('presets_seeded', '1')").run();
+    legacy.close();
+
+    const brain = openBrain(file);
+    const pk = brain.db.prepare('PRAGMA table_info(task_audit)').all() as {
+      name: string;
+      pk: number;
+    }[];
+    expect(pk.find((col) => col.name === 'task_id')?.pk).toBeGreaterThan(0);
+    expect(pk.find((col) => col.name === 'seq')?.pk).toBeGreaterThan(0);
+    expect(indexNames(brain.db)).toContain('idx_task_audit_task_id');
+
+    const audits = brain.db
+      .prepare('SELECT task_id, seq, payload FROM task_audit ORDER BY task_id, seq')
+      .all() as { task_id: string; seq: number; payload: string }[];
+    expect(audits).toEqual([
+      { task_id: 'task-1', seq: 1, payload: '{"keep":true}' },
+      { task_id: 'task-1', seq: 2, payload: '{}' },
+      { task_id: 'task-2', seq: 1, payload: '{"n":2}' },
+    ]);
+
+    const ddl = brain.db
+      .prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'tasks'")
+      .get() as { sql: string };
+    expect(ddl.sql).toContain('费用触顶');
+    brain.db
+      .prepare(
+        `INSERT INTO tasks (id, object_id, kind, status, stop_reason, created_at)
+         VALUES ('task-fee', 'obj-1', '调研', '已停止', '费用触顶', '2026-09-01')`,
+      )
+      .run();
+    const fee = brain.db.prepare('SELECT stop_reason FROM tasks WHERE id = ?').get('task-fee') as {
+      stop_reason: string;
+    };
+    expect(fee.stop_reason).toBe('费用触顶');
+
+    const triggers = (
+      brain.db
+        .prepare("SELECT name FROM sqlite_master WHERE type = 'trigger' AND tbl_name = 'claims'")
+        .all() as { name: string }[]
+    ).map((row) => row.name);
+    expect(triggers).toEqual(expect.arrayContaining(['claims_ai', 'claims_ad', 'claims_au']));
+
+    const version = brain.db
+      .prepare('SELECT MAX(version) AS version FROM schema_migrations')
+      .get() as { version: number };
+    expect(version.version).toBeGreaterThanOrEqual(10);
+    brain.close();
+  });
+
   it('首启后槽名与 DEFAULT_SLOT_DEFS 一致、场景模板与种子源四件套一致，且对象/来源/主张计数为 0', () => {
     const brain = openBrain(tmpBrain());
     const snap = brain.snapshot();

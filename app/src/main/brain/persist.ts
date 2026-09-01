@@ -78,6 +78,41 @@ export function interruptActiveIngestJobs(db: Database.Database): void {
 /** 0056：写路径模式——'diff' 按脏表差异写入（dispatch 默认），'full' 全量重写（修复与等价对照通道）。 */
 export type PersistMode = 'diff' | 'full';
 
+/** dispatch 计数 seam 的通用形状：单次 dispatch 只应触发一次 loadLedger（0051），恢复扫描按需重扫。 */
+export interface CountProbe {
+  count: number;
+}
+
+const ledgerReadProbes = new WeakMap<Database.Database, CountProbe>();
+const recoveryScanProbes = new WeakMap<Database.Database, CountProbe>();
+
+export function trackLedgerReads(db: Database.Database): CountProbe {
+  const probe: CountProbe = { count: 0 };
+  ledgerReadProbes.set(db, probe);
+  return probe;
+}
+
+export function trackRecoveryScans(db: Database.Database): CountProbe {
+  const probe: CountProbe = { count: 0 };
+  recoveryScanProbes.set(db, probe);
+  return probe;
+}
+
+/** syncTable 全列读取行数：应按内存主键集查询，不得超过 wanted 行数。 */
+export interface SyncTableStats {
+  table: string;
+  fullRowReads: number;
+  wantedRows: number;
+}
+
+// 生产 dispatch 也会路过这里：有界环形留痕，不许随写次数无界增长（M28 评审）。
+const SYNC_TABLE_STATS_LIMIT = 256;
+const syncTableStatLog: SyncTableStats[] = [];
+
+export function takeSyncTableStats(): SyncTableStats[] {
+  return syncTableStatLog.splice(0);
+}
+
 /** persist 层可写的行值类型：账本 schema 只用 TEXT/INTEGER（0040：密钥不落库）。 */
 type PersistValue = string | number | null;
 type PersistRow = Record<string, PersistValue>;
@@ -552,6 +587,9 @@ export function persistLedger(db: Database.Database, state: State): void {
     writeMeta(db, state);
   });
   tx();
+  // 0056 修复通道：claims 的 DELETE/INSERT 已走触发器把 FTS 维持到同一终态；
+  // rebuildFts 直接写 FTS 表（不经 claims 触发器），再写一遍结果幂等。
+  // 不在重建期间 DROP 触发器，避免漏挂窗口。
   rebuildFts(db);
 }
 
@@ -562,7 +600,6 @@ export function persistLedger(db: Database.Database, state: State): void {
  * 会在首次触达该表时收敛为行构造器的规范形态。
  */
 export function persistLedgerDiff(db: Database.Database, prev: State, next: State): void {
-  const claimsDirty = prev.claims !== next.claims;
   const tx = db.transaction(() => {
     for (const table of PERSIST_TABLES) {
       if (table.collection(prev) === table.collection(next)) continue;
@@ -570,8 +607,8 @@ export function persistLedgerDiff(db: Database.Database, prev: State, next: Stat
     }
     // 0056：app_meta 的 4 键 upsert 每 dispatch 照写，不在判脏射程。
     writeMeta(db, next);
-    // 0056 约束三：FTS 只在 claims 脏时重建，首版全量 rebuildFts 并移入同一事务收窄崩溃窗口。
-    if (claimsDirty) rebuildFts(db);
+    // 0056 约束三：claims 脏行由 INSERT/UPDATE/DELETE 触发器维护 FTS；
+    // 全量 rebuildFts 只留 persistLedger 修复通道。
   });
   tx();
 }
@@ -580,26 +617,92 @@ function rowKey(table: PersistTable, row: PersistRow): string {
   return JSON.stringify(table.primaryKey.map((column) => row[column] ?? null));
 }
 
+function wantedKeysJson(table: PersistTable, wanted: PersistRow[]): string {
+  if (table.primaryKey.length === 1) {
+    const column = table.primaryKey[0]!;
+    return JSON.stringify(wanted.map((row) => row[column] ?? null));
+  }
+  return JSON.stringify(wanted.map((row) => table.primaryKey.map((column) => row[column] ?? null)));
+}
+
+function selectRowsByWantedKeys(
+  db: Database.Database,
+  table: PersistTable,
+  wanted: PersistRow[],
+): PersistRow[] {
+  if (wanted.length === 0) return [];
+  const cols = table.columns.join(', ');
+  const keys = wantedKeysJson(table, wanted);
+  if (table.primaryKey.length === 1) {
+    const column = table.primaryKey[0]!;
+    return db
+      .prepare(
+        `SELECT ${cols} FROM ${table.table} WHERE ${column} IN (SELECT value FROM json_each(?))`,
+      )
+      .all(keys) as PersistRow[];
+  }
+  const preds = table.primaryKey
+    .map((column, i) => `${table.table}.${column} = json_extract(j.value, '$[${i}]')`)
+    .join(' AND ');
+  return db
+    .prepare(
+      `SELECT ${cols} FROM ${table.table} WHERE EXISTS (SELECT 1 FROM json_each(?) AS j WHERE ${preds})`,
+    )
+    .all(keys) as PersistRow[];
+}
+
+function deleteRowsNotWanted(
+  db: Database.Database,
+  table: PersistTable,
+  wanted: PersistRow[],
+): void {
+  if (wanted.length === 0) {
+    db.exec(`DELETE FROM ${table.table}`);
+    return;
+  }
+  const keys = wantedKeysJson(table, wanted);
+  if (table.primaryKey.length === 1) {
+    const column = table.primaryKey[0]!;
+    db.prepare(
+      `DELETE FROM ${table.table} WHERE ${column} NOT IN (SELECT value FROM json_each(?))`,
+    ).run(keys);
+    return;
+  }
+  const preds = table.primaryKey
+    .map((column, i) => `${table.table}.${column} = json_extract(j.value, '$[${i}]')`)
+    .join(' AND ');
+  db.prepare(
+    `DELETE FROM ${table.table} WHERE NOT EXISTS (SELECT 1 FROM json_each(?) AS j WHERE ${preds})`,
+  ).run(keys);
+}
+
 /** 行级主键三分（0056）：库有 next 无→DELETE；next 有库无→INSERT；两侧都有但脏→UPDATE。 */
 function syncTable(db: Database.Database, table: PersistTable, wanted: PersistRow[]): void {
-  const stored = db
-    .prepare(`SELECT ${table.columns.join(', ')} FROM ${table.table}`)
+  // 增量：先只读主键判多余行（自愈），全列 SELECT 只按内存主键集取行，不扫正文。
+  // 无多余行时不发 DELETE：引用变但行值未变（MARK_TURN_PLAYED）必须零写（0056）。
+  const storedKeys = db
+    .prepare(`SELECT ${table.primaryKey.join(', ')} FROM ${table.table}`)
     .all() as PersistRow[];
-  const storedByKey = new Map<string, PersistRow>();
-  for (const row of stored) {
-    storedByKey.set(rowKey(table, row), row);
-  }
   const wantedByKey = new Map<string, PersistRow>();
   for (const row of wanted) {
     wantedByKey.set(rowKey(table, row), row);
   }
+  const hasExtras = storedKeys.some((row) => !wantedByKey.has(rowKey(table, row)));
+  if (hasExtras) deleteRowsNotWanted(db, table, wanted);
+
+  const stored = selectRowsByWantedKeys(db, table, wanted);
+  if (syncTableStatLog.length >= SYNC_TABLE_STATS_LIMIT) syncTableStatLog.shift();
+  syncTableStatLog.push({
+    table: table.table,
+    fullRowReads: stored.length,
+    wantedRows: wanted.length,
+  });
+  const storedByKey = new Map<string, PersistRow>();
+  for (const row of stored) {
+    storedByKey.set(rowKey(table, row), row);
+  }
 
   const keyWhere = table.primaryKey.map((column) => `${column} = ?`).join(' AND ');
-  const del = db.prepare(`DELETE FROM ${table.table} WHERE ${keyWhere}`);
-  for (const [key, row] of storedByKey) {
-    if (wantedByKey.has(key)) continue;
-    del.run(...table.primaryKey.map((column) => row[column] ?? null));
-  }
 
   // 0056 约束一：created_at 语义是「首次落库时间」——UPDATE 写除它外的全部非主键列，
   // 脏判也必须忽略它，否则 stateStamp 会让每次触达都全表假脏。
@@ -682,6 +785,8 @@ export function listDeletedSourceRecoveries(
   db: Database.Database,
   liveSources: Source[],
 ): DeletedSourceRecovery[] {
+  const probe = recoveryScanProbes.get(db);
+  if (probe) probe.count += 1;
   const liveIds = new Set(
     liveSources.filter((source) => !source.virtual).map((source) => source.id),
   );
@@ -766,6 +871,8 @@ export type LedgerRows = {
 };
 
 export function loadLedger(db: Database.Database): LedgerRows {
+  const probe = ledgerReadProbes.get(db);
+  if (probe) probe.count += 1;
   const workspaces = (
     db.prepare('SELECT id, name, scenario FROM workspaces ORDER BY created_at').all() as {
       id: string;

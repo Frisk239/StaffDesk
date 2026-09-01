@@ -1,6 +1,7 @@
 import { useState } from 'react';
-import { useStore } from '../store';
+import { formatTokenCount, latestTaskTokenTotal } from '@shared/taskFee';
 import type { DeskTask, TaskKind, TaskStatus } from '@shared/types';
+import { useStore } from '../store';
 
 // M19：任务列表页——所有对象上开过的办事意图汇成一轨；M27 收口加筛选、进行中置顶与失败重跑。
 // 只读列表 + 跳转回放；任何会 pushCard 抢回对象视图的动作都不在这里发起（再搜一轮除外——
@@ -122,6 +123,7 @@ export function TasksView() {
       {tasks.map((task) => {
         const object = state.objects.find((item) => item.id === task.objectId);
         const overdue = Boolean(task.nextDueAt && task.nextDueAt <= now);
+        const tokenTotal = latestTaskTokenTotal(state.taskAudits, task.id);
         return (
           <div key={task.id} className="all-object-row">
             <span className="session-meta">
@@ -134,6 +136,9 @@ export function TasksView() {
               {task.stopReason ? ` · ${task.stopReason}` : ''}
             </span>
             {task.budgetGear && <span className="tag grey">{task.budgetGear}</span>}
+            {tokenTotal !== undefined && (
+              <span className="tag grey">{formatTokenCount(tokenTotal)}</span>
+            )}
             {task.kind === '周期性雷达' && task.nextDueAt && (
               // 雷达行显示下次到点；到期如实标注（词条「回放」：雷达错过的周期如实记，不假装）。
               <span className={`tag ${overdue ? 'red' : 'grey'}`}>

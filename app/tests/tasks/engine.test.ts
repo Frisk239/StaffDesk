@@ -1,9 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import type { State } from '@shared/types';
 import { emptyUiFields } from '@shared/defaults';
 import { builtinScenarioTemplates, DEFAULT_SLOT_DEFS } from '@shared/scenario';
+import { emptyFeeSpend } from '@shared/taskFee';
+import type { State } from '@shared/types';
 import type { ReachAdapter } from '../../src/main/adapters/reach';
-import { runResearchTask } from '../../src/main/tasks/engine';
+import { BUDGETS, capHit, runResearchTask } from '../../src/main/tasks/engine';
 import { planRadarRun } from '../../src/main/tasks/radar';
 
 function baseState(): State {
@@ -32,6 +33,51 @@ function baseState(): State {
 }
 
 describe('调研任务引擎', () => {
+  it('预算有 tokens 顶且没有 hops 维度', () => {
+    expect(BUDGETS.快搜.tokens).toBe(120_000);
+    expect(BUDGETS.深挖.tokens).toBe(400_000);
+    expect('hops' in BUDGETS.快搜).toBe(false);
+    expect('hops' in BUDGETS.深挖).toBe(false);
+  });
+
+  it('token 累计或缺失次数达顶判费用触顶，搜索打开达顶仍是触顶', () => {
+    const spend = {
+      ...emptyFeeSpend(),
+      totalTokens: 120_000,
+      promptTokens: 120_000,
+    };
+    expect(
+      capHit({
+        budget: BUDGETS.快搜,
+        searches: 0,
+        opens: 0,
+        steps: 0,
+        elapsedMs: 0,
+        spend,
+      }),
+    ).toBe('费用触顶');
+    expect(
+      capHit({
+        budget: BUDGETS.快搜,
+        searches: 0,
+        opens: 0,
+        steps: 0,
+        elapsedMs: 0,
+        spend: { ...emptyFeeSpend(), missingUsageCalls: 8, lastMissingUsage: true },
+      }),
+    ).toBe('费用触顶');
+    expect(
+      capHit({
+        budget: BUDGETS.快搜,
+        searches: 8,
+        opens: 0,
+        steps: 0,
+        elapsedMs: 0,
+        spend: emptyFeeSpend(),
+      }),
+    ).toBe('触顶');
+  });
+
   it('触顶后已打开的来源入库，失败 URL 进审计，不编负事实', async () => {
     const reach: ReachAdapter = {
       doctor: async () => ({ ok: true, detail: 'ok' }),
@@ -175,5 +221,66 @@ describe('调研任务引擎', () => {
     expect(result.audits[1]?.kind).toBe('未跑');
     expect(result.audits[2]?.kind).toBe('迟跑');
     expect(result.sources).toHaveLength(1);
+  });
+
+  it('任务内 token 累计触顶记费用触顶，已打开的照写，不编负事实', async () => {
+    let tokens = 0;
+    const reach: ReachAdapter = {
+      doctor: async () => ({ ok: true, detail: 'ok' }),
+      search: async () => [
+        { title: 'A', url: 'https://a.example/doc', snippet: 'ok' },
+        { title: 'B', url: 'https://b.example/skip', snippet: 'y' },
+      ],
+      open: async (url) => {
+        tokens = Number.MAX_SAFE_INTEGER;
+        return { url, ok: true, body: `${url} 官方正文` };
+      },
+    };
+    const result = await runResearchTask(baseState(), 'org-1', '快搜', {
+      reach,
+      now: () => Date.parse('2026-08-30T00:00:00.000Z'),
+      queryFor: () => '验收组织',
+      usageSpend: () => ({
+        ...emptyFeeSpend(),
+        totalTokens: tokens,
+        promptTokens: tokens,
+      }),
+    });
+    expect(result.task.stopReason).toBe('费用触顶');
+    expect(result.task.status).toBe('已完成');
+    expect(result.sources).toHaveLength(1);
+    expect(result.audits.some((audit) => audit.kind === '费用触顶')).toBe(true);
+    expect(JSON.stringify(result.sources)).not.toMatch(/没有这家公司/);
+  });
+
+  it('端点未回传 usage 计入调用次数近似，达独立小上限则费用触顶', async () => {
+    let missing = 0;
+    const reach: ReachAdapter = {
+      doctor: async () => ({ ok: true, detail: 'ok' }),
+      search: async () =>
+        Array.from({ length: 10 }, (_, i) => ({
+          title: `H${i}`,
+          url: `https://h${i}.example/doc`,
+          snippet: 'ok',
+        })),
+      open: async (url) => {
+        missing += 1;
+        return { url, ok: true, body: `${url} 官方正文` };
+      },
+    };
+    const result = await runResearchTask(baseState(), 'org-1', '快搜', {
+      reach,
+      now: () => Date.parse('2026-08-30T00:00:00.000Z'),
+      queryFor: () => '验收组织',
+      usageSpend: () => ({
+        ...emptyFeeSpend(),
+        missingUsageCalls: missing,
+        lastMissingUsage: true,
+      }),
+    });
+    expect(result.task.stopReason).toBe('费用触顶');
+    expect(result.sources.length).toBeGreaterThan(0);
+    expect(result.sources.length).toBeLessThan(10);
+    expect(result.audits.some((audit) => audit.kind === '费用触顶')).toBe(true);
   });
 });

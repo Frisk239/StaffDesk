@@ -82,6 +82,8 @@ export function createReachAdapter(
   spawnFn: SpawnFn = spawn,
   fetchFn: FetchFn = fetch,
 ): ReachAdapter {
+  // e2e 隔离机没有 Agent Reach；费用触顶 spec 走罐头检索，不触外网。
+  if (process.env.STAFFDESK_E2E_REACH === '1') return createE2eReachAdapter();
   return {
     async doctor() {
       try {
@@ -193,3 +195,34 @@ export const UNAVAILABLE_ADAPTER: ReachAdapter = {
     return { url, ok: false, body: '', error: INSTALL_HINT };
   },
 };
+
+function createE2eReachAdapter(): ReachAdapter {
+  const hits: SearchHit[] = [
+    {
+      title: '费用触顶来源甲',
+      url: 'https://e2e.staffdesk.test/a',
+      snippet: '主栈是 Rust',
+    },
+    {
+      title: '费用触顶来源乙',
+      url: 'https://e2e.staffdesk.test/b',
+      snippet: '融资轮次为 A 轮',
+    },
+  ];
+  return {
+    async doctor() {
+      return { ok: true, detail: 'e2e reach' };
+    },
+    async search() {
+      return hits;
+    },
+    async open(url: string) {
+      const hit = hits.find((item) => item.url === url) ?? hits[0];
+      const body =
+        url.endsWith('/a') || hit?.url.endsWith('/a')
+          ? '费用触顶组织主栈是 Rust。'
+          : '费用触顶组织融资轮次为 A 轮。';
+      return { url, ok: true, body, finalUrl: url, title: hit?.title ?? url };
+    },
+  };
+}
