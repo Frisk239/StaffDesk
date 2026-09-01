@@ -17,11 +17,18 @@ import type {
   Workspace,
 } from '@shared/types';
 
-function metaSet(db: Database.Database, key: string, value: string): void {
+/** app_meta 读写工具：机器级/库级标记的收口（0056：app_meta 在 persist 写射程外，只经此处显式动）。 */
+export function metaSet(db: Database.Database, key: string, value: string): void {
   db.prepare(
     `INSERT INTO app_meta (key, value) VALUES (?, ?)
      ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
   ).run(key, value);
+}
+
+export function metaGet(db: Database.Database, key: string): string | null {
+  const row = db.prepare('SELECT value FROM app_meta WHERE key = ?').get(key) as
+    { value: string } | undefined;
+  return row?.value ?? null;
 }
 
 const LEGACY_MODEL_META_KEYS = [
@@ -197,7 +204,10 @@ const PERSIST_TABLES: readonly PersistTable[] = [
   {
     table: 'slot_defs',
     columns: ['id', 'name', 'kind', 'arity', 'scenarios', 'created_at'],
-    primaryKey: ['id'],
+    // 0057：槽的 diff 键改用自然键 (name,kind)——行构造器的 id 按数组序生成，
+    // 删槽会让后续行整体移位，按 id 三分会产生瞬时 (name,kind) 重复撞库内 UNIQUE；
+    // 自然键下改名=删旧行插新行、删槽=删一行，其余行不动。
+    primaryKey: ['name', 'kind'],
     collection: (state) => state.slotDefs,
     rows: (state) =>
       state.slotDefs.map((slot, i) => ({

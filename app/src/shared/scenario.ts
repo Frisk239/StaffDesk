@@ -88,6 +88,21 @@ export const BRIEF_SPECS: Record<ScenarioKind, BriefSpecBlock[]> = {
   ],
 };
 
+/**
+ * 0057：内置简报说明（BRIEF_SPECS 常量）引用的谓词并集。
+ * 简报槽块以谓词名为键，这些槽禁改禁删——场景说明数据化（M26）之前这层保护不动。
+ * 守卫必须查常量而不是 scenario_brief_specs 表（表是死副本）。
+ */
+export function briefSpecPredicates(): Set<Predicate> {
+  const out = new Set<Predicate>();
+  for (const blocks of Object.values(BRIEF_SPECS)) {
+    for (const block of blocks) {
+      for (const predicate of block.predicates ?? []) out.add(predicate);
+    }
+  }
+  return out;
+}
+
 /** 当前工作区的场景（0033：场景挂工作区，区内对象继承）。 */
 export function scenarioOfWorkspace(
   workspaces: { id: string; scenario: ScenarioKind }[],

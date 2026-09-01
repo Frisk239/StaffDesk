@@ -7,10 +7,12 @@ import type {
   ExtractionOutcomeKind,
   IngestJob,
   CandidatePayload,
+  ObjectKind,
   Proposal,
   RightTab,
   Predicate,
   RightTabKind,
+  ScenarioKind,
   State,
   TaskAudit,
   WriteProposal,
@@ -33,7 +35,7 @@ import {
   proposeNewObjects,
   proposeRelations,
 } from '../loops/tidy';
-import { deriveConflicts, normalizeValue } from '@shared/scenario';
+import { briefSpecPredicates, deriveConflicts, normalizeValue } from '@shared/scenario';
 import { scriptReply } from '@shared/chat';
 import { attachTurn } from '@shared/turn';
 import { dreamMemoryProposals } from '../loops/memoryDream';
@@ -144,6 +146,38 @@ function openObject(state: State, objectId: string): State {
 /** 0025：受控谓词表是数据（state.slotDefs），整理只能并入表内已有槽。 */
 function slotIsControlled(state: State, name: Predicate): boolean {
   return state.slotDefs.some((d) => d.name === name);
+}
+
+/** 0057：同名槽在不同种类分区各占一行（UNIQUE(name,kind)）；主张归属按其对象种类落到唯一分区。
+ *  对象已删（孤儿历史主张）时无从判分区，跟随槽名走，不得静默漏改。 */
+function claimBelongsToSlotKind(state: State, objectId: string, kind: ObjectKind): boolean {
+  const obj = state.objects.find((o) => o.id === objectId);
+  return obj === undefined || obj.kind === kind;
+}
+
+/** 0057：槽改名/删除后，指向旧名的挂起整理（含编目）提议会变确认必报错的死卡——
+ *  一并撤下（pending:false, decision:'reject'），照 DELETE_OBJECT 撤提议的匹配面。 */
+function withdrawTidyProposalsAbout(
+  state: State,
+  oldName: Predicate,
+  kind: ObjectKind,
+): Proposal[] {
+  return state.proposals.map((p) => {
+    const payload = p.payload;
+    // 判别收窄落到 const：直接在 p.payload 上链式判别会让 TS 丢失窄化。
+    if (!p.pending || payload.kind !== '整理') return p;
+    const claim = state.claims.find((c) => c.id === payload.claimId);
+    const touches =
+      payload.targetPredicate === oldName ||
+      (claim !== undefined &&
+        claim.predicate === oldName &&
+        claimBelongsToSlotKind(state, claim.objectId, kind));
+    return touches ? { ...p, pending: false, decision: 'reject' as const } : p;
+  });
+}
+
+function sameScenarios(a: ScenarioKind[], b: ScenarioKind[]): boolean {
+  return a.length === b.length && a.every((s) => b.includes(s));
 }
 
 function modelSelection(
@@ -2500,6 +2534,146 @@ export function reducer(state: State, action: Action): State {
           { name, kind: action.kind, arity: action.arity, scenarios: [] },
         ],
         toast: { text: `已加槽「${name}」（通用）`, id: state.seq + 1 },
+      };
+    }
+
+    case 'UPDATE_SLOT': {
+      // 0057：槽编辑是人手设置动作，直接改账本、不进撤销卡——operations 每行留痕，
+      // 改名可再改回。守卫：新名非空、非「未编目」、(名,种类) 不撞库内 UNIQUE；
+      // 被内置简报说明引用的谓词（旧名或新名）禁改名——简报槽块以谓词名为键。
+      const slot = state.slotDefs.find((d) => d.name === action.name && d.kind === action.kind);
+      if (!slot) {
+        return { ...state, toast: { text: '没有这个槽', id: state.seq }, seq: state.seq + 1 };
+      }
+      const nextName = action.next.name === undefined ? undefined : action.next.name.trim();
+      const renaming = nextName !== undefined && nextName !== slot.name;
+      if (renaming && nextName !== undefined) {
+        if (!nextName)
+          return { ...state, toast: { text: '槽名不能为空', id: state.seq }, seq: state.seq + 1 };
+        if (nextName === '未编目') {
+          return {
+            ...state,
+            toast: { text: '「未编目」是保留值', id: state.seq },
+            seq: state.seq + 1,
+          };
+        }
+        if (state.slotDefs.some((d) => d.name === nextName && d.kind === action.kind)) {
+          return {
+            ...state,
+            toast: { text: '该种类下已有同名槽', id: state.seq },
+            seq: state.seq + 1,
+          };
+        }
+        if (briefSpecPredicates().has(slot.name) || briefSpecPredicates().has(nextName)) {
+          return {
+            ...state,
+            toast: { text: '内置简报说明引用该槽，暂不能改名（场景数据化后解除）', id: state.seq },
+            seq: state.seq + 1,
+          };
+        }
+      }
+      const nextArity = action.next.arity ?? slot.arity;
+      const nextScenarios = action.next.scenarios ?? slot.scenarios;
+      // 全缺省（或无实际变化）→ 原样返回，不空跑 toast、不弄脏 persist 判脏引用。
+      if (!renaming && nextArity === slot.arity && sameScenarios(nextScenarios, slot.scenarios)) {
+        return state;
+      }
+      const effectiveName = renaming && nextName !== undefined ? nextName : slot.name;
+      // 级联三处（0057）：槽行；该槽主张 predicate 同步重写（投影/冲突派生/简报槽块都以槽名为键）；
+      // 禁写结构化谓词列（0054 bannedPredicate）同步重写——不同步则禁写的槽匹配静默失效。
+      const claims = renaming
+        ? state.claims.map((c) =>
+            c.predicate === slot.name && claimBelongsToSlotKind(state, c.objectId, action.kind)
+              ? { ...c, predicate: effectiveName }
+              : c,
+          )
+        : state.claims;
+      const memories = renaming
+        ? state.memories.map((m) => {
+            if (m.bannedPredicate !== slot.name) return m;
+            if (m.bannedObjectId && !claimBelongsToSlotKind(state, m.bannedObjectId, action.kind)) {
+              return m;
+            }
+            return { ...m, bannedPredicate: effectiveName };
+          })
+        : state.memories;
+      const proposals = renaming
+        ? withdrawTidyProposalsAbout(state, slot.name, action.kind)
+        : state.proposals;
+      const slotDefs = state.slotDefs.map((d) =>
+        d.name === slot.name && d.kind === action.kind
+          ? { ...d, name: effectiveName, arity: nextArity, scenarios: nextScenarios }
+          : d,
+      );
+      // arity 多值→单值是 0029 的合法派生：告知将产生的冲突处数，由人按关窗纪律消解，
+      // 系统不自动关任何主张（deriveConflicts 读改后账本即时生效）。
+      const parts: string[] = [];
+      if (renaming) parts.push(`已改名「${slot.name}」→「${effectiveName}」`);
+      if (slot.arity === '多值' && nextArity === '单值') {
+        const pairs = deriveConflicts(claims, slotDefs).filter((pair) => {
+          const a = claims.find((c) => c.id === pair.claimIdA);
+          const b = claims.find((c) => c.id === pair.claimIdB);
+          return a?.predicate === effectiveName && b?.predicate === effectiveName;
+        });
+        parts.push(
+          pairs.length > 0 ? `已切换为单值：标记 ${pairs.length} 处冲突待消解` : '已切换为单值',
+        );
+      } else if (nextArity !== slot.arity) {
+        parts.push('已切换为多值');
+      }
+      if (!sameScenarios(nextScenarios, slot.scenarios)) parts.push('场景适用已更新');
+      return {
+        ...state,
+        seq: state.seq + 1,
+        slotDefs,
+        claims,
+        memories,
+        proposals,
+        toast: { text: parts.join('，'), id: state.seq + 1 },
+      };
+    }
+
+    case 'REMOVE_SLOT': {
+      // 0057：删除级联——该槽成立主张降为「未编目」，自动获得抽取映射不上的全套既有语义
+      // （不建冲突 0037、简报降级「材料提到·不作定论」、整理出编目卡）；已关窗主张保留旧名作历史。
+      // 被内置简报说明引用的谓词禁删。
+      const slot = state.slotDefs.find((d) => d.name === action.name && d.kind === action.kind);
+      if (!slot) {
+        return { ...state, toast: { text: '没有这个槽', id: state.seq }, seq: state.seq + 1 };
+      }
+      if (briefSpecPredicates().has(slot.name)) {
+        return {
+          ...state,
+          toast: { text: '内置简报说明引用该槽，暂不能删除（场景数据化后解除）', id: state.seq },
+          seq: state.seq + 1,
+        };
+      }
+      let demoted = 0;
+      const claims = state.claims.map((c) => {
+        if (
+          c.predicate !== slot.name ||
+          c.status !== '成立' ||
+          !claimBelongsToSlotKind(state, c.objectId, action.kind)
+        ) {
+          return c;
+        }
+        demoted += 1;
+        return { ...c, predicate: '未编目' };
+      });
+      const proposals = withdrawTidyProposalsAbout(state, slot.name, action.kind);
+      return {
+        ...state,
+        seq: state.seq + 1,
+        slotDefs: state.slotDefs.filter((d) => !(d.name === slot.name && d.kind === action.kind)),
+        claims,
+        proposals,
+        toast: {
+          text:
+            demoted > 0
+              ? `已删除槽「${slot.name}」：${demoted} 条主张转入未编目`
+              : `已删除槽「${slot.name}」`,
+          id: state.seq + 1,
+        },
       };
     }
 
