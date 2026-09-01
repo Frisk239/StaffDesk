@@ -20,7 +20,7 @@ import {
   persistLedgerDiff,
   type PersistMode,
 } from './persist';
-import { listBriefSpecs, listSlotDefs } from './presets';
+import { listSlotDefs } from './presets';
 import { REQUIRED_TABLES } from './schema';
 import {
   closedClaims,
@@ -48,7 +48,7 @@ import {
 } from '../eval/fingerprint';
 
 export type { Action };
-export { deriveConflicts, listBriefSpecs, listSlotDefs, projectionClaims, REQUIRED_TABLES };
+export { deriveConflicts, listSlotDefs, projectionClaims, REQUIRED_TABLES };
 
 export interface BrainOptions {
   /** 0056：默认按脏表差异写入；'full' 全量重写只留修复与等价对照通道。 */
@@ -120,6 +120,7 @@ export class Brain {
       deletedSourceRecoveries: listDeletedSourceRecoveries(this.db, ledger.sources),
       claims: ledger.claims,
       slotDefs: ledger.slotDefs,
+      scenarioTemplates: ledger.scenarioTemplates,
       briefs: ledger.briefs,
       memories: ledger.memories,
       inbox: sources.filter((s) => !s.virtual && s.boundObjectIds.length === 0).map((s) => s.id),

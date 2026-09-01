@@ -1,7 +1,16 @@
-import type { Claim, ObjectKind, Predicate, ScenarioKind, SlotDef, BriefSpecBlock } from './types';
+import type {
+  Claim,
+  ObjectKind,
+  Predicate,
+  ScenarioKind,
+  ScenarioTemplate,
+  SlotDef,
+  BriefSpecBlock,
+} from './types';
+import { DEFAULT_PLAYBOOK } from './playbook';
 
-// 0033：场景预设包。三件套里的两件是数据（槽表预设、简报说明），
-// 第三件（建对象引导）在 Chrome.tsx 的建对象表单里按场景给 placeholder。
+// 0033：场景预设包。0058：场景升为数据行后，SCENARIOS / SCENARIO_HINTS / BRIEF_SPECS
+// 三个常量降级为种子源（只被 presets 播种与测试基线引用），运行时一律读 state.scenarioTemplates。
 // 谓词表全局受控一张（0025），槽带场景适用标记；空 scenarios = 通用槽，所有场景都显示。
 
 export const SCENARIOS: ScenarioKind[] = ['求职面试', '求学申请', '技术选型', '尽调研究', '自定义'];
@@ -48,6 +57,7 @@ export const DEFAULT_SLOT_DEFS: SlotDef[] = [
 
 // 0033：简报说明由场景决定。块的装法见 brief.ts 的组装器：
 // background 装非槽位主张、slots 装指定槽（冲突摊开、未编目降级）、synthesis 综合（必须指回主张）、gaps 材料缺口。
+// 0058：降级为种子源，运行时读 scenario_templates.brief_spec。
 export const BRIEF_SPECS: Record<ScenarioKind, BriefSpecBlock[]> = {
   求职面试: [
     { title: '组织是谁', kind: 'background' },
@@ -89,14 +99,28 @@ export const BRIEF_SPECS: Record<ScenarioKind, BriefSpecBlock[]> = {
 };
 
 /**
- * 0057：内置简报说明（BRIEF_SPECS 常量）引用的谓词并集。
- * 简报槽块以谓词名为键，这些槽禁改禁删——场景说明数据化（M26）之前这层保护不动。
- * 守卫必须查常量而不是 scenario_brief_specs 表（表是死副本）。
+ * 0058：内置模板种子源——四内置 + 「自定义」空白基线，全部 builtin=true。
+ * 只被 presets 首启播种（scenario_templates_seeded 门）与测试基线引用；
+ * 内置模板回落锚点按名字寻址（'求职面试' / '自定义'），消费端缺模板时逐级回落。
  */
-export function briefSpecPredicates(): Set<Predicate> {
+export function builtinScenarioTemplates(): ScenarioTemplate[] {
+  return SCENARIOS.map((name) => ({
+    name,
+    builtin: true,
+    hint: SCENARIO_HINTS[name] ?? '',
+    playbook: DEFAULT_PLAYBOOK[name] ?? '',
+    briefSpec: BRIEF_SPECS[name] ?? [],
+  }));
+}
+
+/**
+ * 0057/0058：全部模板简报说明引用的谓词并集。简报槽块以谓词名为键；
+ * M26 起数据化后不再用于禁改禁删（保护解除改级联改写），只作设置页「简报引用」标记的口径。
+ */
+export function briefSpecPredicates(templates: ScenarioTemplate[]): Set<Predicate> {
   const out = new Set<Predicate>();
-  for (const blocks of Object.values(BRIEF_SPECS)) {
-    for (const block of blocks) {
+  for (const template of templates) {
+    for (const block of template.briefSpec) {
       for (const predicate of block.predicates ?? []) out.add(predicate);
     }
   }

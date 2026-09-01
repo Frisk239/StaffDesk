@@ -1,8 +1,9 @@
 import type { Brief, BriefBlock, BriefSentence, Claim, State } from './types';
-import { BRIEF_SPECS, deriveConflicts, normalizeValue, scenarioOfWorkspace } from './scenario';
+import { deriveConflicts, normalizeValue, scenarioOfWorkspace } from './scenario';
 
 // 简报组装（纯函数，出站纪律都在这里）：
-// - 简报说明由工作区场景决定（0033）：BRIEF_SPECS 给块清单，本组装器按块 kind 装内容。
+// - 0058：简报说明改读场景模板（state.scenarioTemplates，数据行）；
+//   本组装器按块 kind 装内容。
 // - 只读当时账本里能出站的主张：status 成立、未被禁写命中。
 // - 每个主张句必须带 claimIds；unknown 句是占位，不是世界判断，绝不伪装成主张。
 // - 冲突派生（0029）后按谓词摊开在对应槽块里，不合成「目前有争议」。
@@ -60,7 +61,12 @@ export function buildBrief(
 ): Brief {
   const obj = state.objects.find((o) => o.id === objectId);
   const scenario = obj ? scenarioOfWorkspace(state.workspaces, obj.workspaceId) : '求职面试';
-  const spec = BRIEF_SPECS[scenario];
+  // 0058：spec 改读场景模板；缺模板回落「自定义」基线模板，再缺回落空块数组——
+  // 旧备份（无模板表数据）/删光模板的第二道保险，简报永远可组装、绝不因缺模板报错。
+  const spec =
+    state.scenarioTemplates.find((t) => t.name === scenario)?.briefSpec ??
+    state.scenarioTemplates.find((t) => t.name === '自定义')?.briefSpec ??
+    [];
   const out = outstationClaims(state, objectId);
   const slotPredicates = new Set(spec.flatMap((b) => b.predicates ?? []));
   const conflicts = deriveConflicts(state.claims, state.slotDefs);

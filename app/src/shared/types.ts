@@ -2,8 +2,9 @@
 
 export type ObjectKind = '人' | '组织' | '项目';
 
-// 0033：场景是工作区级预设包，不是第四种对象、不是任务种类。
-export type ScenarioKind = '求职面试' | '求学申请' | '技术选型' | '尽调研究' | '自定义';
+// 0033/0058：场景升为数据行（scenario_templates 表），ScenarioKind 只是模板名——
+// 别名不枚举，自定义模板与内置同构（builtin 标记只保护身份来源，不阻止编辑内容）。
+export type ScenarioKind = string;
 
 export interface Workspace {
   id: string;
@@ -84,6 +85,17 @@ export interface BriefSpecBlock {
   title: string;
   kind: BriefBlockKind;
   predicates?: Predicate[] | undefined; // kind = slots 时该块装哪些槽
+}
+
+// 0058：场景模板是数据行（scenario_templates 表），内置与自定义同构。
+// builtin 只保护身份来源（禁删、禁改名、人不可自封），不阻止编辑内容；
+// briefSpec 只能引用受控谓词表内既有槽名（0025，不许自开槽）。
+export interface ScenarioTemplate {
+  name: string;
+  builtin: boolean;
+  hint: string; // 建对象引导，纯文本人维护
+  playbook: string; // 说明书全文，会话开场注入
+  briefSpec: BriefSpecBlock[]; // 简报说明块清单
 }
 
 export interface Claim {
@@ -503,6 +515,7 @@ export interface State {
   sources: Source[];
   claims: Claim[];
   slotDefs: SlotDef[]; // 受控谓词表（0025）：数据化的槽表，设置页可加槽
+  scenarioTemplates: ScenarioTemplate[]; // 场景模板（0058）：数据行，内置与自定义同构
   briefs: Brief[];
   memories: Memory[];
   inbox: string[];

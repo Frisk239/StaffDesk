@@ -10,6 +10,7 @@ import type {
   ObjectKind,
   RightTabKind,
   ScenarioKind,
+  ScenarioTemplate,
   Source,
   SourceOrigin,
   SourceSegment,
@@ -136,6 +137,15 @@ export type Action =
   | { type: 'SWITCH_WORKSPACE'; id: string }
   | { type: 'ADD_WORKSPACE'; name: string; scenario: ScenarioKind }
   | { type: 'REMOVE_WORKSPACE'; id: string }
+  | {
+      // 0058：模板编辑是人手设置动作（0057 口径）——直接改账本、不进撤销卡，operations 留痕。
+      // previousName 只在改自定义模板名时给出（reducer 靠它区分「改名」与「新建」并做撞名/内置守卫）；
+      // builtin 标记由 reducer 按 existing 行裁定，载荷值不作为身份来源。
+      type: 'UPSERT_SCENARIO_TEMPLATE';
+      template: ScenarioTemplate;
+      previousName?: string | undefined;
+    }
+  | { type: 'REMOVE_SCENARIO_TEMPLATE'; name: string }
   | { type: 'ADD_OBJECT'; kind: ObjectKind; name: string }
   | { type: 'ADD_RELATION'; objectId: string; targetId: string }
   | { type: 'REMOVE_RELATION'; objectId: string; targetId: string }

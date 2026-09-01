@@ -3812,6 +3812,75 @@ html[data-theme='dark'] .window {
   white-space: nowrap;
 }
 
+/* —— 0058 场景模板管理（几何照 slot-table-row 收口，token 全复用） —— */
+.tpl-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.tpl-row {
+  display: grid;
+  grid-template-columns: minmax(140px, 0.9fr) minmax(150px, 1.4fr) auto;
+  align-items: center;
+  gap: 10px;
+  min-height: 36px;
+  border: 1px solid var(--line-2);
+  border-radius: 8px;
+  padding: 5px 10px;
+  font-size: 13px;
+}
+.tpl-dialog {
+  width: 560px;
+  max-height: min(680px, calc(100vh - 64px));
+  overflow-y: auto;
+}
+.tpl-dialog .field input,
+.tpl-dialog .field textarea {
+  border: 1px solid var(--line-2);
+  border-radius: 8px;
+  padding: 6px 9px;
+  background: var(--bg);
+  outline: none;
+}
+.tpl-dialog .field input:focus,
+.tpl-dialog .field textarea:focus {
+  border-color: var(--brand);
+}
+.tpl-blocks {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.tpl-block {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  border: 1px solid var(--line-2);
+  border-radius: var(--radius);
+  padding: 8px;
+}
+.tpl-block-head {
+  display: grid;
+  grid-template-columns: minmax(120px, 1fr) auto auto;
+  align-items: center;
+  gap: 6px;
+}
+.tpl-block-head input,
+.tpl-block-head select {
+  height: 30px;
+  border: 1px solid var(--line-2);
+  border-radius: 8px;
+  padding: 0 8px;
+  background: var(--bg);
+  color: var(--ink);
+  outline: none;
+  font-size: 12px;
+}
+.tpl-block-head input:focus,
+.tpl-block-head select:focus {
+  border-color: var(--brand);
+}
+
 /* —— 0016 批量晋升 takeover —— */
 .takeover-list {
   display: flex;

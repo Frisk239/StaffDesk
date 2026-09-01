@@ -3,7 +3,7 @@ import type { Brief, Claim } from '@shared/types';
 import { verifyBrief } from '../../src/main/brain/briefOut';
 import { generateBrief } from '../../src/main/loops/briefGen';
 import { emptyUiFields } from '@shared/defaults';
-import { DEFAULT_SLOT_DEFS } from '@shared/scenario';
+import { builtinScenarioTemplates, DEFAULT_SLOT_DEFS } from '@shared/scenario';
 
 const claim: Claim = {
   id: 'cl-1',
@@ -38,7 +38,9 @@ describe('简报出站闸', () => {
 
   it('伪造的 claimId 被拿掉', () => {
     const out = verifyBrief(
-      baseBrief([{ text: '主栈是 Go。', claimIds: ['cl-forged'], unverified: false, kind: 'claim' }]),
+      baseBrief([
+        { text: '主栈是 Go。', claimIds: ['cl-forged'], unverified: false, kind: 'claim' },
+      ]),
       [claim],
     );
     expect(out.blocks[0]?.sentences[0]?.kind).toBe('unknown');
@@ -58,10 +60,14 @@ describe('简报出站闸', () => {
       ...emptyUiFields(),
       workspaces: [{ id: 'ws', name: '区', scenario: '求职面试' as const }],
       currentWorkspaceId: 'ws',
-      objects: [{ id: 'o1', kind: '组织' as const, name: '甲', relationIds: [], workspaceId: 'ws' }],
+      objects: [
+        { id: 'o1', kind: '组织' as const, name: '甲', relationIds: [], workspaceId: 'ws' },
+      ],
       sources: [],
       claims: [claim],
       slotDefs: DEFAULT_SLOT_DEFS,
+      // 0058：场景模板是账本数据——用种子基线构造（断言依赖内置 spec 的场景必须带内置模板）。
+      scenarioTemplates: builtinScenarioTemplates(),
       briefs: [],
       memories: [],
       inbox: [],

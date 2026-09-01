@@ -1,6 +1,5 @@
 import type Database from 'better-sqlite3';
-import { BRIEF_SPECS, DEFAULT_SLOT_DEFS } from '@shared/scenario';
-import type { BriefSpecBlock, ScenarioKind } from '@shared/types';
+import { builtinScenarioTemplates, DEFAULT_SLOT_DEFS } from '@shared/scenario';
 import { metaGet, metaSet } from './persist';
 
 const PRESET_AT = '1970-01-01T00:00:00.000Z';
@@ -9,7 +8,11 @@ const PRESET_AT = '1970-01-01T00:00:00.000Z';
 // 不得被默认槽重新插回；既有已种子的库（表非空、无标记）只补写标记，不重复播种。
 const PRESETS_SEEDED_KEY = 'presets_seeded';
 
-/** 首启只写场景预设包：槽表 + 简报说明。不写虚构对象/来源/主张。 */
+// 0058：场景模板种子用独立新键——既有库的 presets_seeded 全是 '1'，
+// 复用旧键会让模板种子在全部既有库上被跳过。删空模板表后重启同样不得复活。
+const SCENARIO_TEMPLATES_SEEDED_KEY = 'scenario_templates_seeded';
+
+/** 首启只写槽表预设。不写虚构对象/来源/主张。简报说明与说明书随场景模板另门播种。 */
 export function seedPresets(db: Database.Database): void {
   if (metaGet(db, PRESETS_SEEDED_KEY) === '1') return;
 
@@ -34,23 +37,39 @@ export function seedPresets(db: Database.Database): void {
     tx();
   }
 
-  // 简报说明表与槽表共用同一扇门（0057）：同标记同口径，删空后同样不得复活。
-  const specCount = db.prepare('SELECT COUNT(*) AS n FROM scenario_brief_specs').get() as {
-    n: number;
-  };
-  if (specCount.n === 0) {
+  metaSet(db, PRESETS_SEEDED_KEY, '1');
+}
+
+/**
+ * 0058：首启种内置场景模板——四内置（求职面试/求学申请/技术选型/尽调研究）+
+ * 「自定义」空白基线，全部 builtin=true。SCENARIO_HINTS / BRIEF_SPECS / DEFAULT_PLAYBOOK
+ * 常量在此降级为种子源。既有库（键缺、表非空）只补键不重播；表空且键缺（异常态）播种+补键。
+ */
+export function seedScenarioTemplates(db: Database.Database): void {
+  if (metaGet(db, SCENARIO_TEMPLATES_SEEDED_KEY) === '1') return;
+
+  const count = db.prepare('SELECT COUNT(*) AS n FROM scenario_templates').get() as { n: number };
+  if (count.n === 0) {
     const insert = db.prepare(
-      `INSERT INTO scenario_brief_specs (scenario, spec) VALUES (@scenario, @spec)`,
+      `INSERT INTO scenario_templates (name, builtin, hint, playbook, brief_spec, created_at)
+       VALUES (@name, @builtin, @hint, @playbook, @brief_spec, @created_at)`,
     );
     const tx = db.transaction(() => {
-      (Object.keys(BRIEF_SPECS) as ScenarioKind[]).forEach((scenario) => {
-        insert.run({ scenario, spec: JSON.stringify(BRIEF_SPECS[scenario]) });
-      });
+      for (const template of builtinScenarioTemplates()) {
+        insert.run({
+          name: template.name,
+          builtin: 1,
+          hint: template.hint,
+          playbook: template.playbook,
+          brief_spec: JSON.stringify(template.briefSpec),
+          created_at: PRESET_AT,
+        });
+      }
     });
     tx();
   }
 
-  metaSet(db, PRESETS_SEEDED_KEY, '1');
+  metaSet(db, SCENARIO_TEMPLATES_SEEDED_KEY, '1');
 }
 
 export function listSlotDefs(db: Database.Database): typeof DEFAULT_SLOT_DEFS {
@@ -63,16 +82,4 @@ export function listSlotDefs(db: Database.Database): typeof DEFAULT_SLOT_DEFS {
     arity: r.arity as (typeof DEFAULT_SLOT_DEFS)[number]['arity'],
     scenarios: JSON.parse(r.scenarios) as (typeof DEFAULT_SLOT_DEFS)[number]['scenarios'],
   }));
-}
-
-export function listBriefSpecs(db: Database.Database): Record<ScenarioKind, BriefSpecBlock[]> {
-  const rows = db.prepare('SELECT scenario, spec FROM scenario_brief_specs').all() as {
-    scenario: ScenarioKind;
-    spec: string;
-  }[];
-  const out = { ...BRIEF_SPECS };
-  for (const row of rows) {
-    out[row.scenario] = JSON.parse(row.spec) as BriefSpecBlock[];
-  }
-  return out;
 }
