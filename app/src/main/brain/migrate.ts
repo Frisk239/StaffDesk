@@ -1,7 +1,7 @@
 import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 import Database from 'better-sqlite3';
-import { SCHEMA_SQL, SCHEMA_VERSION } from './schema';
+import { FTS_TRIGGERS_SQL, SCHEMA_SQL, SCHEMA_VERSION } from './schema';
 import { seedPresets, seedScenarioTemplates } from './presets';
 import { recreateClaimsFts } from './fts';
 
@@ -46,12 +46,22 @@ export function migrate(db: Database.Database): void {
   if (current < 9) {
     migrateToV9(db);
   }
+  if (current < 10) {
+    migrateToV10(db);
+  }
   if (current < SCHEMA_VERSION) {
     db.prepare('INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)').run(
       SCHEMA_VERSION,
       nowIso(),
     );
   }
+  // 先 DROP 再挂：IF NOT EXISTS 不会替换已有触发器体（旧稿用了 content= 的 delete 命令）。
+  db.exec(`
+    DROP TRIGGER IF EXISTS claims_ai;
+    DROP TRIGGER IF EXISTS claims_ad;
+    DROP TRIGGER IF EXISTS claims_au;
+  `);
+  db.exec(FTS_TRIGGERS_SQL);
   seedPresets(db);
   seedScenarioTemplates(db);
 }
@@ -159,6 +169,72 @@ function migrateToV9(db: Database.Database): void {
     `);
     db.exec('DROP TABLE write_queue');
     db.exec('ALTER TABLE write_queue_v9 RENAME TO write_queue');
+  });
+  tx();
+}
+
+/**
+ * v10（M28）：task_audit 重建加 PRIMARY KEY (task_id, seq)（SQLite 不能 ALTER 加主键）；
+ * 撞键合并 = 同一 (task_id, seq) 保留 ts 最新，ts 相同保留后写入（rowid 更大）的一行；
+ * 另建 task_id 索引。tasks 重建把 stop_reason CHECK 放开收「费用触顶」（0059，对齐 v8/v9
+ * new→copy→drop→rename）。FTS 触发器由 migrate() 末尾 IF NOT EXISTS 统一挂上。
+ */
+function migrateToV10(db: Database.Database): void {
+  const tx = db.transaction(() => {
+    db.exec(`
+      CREATE TABLE task_audit_v10 (
+        task_id TEXT NOT NULL,
+        seq INTEGER NOT NULL,
+        kind TEXT NOT NULL,
+        payload TEXT NOT NULL,
+        ts TEXT NOT NULL,
+        PRIMARY KEY (task_id, seq)
+      );
+    `);
+    db.exec(`
+      INSERT INTO task_audit_v10 (task_id, seq, kind, payload, ts)
+      SELECT t.task_id, t.seq, t.kind, t.payload, t.ts
+      FROM task_audit t
+      WHERE t.rowid = (
+        SELECT t2.rowid FROM task_audit t2
+        WHERE t2.task_id = t.task_id AND t2.seq = t.seq
+        ORDER BY t2.ts DESC, t2.rowid DESC
+        LIMIT 1
+      )
+    `);
+    db.exec('DROP TABLE task_audit');
+    db.exec('ALTER TABLE task_audit_v10 RENAME TO task_audit');
+    db.exec('CREATE INDEX IF NOT EXISTS idx_task_audit_task_id ON task_audit(task_id)');
+
+    db.exec(`
+      CREATE TABLE tasks_v10 (
+        id TEXT PRIMARY KEY,
+        object_id TEXT NOT NULL,
+        kind TEXT NOT NULL CHECK (kind IN ('调研', '出简报', '再搜一轮', '周期性雷达')),
+        status TEXT NOT NULL CHECK (status IN ('待启动', '进行中', '已完成', '已停止')),
+        stop_reason TEXT CHECK (stop_reason IN ('手动', '触顶', '失败', '费用触顶')),
+        budget_gear TEXT CHECK (budget_gear IN ('快搜', '深挖')),
+        query TEXT,
+        interval_days INTEGER,
+        next_due_at TEXT,
+        last_run_at TEXT,
+        parent_task_id TEXT,
+        due_at TEXT,
+        created_at TEXT NOT NULL,
+        finished_at TEXT
+      );
+    `);
+    db.exec(`
+      INSERT INTO tasks_v10 (id, object_id, kind, status, stop_reason, budget_gear, query,
+                             interval_days, next_due_at, last_run_at, parent_task_id, due_at,
+                             created_at, finished_at)
+      SELECT id, object_id, kind, status, stop_reason, budget_gear, query,
+             interval_days, next_due_at, last_run_at, parent_task_id, due_at,
+             created_at, finished_at
+      FROM tasks
+    `);
+    db.exec('DROP TABLE tasks');
+    db.exec('ALTER TABLE tasks_v10 RENAME TO tasks');
   });
   tx();
 }

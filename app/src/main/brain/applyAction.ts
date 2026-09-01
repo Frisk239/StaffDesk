@@ -2829,7 +2829,7 @@ export function reducer(state: State, action: Action): State {
           text:
             task.status === '已停止'
               ? `调研停止：${task.stopReason ?? '失败'}，写入 ${incoming.length} 条来源`
-              : task.stopReason === '触顶'
+              : task.stopReason === '触顶' || task.stopReason === '费用触顶'
                 ? `调研触顶：已打开 ${incoming.length} 条来源入库`
                 : `调研完成：写入 ${incoming.length} 条来源`,
           id: state.seq,

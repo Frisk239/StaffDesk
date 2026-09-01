@@ -350,6 +350,40 @@ describe('账本动作覆盖', () => {
     expect(snapshot.view).toEqual({ kind: 'replay', taskId: task.id });
   });
 
+  it('任务写入路径应用审计保留：超限裁旧但豁免行留下', () => {
+    const { brain, obj } = setup();
+    const task = {
+      id: 'task-retain',
+      objectId: obj.id,
+      kind: '调研' as const,
+      status: '进行中' as const,
+      createdAt: '2026-08-30 12:00',
+      budgetGear: '快搜' as const,
+      query: '甲组织 官方',
+    };
+    const audits = Array.from({ length: 510 }, (_, i) => ({
+      taskId: task.id,
+      seq: i + 1,
+      kind: i === 0 ? '触顶' : '搜索',
+      payload: {},
+      ts: new Date(Date.parse('2026-08-30T12:00:00.000Z') + i * 1000).toISOString(),
+    }));
+    brain.dispatch({ type: 'TASK_RUN_STARTED', task });
+    brain.dispatch({
+      type: 'APPLY_RESEARCH',
+      task: { ...task, status: '已完成' },
+      audits,
+      sources: [],
+    });
+    const kept = brain.snapshot().taskAudits.filter((row) => row.taskId === task.id);
+    expect(kept).toHaveLength(500);
+    expect(kept.some((row) => row.kind === '触顶' && row.seq === 1)).toBe(true);
+    const stored = brain.db
+      .prepare('SELECT COUNT(*) AS n FROM task_audit WHERE task_id = ?')
+      .get(task.id) as { n: number };
+    expect(stored.n).toBe(500);
+  });
+
   it('调研来源全部抽取结束后，只对本任务未核生成批量决策', () => {
     const brain = track(openBrain(tmpBrain()));
     brain.dispatch({ type: 'ADD_WORKSPACE', name: '批量决策区', scenario: '求职面试' });

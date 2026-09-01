@@ -1,5 +1,5 @@
-/** M1 schema。新版本走 schema_migrations，禁止裸改历史。v9（M27，0051/0058）：write_queue 放开 kind CHECK 收「场景」并加 template_json 草稿列（重建走门次）。v8（0058）：workspaces 去 scenario 枚举 CHECK、scenario_brief_specs 死表退役、scenario_templates 建表（建表走本文件 CREATE TABLE IF NOT EXISTS，门次只做重建与退役）。v7 是 operations(action) 索引——只进迁移门次，不进 SCHEMA_SQL。 */
-export const SCHEMA_VERSION = 9;
+/** M1 schema。新版本走 schema_migrations，禁止裸改历史。v10（M28）：task_audit 加主键 (task_id, seq) 与 task_id 索引；tasks.stop_reason CHECK 收「费用触顶」（0059）；claims FTS 三触发器接线。v9（M27，0051/0058）：write_queue 放开 kind CHECK 收「场景」并加 template_json 草稿列（重建走门次）。v8（0058）：workspaces 去 scenario 枚举 CHECK、scenario_brief_specs 死表退役、scenario_templates 建表（建表走本文件 CREATE TABLE IF NOT EXISTS，门次只做重建与退役）。v7 是 operations(action) 索引——只进迁移门次，不进 SCHEMA_SQL。 */
+export const SCHEMA_VERSION = 10;
 
 export const SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -139,7 +139,7 @@ CREATE TABLE IF NOT EXISTS tasks (
   object_id TEXT NOT NULL,
   kind TEXT NOT NULL CHECK (kind IN ('调研', '出简报', '再搜一轮', '周期性雷达')),
   status TEXT NOT NULL CHECK (status IN ('待启动', '进行中', '已完成', '已停止')),
-  stop_reason TEXT CHECK (stop_reason IN ('手动', '触顶', '失败')),
+  stop_reason TEXT CHECK (stop_reason IN ('手动', '触顶', '失败', '费用触顶')),
   budget_gear TEXT CHECK (budget_gear IN ('快搜', '深挖')),
   query TEXT,
   interval_days INTEGER,
@@ -156,7 +156,8 @@ CREATE TABLE IF NOT EXISTS task_audit (
   seq INTEGER NOT NULL,
   kind TEXT NOT NULL,
   payload TEXT NOT NULL,
-  ts TEXT NOT NULL
+  ts TEXT NOT NULL,
+  PRIMARY KEY (task_id, seq)
 );
 
 CREATE TABLE IF NOT EXISTS briefs (
@@ -236,18 +237,17 @@ CREATE VIRTUAL TABLE IF NOT EXISTS claims_fts USING fts5(
 );
 `;
 
+/** 普通 FTS5（非 content= 外表）：按 rowid 删索引行。content= 表的 'delete' 命令在本表上会 SQL logic error。 */
 export const FTS_TRIGGERS_SQL = `
 CREATE TRIGGER IF NOT EXISTS claims_ai AFTER INSERT ON claims BEGIN
   INSERT INTO claims_fts(rowid, text, object_id, predicate)
   VALUES (NEW.rowid, NEW.text, NEW.object_id, NEW.predicate);
 END;
 CREATE TRIGGER IF NOT EXISTS claims_ad AFTER DELETE ON claims BEGIN
-  INSERT INTO claims_fts(claims_fts, rowid, text, object_id, predicate)
-  VALUES('delete', OLD.rowid, OLD.text, OLD.object_id, OLD.predicate);
+  DELETE FROM claims_fts WHERE rowid = OLD.rowid;
 END;
 CREATE TRIGGER IF NOT EXISTS claims_au AFTER UPDATE ON claims BEGIN
-  INSERT INTO claims_fts(claims_fts, rowid, text, object_id, predicate)
-  VALUES('delete', OLD.rowid, OLD.text, OLD.object_id, OLD.predicate);
+  DELETE FROM claims_fts WHERE rowid = OLD.rowid;
   INSERT INTO claims_fts(rowid, text, object_id, predicate)
   VALUES (NEW.rowid, NEW.text, NEW.object_id, NEW.predicate);
 END;
