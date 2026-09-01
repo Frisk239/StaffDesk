@@ -13,7 +13,13 @@ const KIND_FILTERS: ReadonlyArray<'全部' | TaskKind> = [
   '出简报',
   '周期性雷达',
 ];
-const STATUS_FILTERS: ReadonlyArray<'全部' | TaskStatus> = ['全部', '进行中', '已完成', '已停止'];
+const STATUS_FILTERS: ReadonlyArray<'全部' | TaskStatus> = [
+  '全部',
+  '待启动',
+  '进行中',
+  '已完成',
+  '已停止',
+];
 type KindFilter = (typeof KIND_FILTERS)[number];
 type StatusFilter = (typeof STATUS_FILTERS)[number];
 

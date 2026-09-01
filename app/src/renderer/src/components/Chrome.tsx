@@ -618,10 +618,14 @@ export function ChatTopbar({
           <button
             type="button"
             className="tag amber cert-badge"
-            title="当前模型配置未通过资格认证，点击查看"
+            title={
+              certStatus === '认证中'
+                ? '正在跑资格认证，完成后这里会更新'
+                : '当前模型配置未通过资格认证，点击查看'
+            }
             onClick={onOpenSettings}
           >
-            未认证
+            {certStatus}
           </button>
         )}
       </div>

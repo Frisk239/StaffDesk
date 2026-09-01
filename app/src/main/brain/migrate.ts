@@ -123,8 +123,8 @@ function addColumn(db: Database.Database, table: string, column: string, definit
 }
 
 /**
- * v9（M27）：write_queue 重建——kind CHECK 放开收「场景」（SQLite 不能 ALTER CHECK，
- * 走 new→copy→drop→rename，对齐 v8 workspaces 重建），并加 template_json 草稿列
+ * v9（M27，0051/0058）：write_queue 重建——kind CHECK 放开收「场景」（SQLite 不能
+ * ALTER CHECK，走 new→copy→drop→rename，对齐 v8 workspaces 重建），并加 template_json 草稿列
  * （旧行 NULL：历史库没有场景写卡）。空库经 SCHEMA_SQL 已是新形状，本门次复制空表后原样重建，幂等无害。
  */
 function migrateToV9(db: Database.Database): void {

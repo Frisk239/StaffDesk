@@ -460,6 +460,25 @@ function playScript(full: Brain, diff: Brain): ScriptHandles {
     },
     previousName: '尽调跟踪',
   });
+  // ── M27（0051/0058）：kind「场景」写卡携 template_json 草稿入队且保持挂起──
+  // v9 新列的读写由此进等价射程；确认路径由 scenario-template.test 单独罩着。
+  vi.advanceTimersByTime(5 * 60_000);
+  act({
+    type: 'ENQUEUE_WRITE',
+    draft: {
+      objectId: obj.id,
+      kind: '场景',
+      headline: '起草场景：AI 起草区',
+      evidence: '按用户口述起草，槽只取受控表现有槽',
+      template: {
+        name: 'AI 起草区',
+        builtin: false,
+        hint: '盯一摊事',
+        playbook: '出站纪律：只根据账本里已有主张回答。',
+        briefSpec: [{ title: '关键事实', kind: 'background' }],
+      },
+    },
+  });
   // 槽改名 + 单值→多值 + 场景适用标记：主张谓词与模板 briefSpec 谓词同步重写都在 diff 射程内。
   act({
     type: 'UPDATE_SLOT',

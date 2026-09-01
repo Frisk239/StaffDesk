@@ -1031,7 +1031,7 @@ export function loadLedger(db: Database.Database): LedgerRows {
     if (objectIds) write.objectIds = objectIds;
     if (row.target_predicate) write.targetPredicate = row.target_predicate;
     if (typeof row.outbound === 'number') write.outbound = row.outbound === 1;
-    // M27：场景草稿读回（解析失败视为无草稿，确认侧守卫会拒空名/表外谓词）。
+    // M27（0051/0058）：场景草稿读回（解析失败视为无草稿，确认侧守卫会拒空名/表外谓词）。
     const template = parseJson<WriteProposal['template']>(row.template_json);
     if (template) write.template = template;
     return write;
