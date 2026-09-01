@@ -25,7 +25,8 @@ async function quitApp(app: ElectronApp): Promise<void> {
 test('900px 首屏保留可用右栏，档案和来源入口均可达', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'staffdesk-layout-e2e-'));
   const app = await electron.launch({
-    args: ['.'],
+    // user-data-dir 指到临时目录：机器级产品设置不落真实用户 profile。
+    args: ['.', `--user-data-dir=${join(dir, 'userData')}`],
     cwd: appDir,
     env: {
       ...process.env,

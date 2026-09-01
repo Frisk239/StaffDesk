@@ -10,6 +10,8 @@ import { createExtractionJobExecutor } from './extraction';
 import { generateBrief } from './loops/briefGen';
 import { isWriteIntent, runSessionTurn } from './loops/session';
 import { extractCandidateMemories } from './loops/memoryExtract';
+import { draftScenarioTemplate } from './loops/scenarioDraft';
+import { parseScenarioDraftIntent } from '@shared/chat';
 import { defaultQuery, type BudgetGear, type ResearchRunOptions } from './tasks/engine';
 import { applyResearchRun } from './tasks/applyResearchRun';
 import { planRadarRun } from './tasks/radar';
@@ -126,6 +128,60 @@ export function registerIpc(
     const text = payload.text.trim();
     const brain = getBrain();
     if (!text) return brain.snapshot();
+    // M27：起草场景意图——本轮不做脚本回复；用户消息先落账广播（照「记下来」立即写的例外口径），
+    // 再走起草钩子：模型产草稿 → ENQUEUE_WRITE kind '场景' 进 takeover；失败落脱敏 TOAST，不炸轮次。
+    const draftIntent = parseScenarioDraftIntent(text);
+    if (draftIntent) {
+      const afterUser = brain.dispatch({
+        type: 'CHAT_USER_ONLY',
+        objectId: payload.objectId,
+        text,
+      });
+      broadcast(afterUser);
+      try {
+        const complete = activeModelCompletion(afterUser);
+        const result = await draftScenarioTemplate({
+          state: brain.snapshot(),
+          userText: text,
+          complete,
+        });
+        if (result.status === 'success') {
+          let next = brain.dispatch({
+            type: 'CHAT_APPEND_DESK',
+            objectId: payload.objectId,
+            text: `场景模板「${result.template.name}」草稿已备好，确认后创建。`,
+            claimRefs: [],
+          });
+          next = brain.dispatch({
+            type: 'ENQUEUE_WRITE',
+            draft: {
+              objectId: payload.objectId,
+              kind: '场景',
+              headline: `起草场景模板「${result.template.name}」`,
+              evidence: draftIntent.brief || text,
+              template: result.template,
+            },
+          });
+          broadcast(next);
+          return next;
+        }
+        const toastText =
+          result.status === 'unconfigured'
+            ? (result.detail ?? '起草场景需要先在设置里配置模型')
+            : `场景模板起草未完成：${result.detail ?? '模型输出不合格'}`;
+        const failed = brain.dispatch({ type: 'TOAST', text: toastText });
+        broadcast(failed);
+        return failed;
+      } catch (error) {
+        // 0030 口径：失败如实告知（脱敏 TOAST），不编草稿、不炸轮次。
+        const failed = brain.dispatch({
+          type: 'TOAST',
+          text: `场景模板起草失败：${safeDetail(error, 120)}`,
+        });
+        broadcast(failed);
+        return failed;
+      }
+    }
     if (isWriteIntent(text)) {
       const next = brain.dispatch({ type: 'CHAT_SEND', objectId: payload.objectId, text });
       broadcast(next);

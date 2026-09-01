@@ -183,6 +183,37 @@ function sameScenarios(a: ScenarioKind[], b: ScenarioKind[]): boolean {
   return a.length === b.length && a.every((s) => b.includes(s));
 }
 
+// F2（审计 2026-09-01，0051/0057）：槽改名/删除的级联面要含挂起的「整理」写卡——写队列也是账本状态。
+// 行不记槽种类，按其主张归属对象的种类判分区（对齐 claimBelongsToSlotKind；主张不在场时跟随槽名走）。
+// 改名让 targetPredicate 跟随（确认时落新谓词）；删除把行直接撤下——它们是待确认写卡不是提议，
+// 槽没了就是确认必报错的死卡，从队列移除即消灭。
+function tidyWriteTouchesSlot(
+  state: State,
+  write: WriteProposal,
+  name: Predicate,
+  kind: ObjectKind,
+): boolean {
+  if (write.kind !== '整理' || write.targetPredicate !== name) return false;
+  const claim = write.claimId ? state.claims.find((c) => c.id === write.claimId) : undefined;
+  if (!claim) return true;
+  return claimBelongsToSlotKind(state, claim.objectId, kind);
+}
+
+function renameTidyWriteQueue(
+  state: State,
+  oldName: Predicate,
+  newName: Predicate,
+  kind: ObjectKind,
+): WriteProposal[] {
+  return state.writeQueue.map((w) =>
+    tidyWriteTouchesSlot(state, w, oldName, kind) ? { ...w, targetPredicate: newName } : w,
+  );
+}
+
+function dropTidyWriteQueue(state: State, name: Predicate, kind: ObjectKind): WriteProposal[] {
+  return state.writeQueue.filter((w) => !tidyWriteTouchesSlot(state, w, name, kind));
+}
+
 // 0058：场景模板的简报说明块约束。IPC 边界送来的 JSON 不受 TS 类型保护，运行时必须自校验。
 const BRIEF_BLOCK_KINDS = new Set<BriefBlockKind>(['background', 'slots', 'synthesis', 'gaps']);
 
@@ -238,6 +269,143 @@ function dropTemplatesPredicate(
     return { ...t, briefSpec };
   });
   return { templates: next, withdrawnBlocks };
+}
+
+/**
+ * 0058：场景模板 UPSERT 的校验+写入体（M27 起 CONFIRM_WRITE 的场景分支共用——
+ * reducer 内不能嵌套 dispatch，提取为纯 helper）。ok:false 时 state 只带 toast，
+ * 调用方决定是否保留写队列行。
+ */
+function applyScenarioTemplateUpsert(
+  state: State,
+  template: ScenarioTemplate,
+  previousName?: string | undefined,
+): { ok: boolean; state: State } {
+  // 0058：模板编辑是人手设置动作，直接改账本、不进撤销卡（0057 口径）；operations 自动留痕。
+  // builtin 标记按 existing 行裁定：内置可改内容不可改名（回落锚点按名字寻址），
+  // 人不可自封内置；新模板一律 builtin=false。
+  const name = template.name.trim();
+  const prev = (previousName ?? '').trim() || name;
+  if (!name) {
+    return {
+      ok: false,
+      state: { ...state, toast: { text: '模板名不能为空', id: state.seq }, seq: state.seq + 1 },
+    };
+  }
+  const previous = state.scenarioTemplates.find((t) => t.name === prev);
+  const renaming = prev !== name;
+  if (renaming) {
+    if (previous?.builtin) {
+      return {
+        ok: false,
+        state: {
+          ...state,
+          toast: { text: '内置模板不能改名，只能编辑内容', id: state.seq },
+          seq: state.seq + 1,
+        },
+      };
+    }
+    if (state.scenarioTemplates.some((t) => t.name === name)) {
+      return {
+        ok: false,
+        state: {
+          ...state,
+          toast: { text: `已有同名场景模板「${name}」`, id: state.seq },
+          seq: state.seq + 1,
+        },
+      };
+    }
+  } else if (!previous && template.builtin) {
+    return {
+      ok: false,
+      state: {
+        ...state,
+        toast: { text: '内置模板只随首启种子写入，不能手工新建', id: state.seq },
+        seq: state.seq + 1,
+      },
+    };
+  }
+  for (const block of template.briefSpec) {
+    if (!block.title.trim()) {
+      return {
+        ok: false,
+        state: {
+          ...state,
+          toast: { text: '简报说明块的标题不能为空', id: state.seq },
+          seq: state.seq + 1,
+        },
+      };
+    }
+    if (!BRIEF_BLOCK_KINDS.has(block.kind)) {
+      return {
+        ok: false,
+        state: {
+          ...state,
+          toast: { text: `简报说明块的类型不合法：${String(block.kind)}`, id: state.seq },
+          seq: state.seq + 1,
+        },
+      };
+    }
+  }
+  // 0025：briefSpec 只能引用受控谓词表内既有槽名，不许自开槽（照现状口径不按种类加严）。
+  const slotNames = new Set(state.slotDefs.map((d) => d.name));
+  for (const block of template.briefSpec) {
+    for (const predicate of block.predicates ?? []) {
+      if (!slotNames.has(predicate)) {
+        return {
+          ok: false,
+          state: {
+            ...state,
+            toast: {
+              text: `简报说明引用了表外字段「${predicate}」，请先在谓词表建槽`,
+              id: state.seq,
+            },
+            seq: state.seq + 1,
+          },
+        };
+      }
+    }
+  }
+  const next: ScenarioTemplate = {
+    name,
+    builtin: previous ? previous.builtin : false,
+    hint: template.hint.trim(),
+    playbook: template.playbook.trim(),
+    briefSpec: template.briefSpec.map(normalizeBriefSpecBlock),
+  };
+  const scenarioTemplates = previous
+    ? state.scenarioTemplates.map((t) => (t.name === prev ? next : t))
+    : [...state.scenarioTemplates, next];
+  // 改自定义模板名级联两处引用（0058，对齐 UPDATE_SLOT 改名级联纪律，不留悬挂引用）：
+  // workspaces.scenario 与 slot_defs.scenarios 都按模板名匹配。
+  const workspaces = renaming
+    ? state.workspaces.map((w) => (w.scenario === prev ? { ...w, scenario: name } : w))
+    : state.workspaces;
+  const slotDefs = renaming
+    ? state.slotDefs.map((d) =>
+        d.scenarios.includes(prev)
+          ? { ...d, scenarios: d.scenarios.map((s) => (s === prev ? name : s)) }
+          : d,
+      )
+    : state.slotDefs;
+  return {
+    ok: true,
+    state: {
+      ...state,
+      seq: state.seq + 1,
+      scenarioTemplates,
+      workspaces,
+      slotDefs,
+      toast: {
+        text: renaming
+          ? `已改名场景模板「${prev}」→「${name}」`
+          : previous
+            ? `已保存场景模板「${name}」`
+            : `已新建场景模板「${name}」`,
+        id: state.seq + 1,
+      },
+    },
+  };
 }
 
 function modelSelection(
@@ -1800,112 +1968,9 @@ export function reducer(state: State, action: Action): State {
       };
     }
 
-    case 'UPSERT_SCENARIO_TEMPLATE': {
-      // 0058：模板编辑是人手设置动作，直接改账本、不进撤销卡（0057 口径）；operations 自动留痕。
-      // builtin 标记按 existing 行裁定：内置可改内容不可改名（回落锚点按名字寻址），
-      // 人不可自封内置；新模板一律 builtin=false。
-      const name = action.template.name.trim();
-      const previousName = (action.previousName ?? '').trim() || name;
-      if (!name) {
-        return { ...state, toast: { text: '模板名不能为空', id: state.seq }, seq: state.seq + 1 };
-      }
-      const previous = state.scenarioTemplates.find((t) => t.name === previousName);
-      const renaming = previousName !== name;
-      if (renaming) {
-        if (previous?.builtin) {
-          return {
-            ...state,
-            toast: { text: '内置模板不能改名，只能编辑内容', id: state.seq },
-            seq: state.seq + 1,
-          };
-        }
-        if (state.scenarioTemplates.some((t) => t.name === name)) {
-          return {
-            ...state,
-            toast: { text: `已有同名场景模板「${name}」`, id: state.seq },
-            seq: state.seq + 1,
-          };
-        }
-      } else if (!previous && action.template.builtin) {
-        return {
-          ...state,
-          toast: { text: '内置模板只随首启种子写入，不能手工新建', id: state.seq },
-          seq: state.seq + 1,
-        };
-      }
-      for (const block of action.template.briefSpec) {
-        if (!block.title.trim()) {
-          return {
-            ...state,
-            toast: { text: '简报说明块的标题不能为空', id: state.seq },
-            seq: state.seq + 1,
-          };
-        }
-        if (!BRIEF_BLOCK_KINDS.has(block.kind)) {
-          return {
-            ...state,
-            toast: { text: `简报说明块的类型不合法：${String(block.kind)}`, id: state.seq },
-            seq: state.seq + 1,
-          };
-        }
-      }
-      // 0025：briefSpec 只能引用受控谓词表内既有槽名，不许自开槽（照现状口径不按种类加严）。
-      const slotNames = new Set(state.slotDefs.map((d) => d.name));
-      for (const block of action.template.briefSpec) {
-        for (const predicate of block.predicates ?? []) {
-          if (!slotNames.has(predicate)) {
-            return {
-              ...state,
-              toast: {
-                text: `简报说明引用了表外字段「${predicate}」，请先在谓词表建槽`,
-                id: state.seq,
-              },
-              seq: state.seq + 1,
-            };
-          }
-        }
-      }
-      const template: ScenarioTemplate = {
-        name,
-        builtin: previous ? previous.builtin : false,
-        hint: action.template.hint.trim(),
-        playbook: action.template.playbook.trim(),
-        briefSpec: action.template.briefSpec.map(normalizeBriefSpecBlock),
-      };
-      const scenarioTemplates = previous
-        ? state.scenarioTemplates.map((t) => (t.name === previousName ? template : t))
-        : [...state.scenarioTemplates, template];
-      // 改自定义模板名级联两处引用（0058，对齐 UPDATE_SLOT 改名级联纪律，不留悬挂引用）：
-      // workspaces.scenario 与 slot_defs.scenarios 都按模板名匹配。
-      const workspaces = renaming
-        ? state.workspaces.map((w) => (w.scenario === previousName ? { ...w, scenario: name } : w))
-        : state.workspaces;
-      const slotDefs = renaming
-        ? state.slotDefs.map((d) =>
-            d.scenarios.includes(previousName)
-              ? {
-                  ...d,
-                  scenarios: d.scenarios.map((s) => (s === previousName ? name : s)),
-                }
-              : d,
-          )
-        : state.slotDefs;
-      return {
-        ...state,
-        seq: state.seq + 1,
-        scenarioTemplates,
-        workspaces,
-        slotDefs,
-        toast: {
-          text: renaming
-            ? `已改名场景模板「${previousName}」→「${name}」`
-            : previous
-              ? `已保存场景模板「${name}」`
-              : `已新建场景模板「${name}」`,
-          id: state.seq + 1,
-        },
-      };
-    }
+    case 'UPSERT_SCENARIO_TEMPLATE':
+      // 0058：校验+写入体提取为 applyScenarioTemplateUpsert（M27 起与 CONFIRM_WRITE 场景分支共用）。
+      return applyScenarioTemplateUpsert(state, action.template, action.previousName).state;
 
     case 'REMOVE_SCENARIO_TEMPLATE': {
       // 0058：内置模板（四内置 + 「自定义」基线）禁删——回落语义的锚点按名字寻址；
@@ -1937,11 +2002,27 @@ export function reducer(state: State, action: Action): State {
           seq: state.seq + 1,
         };
       }
+      // F1（审计 2026-09-01）：删除级联——各槽 scenarios 数组中的该模板名一并剔除（对齐改名级联，
+      // 不留悬挂引用：悬挂名会让槽在 slotsForScene 下永不匹配、从对象页静默消失）；
+      // 数组剔空的槽即退化为通用（全场景显示）。
+      let cascadedSlots = 0;
+      const slotDefs = state.slotDefs.map((d) => {
+        if (!d.scenarios.includes(name)) return d;
+        cascadedSlots += 1;
+        return { ...d, scenarios: d.scenarios.filter((s) => s !== name) };
+      });
       return {
         ...state,
         seq: state.seq + 1,
         scenarioTemplates: state.scenarioTemplates.filter((t) => t.name !== name),
-        toast: { text: `已删除场景模板「${name}」`, id: state.seq + 1 },
+        slotDefs,
+        toast: {
+          text:
+            cascadedSlots > 0
+              ? `已删除场景模板「${name}」，并从 ${cascadedSlots} 个字段的场景适用中移除`
+              : `已删除场景模板「${name}」`,
+          id: state.seq + 1,
+        },
       };
     }
 
@@ -2137,17 +2218,57 @@ export function reducer(state: State, action: Action): State {
             decision: 'accept-merge',
           });
         else {
+          // F2（0057/F2 审计 2026-09-01）：级联撤行后的兜底——目标槽已不在受控表、或只剩别的
+          // 种类分区的同名槽（主张并过去会从对象页静默消失）时拒绝确认，不把主张写回死谓词名。
+          const target = head.targetPredicate;
+          const claim = st.claims.find((c) => c.id === head.claimId);
+          const targetable =
+            target !== undefined &&
+            claim !== undefined &&
+            st.slotDefs.some(
+              (d) => d.name === target && claimBelongsToSlotKind(st, claim.objectId, d.kind),
+            );
+          if (!targetable) {
+            return {
+              ...state,
+              toast: { text: '该槽已不存在，请重新并入', id: state.seq },
+              seq: state.seq + 1,
+            };
+          }
           const claims = st.claims.map((c) =>
-            c.id === head.claimId ? { ...c, predicate: head.targetPredicate! } : c,
+            c.id === head.claimId ? { ...c, predicate: target } : c,
           );
           st = { ...st, claims };
           st = pushCard(
             st,
             head.objectId,
             { kind: '结果', claimId: head.claimId, result: '整理' },
-            `已并入「${head.targetPredicate}」`,
+            `已并入「${target}」`,
           );
         }
+      } else if (head.kind === '场景' && head.template) {
+        // M27：AI 起草的场景模板——确认即建（不编辑既有模板），守卫复用 UPSERT 校验
+        // （0025 兜底：草稿落地前槽被删/被清时拒建）；校验失败 toast 拒且队列行保留（照 F2 口径）；
+        // 免 undo——场景模板 CRUD 不进补偿写（0058/0057 口径）。
+        const name = head.template.name.trim();
+        if (st.scenarioTemplates.some((t) => t.name === name)) {
+          return {
+            ...state,
+            toast: { text: `已有同名场景模板「${name}」，请放弃草稿后改用编辑`, id: state.seq },
+            seq: state.seq + 1,
+          };
+        }
+        const applied = applyScenarioTemplateUpsert(st, { ...head.template, builtin: false });
+        if (!applied.ok) {
+          const reject = applied.state.toast ?? { text: '场景模板未创建', id: state.seq };
+          return { ...state, toast: reject, seq: state.seq + 1 };
+        }
+        st = pushCard(
+          applied.state,
+          head.objectId,
+          { kind: '结果', result: '整理' },
+          `已创建场景模板「${name}」`,
+        );
       } else if (head.kind === '批量晋升' && head.claimIds) {
         const liveClaimIds = head.claimIds.filter((id) =>
           st.claims.some((claim) => claim.id === id && claim.status === '成立' && claim.unverified),
@@ -2808,6 +2929,10 @@ export function reducer(state: State, action: Action): State {
       const proposals = renaming
         ? withdrawTidyProposalsAbout(state, slot.name, action.kind)
         : state.proposals;
+      // F2：挂起的「整理」写卡 targetPredicate 跟随改名，确认时落新谓词。
+      const writeQueue = renaming
+        ? renameTidyWriteQueue(state, slot.name, effectiveName, action.kind)
+        : state.writeQueue;
       const slotDefs = state.slotDefs.map((d) =>
         d.name === slot.name && d.kind === action.kind
           ? { ...d, name: effectiveName, arity: nextArity, scenarios: nextScenarios }
@@ -2841,6 +2966,7 @@ export function reducer(state: State, action: Action): State {
         claims,
         memories,
         proposals,
+        writeQueue,
         scenarioTemplates,
         toast: { text: parts.join('，'), id: state.seq + 1 },
       };
@@ -2868,6 +2994,8 @@ export function reducer(state: State, action: Action): State {
         return { ...c, predicate: '未编目' };
       });
       const proposals = withdrawTidyProposalsAbout(state, slot.name, action.kind);
+      // F2：删槽把指向该槽的挂起「整理」写卡一并撤下，不留确认必报错的死卡。
+      const writeQueue = dropTidyWriteQueue(state, slot.name, action.kind);
       const { templates: scenarioTemplates, withdrawnBlocks } = dropTemplatesPredicate(
         state.scenarioTemplates,
         slot.name,
@@ -2884,6 +3012,7 @@ export function reducer(state: State, action: Action): State {
         slotDefs: state.slotDefs.filter((d) => !(d.name === slot.name && d.kind === action.kind)),
         claims,
         proposals,
+        writeQueue,
         scenarioTemplates,
         toast: { text: parts.join('，'), id: state.seq + 1 },
       };

@@ -50,8 +50,41 @@ function fmtCtx(n: number) {
   return String(n);
 }
 
-export function SettingsModal({ open, onClose }: { open: boolean; onClose: () => void }) {
-  const [section, setSection] = useState<'通用' | '谓词表' | '模型' | '场景模板'>('通用');
+/**
+ * F3（审计 2026-09-01）：mini 对话框的 Esc 分层。外层设置面板与内层对话框各挂 document keydown，
+ * 同为冒泡监听时按注册顺序触发（外层随面板先开先注册、先触发），内层 stopImmediatePropagation
+ * 拦不住已触发的外层——按 Esc 会内外同关。改挂捕获阶段：同一事件在 document 的捕获先于冒泡，
+ * 内层先接住并 stopPropagation，事件不再抵达外层的冒泡监听，Esc 只关最上层对话框。
+ */
+function useMiniDialogEscape(onClose: () => void): void {
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') return;
+      event.stopPropagation();
+      onClose();
+    };
+    document.addEventListener('keydown', onKeyDown, { capture: true });
+    return () => document.removeEventListener('keydown', onKeyDown, { capture: true });
+  }, [onClose]);
+}
+
+export type SettingsSection = '通用' | '谓词表' | '模型' | '场景模板';
+
+export function SettingsModal({
+  open,
+  onClose,
+  initialSection = '通用',
+}: {
+  open: boolean;
+  onClose: () => void;
+  initialSection?: SettingsSection;
+}) {
+  const [section, setSection] = useState<SettingsSection>(initialSection);
+
+  // 打开时落到调用方指定的节（如未认证徽章直达「模型」）；人手切节后不被覆盖，直到下次打开。
+  useEffect(() => {
+    if (open) setSection(initialSection);
+  }, [open, initialSection]);
 
   useEffect(() => {
     if (!open) return;
@@ -405,13 +438,7 @@ function SlotEditDialog({
   // 此处只保留提示性标记（lockedTag），不禁用任何操作。
   const lockedTag = briefSpecPredicates(state.scenarioTemplates).has(slot.name);
 
-  useEffect(() => {
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') onClose();
-    };
-    document.addEventListener('keydown', onKeyDown);
-    return () => document.removeEventListener('keydown', onKeyDown);
-  }, [onClose]);
+  useMiniDialogEscape(onClose);
 
   const toggleScene = (scenario: ScenarioKind) => {
     setSceneSet((prev) => {
@@ -530,13 +557,7 @@ function SlotEditDialog({
 function SlotDeleteDialog({ slot, onClose }: { slot: SlotDef; onClose: () => void }) {
   const { state, dispatch } = useStore();
 
-  useEffect(() => {
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') onClose();
-    };
-    document.addEventListener('keydown', onKeyDown);
-    return () => document.removeEventListener('keydown', onKeyDown);
-  }, [onClose]);
+  useMiniDialogEscape(onClose);
 
   const claimCount = state.claims.filter(
     (claim) =>
@@ -673,13 +694,7 @@ function ScenarioTemplateDialog({
         ],
   );
 
-  useEffect(() => {
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') onClose();
-    };
-    document.addEventListener('keydown', onKeyDown);
-    return () => document.removeEventListener('keydown', onKeyDown);
-  }, [onClose]);
+  useMiniDialogEscape(onClose);
 
   const patchBlock = (index: number, patch: Partial<BriefSpecBlock>) => {
     setBlocks((prev) => prev.map((b, i) => (i === index ? { ...b, ...patch } : b)));

@@ -356,7 +356,8 @@ export interface ChatMessage {
 }
 
 // 「批量回退」（0034）：批量晋升撤销的补偿走 takeover 确认（Q3 裁决）。
-export type WriteKind = '晋升' | '纠正' | '整理' | '绑定' | '批量晋升' | '批量回退';
+// 「场景」（M27）：AI 起草的场景模板草稿走 takeover，确认即建模板、驳回即弃；免 undo（0058 口径）。
+export type WriteKind = '晋升' | '纠正' | '整理' | '绑定' | '批量晋升' | '批量回退' | '场景';
 
 export interface WriteProposal {
   id: string;
@@ -371,6 +372,8 @@ export interface WriteProposal {
   objectIds?: string[] | undefined;
   targetPredicate?: Predicate | undefined;
   outbound?: boolean | undefined;
+  // M27：kind = '场景' 时的模板草稿四件套；builtin 恒 false，确认复用 UPSERT 守卫（0025 兜底）。
+  template?: ScenarioTemplate | undefined;
 }
 
 // 0036：任务四态 + 停止原因；触顶不是失败，取消不独立（待启动撤回即删记录）。

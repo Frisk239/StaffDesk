@@ -150,6 +150,44 @@ describe('主进程 IPC 契约', () => {
     expect(messages.some((message) => message.role === 'desk')).toBe(true);
   });
 
+  it('chat:send 起草场景意图：草稿进 takeover 队列；未配置 toast 引导设置', async () => {
+    const brain = setupBrain();
+    const obj = brain.snapshot().objects[0]!;
+
+    // 未配置模型：不伪造草稿，落 toast，用户消息不悬挂。
+    const unconfigured = await invoke<State>('chat:send', {
+      objectId: obj.id,
+      text: '起草场景「供应商尽调」，盯履约风险',
+    });
+    expect(unconfigured.toast?.text).toBe('起草场景需要先在设置里配置模型');
+    expect(
+      (unconfigured.chatByObject[obj.id] ?? []).some((m) => m.text.includes('供应商尽调')),
+    ).toBe(true);
+
+    llm.completion = async () => ({
+      content: JSON.stringify({
+        name: '供应商尽调',
+        hint: '盯一个供应商',
+        playbook: '出站纪律：只根据账本里已有主张回答，每句能指回主张。',
+        blocks: [
+          { title: '关键事实', kind: 'background', predicates: [] },
+          { title: '风险与冲突', kind: 'slots', predicates: ['风险信号'] },
+        ],
+      }),
+      toolCalls: [],
+    });
+    const state = await invoke<State>('chat:send', {
+      objectId: obj.id,
+      text: '起草场景「供应商尽调」，盯履约风险',
+    });
+    const row = state.writeQueue.find((w) => w.kind === '场景');
+    expect(row?.template?.name).toBe('供应商尽调');
+    expect(row?.template?.builtin).toBe(false);
+    expect(row?.evidence).toBe('起草场景，盯履约风险');
+    const messages = state.chatByObject[obj.id] ?? [];
+    expect(messages.some((m) => m.role === 'desk' && m.text.includes('草稿已备好'))).toBe(true);
+  });
+
   it('注册与卸载共用同一份通道清单，卸载后不留挂着的 handle', async () => {
     setupBrain();
     const registered = [...registry.handlers.keys()];

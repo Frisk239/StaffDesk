@@ -43,6 +43,9 @@ export function migrate(db: Database.Database): void {
   if (current < 8) {
     migrateToV8(db);
   }
+  if (current < 9) {
+    migrateToV9(db);
+  }
   if (current < SCHEMA_VERSION) {
     db.prepare('INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)').run(
       SCHEMA_VERSION,
@@ -117,6 +120,47 @@ function addColumn(db: Database.Database, table: string, column: string, definit
   const rows = db.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[];
   if (rows.some((row) => row.name === column)) return;
   db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+}
+
+/**
+ * v9（M27）：write_queue 重建——kind CHECK 放开收「场景」（SQLite 不能 ALTER CHECK，
+ * 走 new→copy→drop→rename，对齐 v8 workspaces 重建），并加 template_json 草稿列
+ * （旧行 NULL：历史库没有场景写卡）。空库经 SCHEMA_SQL 已是新形状，本门次复制空表后原样重建，幂等无害。
+ */
+function migrateToV9(db: Database.Database): void {
+  const tx = db.transaction(() => {
+    db.exec(`
+      CREATE TABLE write_queue_v9 (
+        id TEXT PRIMARY KEY,
+        object_id TEXT NOT NULL,
+        kind TEXT NOT NULL CHECK (kind IN ('晋升', '纠正', '整理', '绑定', '批量晋升', '批量回退', '场景')),
+        task_id TEXT,
+        headline TEXT NOT NULL,
+        evidence TEXT NOT NULL,
+        claim_id TEXT,
+        claim_ids TEXT,
+        source_id TEXT,
+        object_ids TEXT,
+        target_predicate TEXT,
+        outbound INTEGER,
+        template_json TEXT,
+        position INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL
+      );
+    `);
+    db.exec(`
+      INSERT INTO write_queue_v9 (id, object_id, kind, task_id, headline, evidence, claim_id,
+                                  claim_ids, source_id, object_ids, target_predicate, outbound,
+                                  template_json, position, created_at)
+      SELECT id, object_id, kind, task_id, headline, evidence, claim_id,
+             claim_ids, source_id, object_ids, target_predicate, outbound,
+             NULL, position, created_at
+      FROM write_queue
+    `);
+    db.exec('DROP TABLE write_queue');
+    db.exec('ALTER TABLE write_queue_v9 RENAME TO write_queue');
+  });
+  tx();
 }
 
 export function listUserTables(db: Database.Database): string[] {

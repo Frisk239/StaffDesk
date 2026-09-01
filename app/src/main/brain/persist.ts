@@ -341,6 +341,7 @@ const PERSIST_TABLES: readonly PersistTable[] = [
       'object_ids',
       'target_predicate',
       'outbound',
+      'template_json',
       'position',
       'created_at',
     ],
@@ -362,6 +363,8 @@ const PERSIST_TABLES: readonly PersistTable[] = [
           object_ids: write.objectIds ? JSON.stringify(write.objectIds) : null,
           target_predicate: write.targetPredicate ?? null,
           outbound: typeof write.outbound === 'boolean' ? (write.outbound ? 1 : 0) : null,
+          // M27：场景草稿四件套整体落 JSON；其余 kind 留 NULL。
+          template_json: write.template ? JSON.stringify(write.template) : null,
           // 0056 约束一例外：position 跟随数组下标重排，必须进 UPDATE 写集与脏判。
           position,
           created_at: stateStamp(state),
@@ -993,7 +996,7 @@ export function loadLedger(db: Database.Database): LedgerRows {
     db
       .prepare(
         `SELECT id, object_id, kind, task_id, headline, evidence, claim_id, claim_ids,
-                source_id, object_ids, target_predicate, outbound
+                source_id, object_ids, target_predicate, outbound, template_json
          FROM write_queue ORDER BY position, created_at, id`,
       )
       .all() as {
@@ -1009,6 +1012,7 @@ export function loadLedger(db: Database.Database): LedgerRows {
       object_ids: string | null;
       target_predicate: string | null;
       outbound: number | null;
+      template_json: string | null;
     }[]
   ).map((row) => {
     const write: WriteProposal = {
@@ -1027,6 +1031,9 @@ export function loadLedger(db: Database.Database): LedgerRows {
     if (objectIds) write.objectIds = objectIds;
     if (row.target_predicate) write.targetPredicate = row.target_predicate;
     if (typeof row.outbound === 'number') write.outbound = row.outbound === 1;
+    // M27：场景草稿读回（解析失败视为无草稿，确认侧守卫会拒空名/表外谓词）。
+    const template = parseJson<WriteProposal['template']>(row.template_json);
+    if (template) write.template = template;
     return write;
   });
 

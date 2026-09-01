@@ -1,5 +1,5 @@
-/** M1 schema。新版本走 schema_migrations，禁止裸改历史。v8（0058）：workspaces 去 scenario 枚举 CHECK、scenario_brief_specs 死表退役、scenario_templates 建表（建表走本文件 CREATE TABLE IF NOT EXISTS，门次只做重建与退役）。v7 是 operations(action) 索引——只进迁移门次，不进 SCHEMA_SQL。 */
-export const SCHEMA_VERSION = 8;
+/** M1 schema。新版本走 schema_migrations，禁止裸改历史。v9（M27）：write_queue 放开 kind CHECK 收「场景」并加 template_json 草稿列（重建走门次）。v8（0058）：workspaces 去 scenario 枚举 CHECK、scenario_brief_specs 死表退役、scenario_templates 建表（建表走本文件 CREATE TABLE IF NOT EXISTS，门次只做重建与退役）。v7 是 operations(action) 索引——只进迁移门次，不进 SCHEMA_SQL。 */
+export const SCHEMA_VERSION = 9;
 
 export const SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -118,7 +118,7 @@ CREATE TABLE IF NOT EXISTS proposals (
 CREATE TABLE IF NOT EXISTS write_queue (
   id TEXT PRIMARY KEY,
   object_id TEXT NOT NULL,
-  kind TEXT NOT NULL CHECK (kind IN ('晋升', '纠正', '整理', '绑定', '批量晋升', '批量回退')),
+  kind TEXT NOT NULL CHECK (kind IN ('晋升', '纠正', '整理', '绑定', '批量晋升', '批量回退', '场景')),
   task_id TEXT,
   headline TEXT NOT NULL,
   evidence TEXT NOT NULL,
@@ -128,6 +128,8 @@ CREATE TABLE IF NOT EXISTS write_queue (
   object_ids TEXT,
   target_predicate TEXT,
   outbound INTEGER,
+  -- M27：kind = '场景' 的模板草稿四件套（JSON）；其余 kind 留 NULL。
+  template_json TEXT,
   position INTEGER NOT NULL DEFAULT 0,
   created_at TEXT NOT NULL
 );

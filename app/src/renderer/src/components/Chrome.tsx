@@ -583,9 +583,11 @@ function RadarMenu({ objectId }: { objectId: string }) {
 export function ChatTopbar({
   rightOpen,
   onToggleRight,
+  onOpenSettings,
 }: {
   rightOpen: boolean;
   onToggleRight: () => void;
+  onOpenSettings: () => void;
 }) {
   const { state, dispatch } = useStore();
   const view = state.view;
@@ -603,12 +605,25 @@ export function ChatTopbar({
   const radar = state.tasks.find(
     (task) => task.objectId === obj.id && task.kind === '周期性雷达' && task.status !== '已停止',
   );
+  // 0041「未认证的配置徽章持续可见」：未配置不提示（设置/向导已在引导），不达标态常驻小徽章；
+  // 不进消息流，点击直达设置的模型节补跑资格认证。
+  const certStatus = state.qualification.status;
 
   return (
     <div className="chat-topbar">
       <div className="topbar-ctx">
         <span className="kind-chip">{obj.kind}</span>
         <strong>{obj.name}</strong>
+        {(certStatus === '未认证' || certStatus === '认证中') && (
+          <button
+            type="button"
+            className="tag amber cert-badge"
+            title="当前模型配置未通过资格认证，点击查看"
+            onClick={onOpenSettings}
+          >
+            未认证
+          </button>
+        )}
       </div>
       <div className="action-cluster">
         <button

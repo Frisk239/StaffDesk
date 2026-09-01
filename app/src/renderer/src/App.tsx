@@ -8,7 +8,7 @@ import { PendingView } from './components/PendingView';
 import { AllObjectsView } from './components/AllObjects';
 import { ChatPane } from './components/ChatPane';
 import { RightPanel } from './components/RightPanel';
-import { SettingsModal } from './components/Settings';
+import { SettingsModal, type SettingsSection } from './components/Settings';
 import { Onboarding } from './components/Onboarding';
 import { DragHandle } from './components/DragHandle';
 import {
@@ -71,6 +71,12 @@ function Effects() {
 function Workspace() {
   const { state } = useStore();
   const [settings, setSettings] = useState(false);
+  const [settingsSection, setSettingsSection] = useState<SettingsSection>('通用');
+  // 0041：未认证徽章直达设置「模型」节；图标轨照旧落在「通用」。
+  const openSettings = useCallback((section: SettingsSection) => {
+    setSettingsSection(section);
+    setSettings(true);
+  }, []);
   const [onboarding, setOnboarding] = useState(!state.onboardingDone);
   const [sessionOpen, setSessionOpen] = useState(true);
   const [rightOpen, setRightOpen] = useState(true);
@@ -157,7 +163,7 @@ function Workspace() {
         <TitleBar />
         <div className={`body${dragging ? ' dragging' : ''}`}>
           <IconRail
-            onSettings={() => setSettings(true)}
+            onSettings={() => openSettings('通用')}
             onContinueSetup={() => setOnboarding(true)}
             sessionOpen={sessionOpen}
             onToggleSession={() => setSessionOpen((v) => !v)}
@@ -180,7 +186,11 @@ function Workspace() {
             {view.kind === 'replay' && <ReplayView taskId={view.taskId} />}
             {view.kind === 'object' && (
               <>
-                <ChatTopbar rightOpen={rightOpen} onToggleRight={toggleRight} />
+                <ChatTopbar
+                  rightOpen={rightOpen}
+                  onToggleRight={toggleRight}
+                  onOpenSettings={() => openSettings('模型')}
+                />
                 <div className="work-row">
                   <ChatPane objectId={view.objectId} />
                   <RightPanel objectId={view.objectId} width={rightW} open={rightOpen} />
@@ -198,7 +208,11 @@ function Workspace() {
             )}
           </div>
         </div>
-        <SettingsModal open={settings} onClose={() => setSettings(false)} />
+        <SettingsModal
+          open={settings}
+          initialSection={settingsSection}
+          onClose={() => setSettings(false)}
+        />
       </div>
       {onboarding && !state.onboardingDone && <Onboarding onClose={() => setOnboarding(false)} />}
       <Toast />

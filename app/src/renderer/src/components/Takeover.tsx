@@ -1,6 +1,21 @@
 import { useState } from 'react';
 import { useStore } from '../store';
-import type { CloseReason } from '@shared/types';
+import type { BriefBlockKind, CloseReason } from '@shared/types';
+
+// M27：场景草稿卡的块类型短标签（设置页编辑器用长标签，这里只做预览提示）。
+const BLOCK_KIND_LABELS: Record<BriefBlockKind, string> = {
+  background: '背景',
+  slots: '槽位',
+  synthesis: '综合',
+  gaps: '缺口',
+};
+
+// M27：说明书节选——前两行拼接、60 字封顶，超出加省略号。
+function playbookExcerpt(playbook: string): string {
+  if (!playbook) return '（空）';
+  const head = playbook.split('\n').slice(0, 2).join('；').slice(0, 60);
+  return playbook.length > 60 ? `${head}…` : head;
+}
 
 export function Takeover({ objectId }: { objectId: string }) {
   const { state, dispatch } = useStore();
@@ -81,9 +96,16 @@ export function Takeover({ objectId }: { objectId: string }) {
     dispatch({ type: 'CONFIRM_WRITE', writeId: head.id });
   };
 
-  const rejectLabel = head.kind === '批量晋升' ? '全部保持' : '拒绝';
+  const rejectLabel =
+    head.kind === '批量晋升' ? '全部保持' : head.kind === '场景' ? '放弃草稿' : '拒绝';
   const confirmLabel =
-    head.kind === '批量晋升' ? '全部晋升' : head.kind === '批量回退' ? '确认回退' : '确认';
+    head.kind === '批量晋升'
+      ? '全部晋升'
+      : head.kind === '批量回退'
+        ? '确认回退'
+        : head.kind === '场景'
+          ? '创建场景模板'
+          : '确认';
 
   return (
     // 只拦裸 Enter（提交语义）；Shift+Enter 在 textarea 里保留换行，与 composer 行为一致。
@@ -126,6 +148,37 @@ export function Takeover({ objectId }: { objectId: string }) {
               <div className="takeover-warn">
                 选择保持后，本任务中的未核内容会原样保留，不会批量写入。
               </div>
+            </>
+          )}
+          {head.kind === '场景' && head.template && (
+            <>
+              <div className="takeover-list">
+                <div className="takeover-list-row">
+                  <span className="tag grey">名称</span>
+                  <span>{head.template.name}</span>
+                </div>
+                <div className="takeover-list-row">
+                  <span className="tag grey">建对象引导</span>
+                  <span>{head.template.hint || '（空）'}</span>
+                </div>
+                <div className="takeover-list-row">
+                  <span className="tag grey">说明书</span>
+                  <span>{playbookExcerpt(head.template.playbook)}</span>
+                </div>
+                {head.template.briefSpec.map((block, index) => (
+                  <div className="takeover-list-row" key={`${block.title}-${index}`}>
+                    <span className="tag grey">{BLOCK_KIND_LABELS[block.kind]}</span>
+                    <span>
+                      {block.title}
+                      {block.predicates && block.predicates.length > 0
+                        ? `：${block.predicates.join('、')}`
+                        : ''}
+                    </span>
+                  </div>
+                ))}
+              </div>
+              {/* 0025：简报块只引用受控表现有槽，确认时仍有 UPSERT 守卫兜底。 */}
+              <div className="takeover-warn">简报块只引用现有字段，新字段请先在谓词表添加。</div>
             </>
           )}
           {head.kind === '批量回退' && (

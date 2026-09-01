@@ -6,7 +6,7 @@ import {
   QUALITY_POLICY_VERSIONS,
   STAGE_FLOORED_METRICS,
 } from '../../src/main/eval/fingerprint';
-import type { LlmProvider } from '../../src/shared/types';
+import type { LlmProvider, QualityMetricSet } from '../../src/shared/types';
 
 function provider(overrides: Partial<LlmProvider> = {}): LlmProvider {
   return {
@@ -74,6 +74,32 @@ describe('资格认证配置指纹', () => {
     const gated = Object.values(STAGE_FLOORED_METRICS).flat();
     expect(new Set(gated).size).toBe(gated.length);
     expect([...gated].sort()).toEqual(Object.keys(QUALITY_METRIC_FLOORS).sort());
+  });
+
+  it('G9 守护：门槛与政策面绑定——反向全覆盖、门槛全为正、fabrication 上限语义不丢', () => {
+    // 评测集「改后必须复跑」靠指纹机制自觉执行；这里把政策面（0045）钉成不变量，
+    // 门槛或闸门被删被挂错，评测资格认证就静默放水——先让测试红。
+    const floors = Object.entries(QUALITY_METRIC_FLOORS) as [keyof QualityMetricSet, number][];
+    expect(floors.length).toBeGreaterThan(0);
+    for (const [key, floor] of floors) {
+      // fabrication 的 floor 是上限、其余是下限，方向不同但都不许 0/负值静默放水。
+      expect(Number.isFinite(floor), `门槛 ${key} 必须是有限数`).toBe(true);
+      expect(floor, `门槛 ${key} 必须为正`).toBeGreaterThan(0);
+    }
+    // 反向全覆盖（并集断言的加强版）：任一门槛键必须挂进至少一个 stage 的闸门集合。
+    const stageSets = Object.values(STAGE_FLOORED_METRICS);
+    for (const [key] of floors) {
+      expect(
+        stageSets.some((set) => set.includes(key)),
+        `门槛 ${key} 没挂进任何 stage 闸门，永远不会被分数线拦住`,
+      ).toBe(true);
+    }
+    // fabrication 的上限语义绑定在闸门上（runner settle 特判该键）：键名不得改名移位出闸门。
+    expect(stageSets.some((set) => set.includes('fabrication'))).toBe(true);
+    // 政策版本与门槛存在性绑定：三路版本非空——版本空串会让指纹对政策演进失明。
+    for (const [name, version] of Object.entries(QUALITY_POLICY_VERSIONS)) {
+      expect(version.length, `政策版本 ${name} 不能为空`).toBeGreaterThan(0);
+    }
   });
 
   it('模型行显式指定 modelId，不回退到 active 或首个模型', () => {

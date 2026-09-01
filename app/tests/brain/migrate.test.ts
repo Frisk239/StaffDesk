@@ -261,6 +261,79 @@ describe('建库与迁移', () => {
     again.close();
   });
 
+  it('v9 迁移放开 write_queue 的 kind CHECK 收「场景」并补 template_json 列（M27）', () => {
+    const file = tmpBrain();
+    // 手工搭 v8 形态旧库：write_queue 带旧 CHECK + 一条存量行 + 版本行 8。
+    const legacy = new Database(file);
+    legacy.pragma('journal_mode = WAL');
+    legacy.exec(`
+      CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL);
+      CREATE TABLE write_queue (
+        id TEXT PRIMARY KEY,
+        object_id TEXT NOT NULL,
+        kind TEXT NOT NULL CHECK (kind IN ('晋升', '纠正', '整理', '绑定', '批量晋升', '批量回退')),
+        task_id TEXT,
+        headline TEXT NOT NULL,
+        evidence TEXT NOT NULL,
+        claim_id TEXT,
+        claim_ids TEXT,
+        source_id TEXT,
+        object_ids TEXT,
+        target_predicate TEXT,
+        outbound INTEGER,
+        position INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL
+      );
+      CREATE TABLE app_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+    `);
+    legacy
+      .prepare("INSERT INTO schema_migrations (version, applied_at) VALUES (8, '2026-09-01')")
+      .run();
+    legacy
+      .prepare(
+        `INSERT INTO write_queue (id, object_id, kind, headline, evidence, position, created_at)
+         VALUES ('wr-1', 'obj-1', '晋升', '旧队列行', '旧证据', 0, '2026-09-01')`,
+      )
+      .run();
+    legacy.prepare("INSERT INTO app_meta VALUES ('presets_seeded', '1')").run();
+    legacy.close();
+
+    const brain = openBrain(file);
+    // 重建保行：存量写卡一行不少；新列就位。
+    const rows = brain.db
+      .prepare('SELECT id, kind, template_json FROM write_queue ORDER BY id')
+      .all() as { id: string; kind: string; template_json: string | null }[];
+    expect(rows).toEqual([{ id: 'wr-1', kind: '晋升', template_json: null }]);
+    const ddl = brain.db
+      .prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'write_queue'")
+      .get() as { sql: string };
+    expect(ddl.sql).toContain('场景');
+    // 场景写卡可直插（kind CHECK 放开）且读回走 loadLedger。
+    brain.db
+      .prepare(
+        `INSERT INTO write_queue (id, object_id, kind, headline, evidence, template_json,
+                                  position, created_at)
+         VALUES ('wr-sc', 'obj-1', '场景', '起草场景模板「供应商尽调」', '盯风险', ?, 1, '2026-09-01')`,
+      )
+      .run(
+        JSON.stringify({
+          name: '供应商尽调',
+          builtin: false,
+          hint: '盯一个供应商',
+          playbook: '',
+          briefSpec: [],
+        }),
+      );
+    expect(brain.snapshot().writeQueue.find((w) => w.id === 'wr-sc')?.template?.name).toBe(
+      '供应商尽调',
+    );
+    const version = brain.db
+      .prepare('SELECT MAX(version) AS version FROM schema_migrations')
+      .get() as { version: number };
+    expect(version.version).toBeGreaterThanOrEqual(9);
+    brain.close();
+  });
+
   it('首启后槽名与 DEFAULT_SLOT_DEFS 一致、场景模板与种子源四件套一致，且对象/来源/主张计数为 0', () => {
     const brain = openBrain(tmpBrain());
     const snap = brain.snapshot();
