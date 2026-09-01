@@ -1,5 +1,7 @@
+import type { TokenUsage } from '@shared/taskFee';
 import { maskSecret as maskSecretText } from '../redact';
 
+export type { TokenUsage };
 export type ChatRole = 'system' | 'user' | 'assistant' | 'tool';
 
 export interface ChatMessageParam {
@@ -39,6 +41,33 @@ export interface CompleteRequest {
 export interface CompleteResult {
   content: string;
   toolCalls: ToolCallDelta[];
+  usage?: TokenUsage | undefined;
+}
+
+/** ADR 0059：字段缺失或非正数视为未回传，不得把整次调用静默当 0 token。 */
+export function parseChatUsage(raw: unknown): TokenUsage | undefined {
+  if (raw === null || typeof raw !== 'object') return undefined;
+  const row = raw as { prompt_tokens?: unknown; completion_tokens?: unknown };
+  const promptTokens = positiveTokenCount(row.prompt_tokens);
+  const completionTokens = positiveTokenCount(row.completion_tokens);
+  if (promptTokens === undefined && completionTokens === undefined) return undefined;
+  return {
+    promptTokens: promptTokens ?? 0,
+    completionTokens: completionTokens ?? 0,
+  };
+}
+
+function positiveTokenCount(value: unknown): number | undefined {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) return undefined;
+  return Math.floor(value);
+}
+
+function withUsage(
+  content: string,
+  toolCalls: ToolCallDelta[],
+  usage?: TokenUsage,
+): CompleteResult {
+  return usage ? { content, toolCalls, usage } : { content, toolCalls };
 }
 
 const RETRY_STATUS = new Set([429, 500, 502, 503]);
@@ -112,9 +141,10 @@ async function once(fetchFn: FetchFn, req: CompleteRequest): Promise<CompleteRes
   }
   const json = (await res.json()) as {
     choices?: { message?: { content?: string; tool_calls?: ToolCallDelta[] } }[];
+    usage?: unknown;
   };
   const message = json.choices?.[0]?.message;
-  return { content: message?.content ?? '', toolCalls: message?.tool_calls ?? [] };
+  return withUsage(message?.content ?? '', message?.tool_calls ?? [], parseChatUsage(json.usage));
 }
 
 async function readStream(
@@ -128,6 +158,7 @@ async function readStream(
   let buf = '';
   let content = '';
   const toolCalls: ToolCallDelta[] = [];
+  let usage: TokenUsage | undefined;
   for (;;) {
     const { done, value } = await reader.read();
     if (done) break;
@@ -142,6 +173,7 @@ async function readStream(
       try {
         const json = JSON.parse(data) as {
           choices?: { delta?: { content?: string; tool_calls?: ToolCallDelta[] } }[];
+          usage?: unknown;
         };
         const delta = json.choices?.[0]?.delta;
         if (delta?.content) {
@@ -149,10 +181,12 @@ async function readStream(
           onDelta?.(delta.content);
         }
         if (delta?.tool_calls) toolCalls.push(...delta.tool_calls);
+        const chunkUsage = parseChatUsage(json.usage);
+        if (chunkUsage) usage = chunkUsage;
       } catch {
         /* skip malformed sse line */
       }
     }
   }
-  return { content, toolCalls };
+  return withUsage(content, toolCalls, usage);
 }

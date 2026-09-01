@@ -21,9 +21,12 @@ export interface StubScenarioDraft {
   blocks: Array<{ title: string; kind: string; predicates?: string[] }>;
 }
 
+export type StubUsage = { prompt_tokens: number; completion_tokens: number } | false;
+
 export async function serveStubModel(
   claims: StubClaimDraft[],
   scenario?: StubScenarioDraft,
+  usage: StubUsage = { prompt_tokens: 12, completion_tokens: 4 },
 ): Promise<{
   server: Server;
   baseUrl: string;
@@ -39,13 +42,13 @@ export async function serveStubModel(
           scenario && body.includes('场景模板起草器')
             ? JSON.stringify(scenario)
             : JSON.stringify({ claims });
+        const payload: Record<string, unknown> = {
+          id: 'stub-completion',
+          choices: [{ message: { role: 'assistant', content } }],
+        };
+        if (usage) payload.usage = usage;
         res.writeHead(200, { 'content-type': 'application/json' });
-        res.end(
-          JSON.stringify({
-            id: 'stub-completion',
-            choices: [{ message: { role: 'assistant', content } }],
-          }),
-        );
+        res.end(JSON.stringify(payload));
       });
       return;
     }

@@ -379,7 +379,7 @@ export interface WriteProposal {
 // 0036：任务四态 + 停止原因；触顶不是失败，取消不独立（待启动撤回即删记录）。
 export type TaskKind = '调研' | '出简报' | '再搜一轮' | '周期性雷达';
 export type TaskStatus = '待启动' | '进行中' | '已完成' | '已停止';
-export type TaskStopReason = '手动' | '触顶' | '失败';
+export type TaskStopReason = '手动' | '触顶' | '失败' | '费用触顶';
 export type BudgetGear = '快搜' | '深挖';
 
 export interface DeskTask {

@@ -1,8 +1,29 @@
-import { useStore } from '../store';
+import {
+  FEE_AUDIT_KIND,
+  MISSING_USAGE_NOTE,
+  formatTokenCount,
+  latestTaskTokenTotal,
+  parseFeePayload,
+} from '@shared/taskFee';
 import { pendingTaskClaimReview, unverifiedClaimIdsForTask } from '@shared/taskClaims';
+import { useStore } from '../store';
 
 function payloadText(payload: unknown): string {
   return typeof payload === 'string' ? payload : JSON.stringify(payload, null, 2);
+}
+
+function FeeAuditBody({ payload }: { payload: unknown }) {
+  const fee = parseFeePayload(payload);
+  if (!fee) return <pre className="replay-payload">{payloadText(payload)}</pre>;
+  return (
+    <div className="replay-fee">
+      <p>
+        累计 {formatTokenCount(fee.totalTokens)}（输入 {formatTokenCount(fee.promptTokens)} · 输出{' '}
+        {formatTokenCount(fee.completionTokens)}）
+      </p>
+      {fee.note === MISSING_USAGE_NOTE && <p className="dim">{MISSING_USAGE_NOTE}</p>}
+    </div>
+  );
 }
 
 function statusClass(status: string): string {
@@ -18,6 +39,7 @@ export function ReplayView({ taskId }: { taskId: string }) {
   const rows = state.taskAudits.filter((a) => a.taskId === taskId).sort((a, b) => a.seq - b.seq);
   const pendingReview = pendingTaskClaimReview(state, taskId);
   const unverifiedClaimIds = unverifiedClaimIdsForTask(state, taskId);
+  const tokenTotal = task ? latestTaskTokenTotal(state.taskAudits, task.id) : undefined;
   return (
     <div className="replay-page">
       <div className="inbox-head">
@@ -58,6 +80,9 @@ export function ReplayView({ taskId }: { taskId: string }) {
           </span>
           <span className="tag grey">{task.kind}</span>
           {task.budgetGear && <span className="tag grey">{task.budgetGear}</span>}
+          {tokenTotal !== undefined && (
+            <span className="tag grey">{formatTokenCount(tokenTotal)}</span>
+          )}
           {task.query && <span className="replay-query">{task.query}</span>}
           {task.parentTaskId && <span className="tag grey">父雷达 {task.parentTaskId}</span>}
           {task.dueAt && <span className="tag grey">应跑 {task.dueAt}</span>}
@@ -95,7 +120,11 @@ export function ReplayView({ taskId }: { taskId: string }) {
               </strong>
               <time>{row.ts.slice(11, 19)}</time>
             </div>
-            <pre className="replay-payload">{payloadText(row.payload)}</pre>
+            {row.kind === FEE_AUDIT_KIND ? (
+              <FeeAuditBody payload={row.payload} />
+            ) : (
+              <pre className="replay-payload">{payloadText(row.payload)}</pre>
+            )}
           </li>
         ))}
       </ol>

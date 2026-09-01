@@ -1,7 +1,7 @@
 import type { Action } from '@shared/actions';
 import type { State } from '@shared/types';
 import type { Brain } from './brain';
-import { activeModelCompletion } from './llm/runtime';
+import { activeModelCompletion, type ModelCompletion } from './llm/runtime';
 import { runExtractLoop } from './loops/extract';
 import { safeDetail } from './redact';
 
@@ -17,6 +17,7 @@ export function createExtractionJobExecutor(args: {
   brain: ExtractionBrain;
   publish: (state: State) => void;
   extract?: ExtractionRunner;
+  complete?: ModelCompletion | undefined;
 }): (sourceId: string) => Promise<State> {
   const extract = args.extract ?? runExtractLoop;
 
@@ -28,7 +29,7 @@ export function createExtractionJobExecutor(args: {
       const action: Action =
         !source || source.boundObjectIds.length === 0
           ? { type: 'EXTRACT_DONE', sourceId, claims: [], outcome: 'success' }
-          : await extractionAction(sourceId, state, extract);
+          : await extractionAction(sourceId, state, extract, args.complete);
       const next = args.brain.dispatch(action);
       terminalDispatched = true;
       args.publish(next);
@@ -67,6 +68,7 @@ async function extractionAction(
   sourceId: string,
   state: State,
   extract: ExtractionRunner,
+  complete?: ModelCompletion | undefined,
 ): Promise<Action> {
   const source = state.sources.find((item) => item.id === sourceId);
   if (!source) return { type: 'EXTRACT_DONE', sourceId, claims: [], outcome: 'success' };
@@ -75,7 +77,7 @@ async function extractionAction(
     objects: state.objects,
     slotDefs: state.slotDefs,
     existing: state.claims,
-    complete: activeModelCompletion(state),
+    complete: complete ?? activeModelCompletion(state),
   });
   if (result.status !== 'success') {
     return {

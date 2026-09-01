@@ -1198,6 +1198,15 @@ textarea {
   font-size: 12px;
   line-height: 1.45;
 }
+.replay-fee {
+  margin: 8px 0 0;
+  color: var(--ink-2);
+  font-size: 13px;
+  line-height: 1.45;
+}
+.replay-fee p + p {
+  margin-top: 4px;
+}
 
 /* ============ 对话（A：底部 / B：右侧全高） ============ */
 /* 排版对齐 DSH：用户 22px 淡蓝气泡（约 70% 宽），assistant 无气泡叙述流

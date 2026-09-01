@@ -2,6 +2,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { FEE_AUDIT_KIND, MISSING_USAGE_NOTE, parseFeePayload } from '@shared/taskFee';
 import type { State } from '@shared/types';
 import type { ReachAdapter, SearchHit } from '../../src/main/adapters/reach';
 import { openBrain, type Brain } from '../../src/main/brain';
@@ -282,5 +283,101 @@ describe('调研收口编排', () => {
     expect(fresh.brain.snapshot().tasks.some((item) => item.id === task?.id)).toBe(true);
     expect(abandoned.tasks.some((item) => item.status === '进行中')).toBe(true);
     expect(published.length).toBeGreaterThan(1);
+  });
+
+  it('调研抽取把 usage 记入费用审计；未回传则标注且不当 0', async () => {
+    const { brain, objectId } = seededBrain();
+    const twoHits: ReachAdapter = {
+      doctor: async () => ({ ok: true, detail: 'ok' }),
+      search: async () => [
+        { title: 'A', url: 'https://a.example/doc', snippet: 'ok' },
+        { title: 'B', url: 'https://b.example/doc', snippet: 'ok' },
+      ],
+      open: async (url) => ({ url, ok: true, body: '甲组织主栈是 Go。' }),
+    };
+    const withUsage = requireState(
+      await applyResearchRun({
+        getBrain: () => brain,
+        publish: () => {},
+        objectId,
+        gear: '快搜',
+        options: {},
+        reach: twoHits,
+        complete: async () => ({
+          content: JSON.stringify({ claims: [] }),
+          toolCalls: [],
+          usage: { promptTokens: 10, completionTokens: 2 },
+        }),
+      }),
+    );
+    const task = withUsage.tasks.find((item) => item.objectId === objectId);
+    const feeRows = withUsage.taskAudits.filter(
+      (audit) => audit.taskId === task?.id && audit.kind === FEE_AUDIT_KIND,
+    );
+    expect(feeRows).toHaveLength(2);
+    expect(parseFeePayload(feeRows[1]?.payload)?.totalTokens).toBe(24);
+    expect(task?.stopReason).toBeUndefined();
+
+    const other = seededBrain();
+    const missing = requireState(
+      await applyResearchRun({
+        getBrain: () => other.brain,
+        publish: () => {},
+        objectId: other.objectId,
+        gear: '快搜',
+        options: {},
+        reach: twoHits,
+        complete: async () => ({
+          content: JSON.stringify({ claims: [] }),
+          toolCalls: [],
+        }),
+      }),
+    );
+    const missingTask = missing.tasks.find((item) => item.objectId === other.objectId);
+    const missingFee = missing.taskAudits.filter(
+      (audit) => audit.taskId === missingTask?.id && audit.kind === FEE_AUDIT_KIND,
+    );
+    expect(missingFee).toHaveLength(2);
+    expect(parseFeePayload(missingFee[0]?.payload)?.note).toBe(MISSING_USAGE_NOTE);
+    expect(parseFeePayload(missingFee[1]?.payload)?.totalTokens).toBe(0);
+    expect(parseFeePayload(missingFee[1]?.payload)?.missingUsageCalls).toBe(2);
+    expect(missingTask?.stopReason).toBeUndefined();
+  });
+
+  it('抽取累计超 tokens 顶则费用触顶：已打开照写，未抽的保持未知', async () => {
+    const { brain, objectId } = seededBrain();
+    const twoHits: ReachAdapter = {
+      doctor: async () => ({ ok: true, detail: 'ok' }),
+      search: async () => [
+        { title: 'A', url: 'https://a.example/doc', snippet: 'ok' },
+        { title: 'B', url: 'https://b.example/doc', snippet: 'ok' },
+      ],
+      open: async (url) => ({ url, ok: true, body: '甲组织主栈是 Go。' }),
+    };
+    const state = requireState(
+      await applyResearchRun({
+        getBrain: () => brain,
+        publish: () => {},
+        objectId,
+        gear: '快搜',
+        options: {},
+        reach: twoHits,
+        complete: async () => ({
+          content: JSON.stringify({ claims: [] }),
+          toolCalls: [],
+          usage: { promptTokens: 100_000, completionTokens: 30_000 },
+        }),
+      }),
+    );
+    const task = state.tasks.find((item) => item.objectId === objectId);
+    expect(task?.stopReason).toBe('费用触顶');
+    expect(task?.status).toBe('已完成');
+    expect(state.sources.filter((source) => source.origin?.kind === 'research')).toHaveLength(2);
+    const feeRows = state.taskAudits.filter(
+      (audit) => audit.taskId === task?.id && audit.kind === FEE_AUDIT_KIND,
+    );
+    expect(feeRows).toHaveLength(1);
+    expect(state.taskAudits.some((audit) => audit.kind === '费用触顶')).toBe(true);
+    expect(parseFeePayload(feeRows[0]?.payload)?.totalTokens).toBe(130_000);
   });
 });

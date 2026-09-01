@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { emptyFeeSpend, type TaskFeeSpend } from '@shared/taskFee';
 import type { BudgetGear, DeskTask, Source, State, TaskKind, TaskStopReason } from '@shared/types';
 import type { OpenResult, ReachAdapter, SearchHit } from '../adapters/reach';
 
@@ -8,15 +9,81 @@ export interface Budget {
   gear: BudgetGear;
   searches: number;
   opens: number;
-  hops: number;
   steps: number;
   wallMs: number;
+  tokens: number;
+  missingUsageCalls: number;
 }
 
+/**
+ * ADR 0059：硬顶只留可执法维度（searches / opens / steps / wallMs / tokens）。
+ * hops 已删——引擎 opens 只开搜索命中页，没有跳链，声明未执法属谎言口径。
+ *
+ * tokens：按每页单片段抽取估系统+原文 8–10k prompt + ~1k completion。
+ * 快搜打开上限 12 → ~108k，取 120_000 留一轮余量，顶不住二次深抽。
+ * 深挖打开上限 30、允许长页切块，约 3× 快搜，与搜索/打开/墙钟档位倍率同量级 → 400_000。
+ *
+ * missingUsageCalls：端点不回传 usage 时的独立小上限，按档位搜索次数对齐，
+ * 缺失不得当 0 token 继续烧。
+ */
 export const BUDGETS: Record<BudgetGear, Budget> = {
-  快搜: { gear: '快搜', searches: 8, opens: 12, hops: 1, steps: 16, wallMs: 3 * 60_000 },
-  深挖: { gear: '深挖', searches: 20, opens: 30, hops: 2, steps: 40, wallMs: 15 * 60_000 },
+  快搜: {
+    gear: '快搜',
+    searches: 8,
+    opens: 12,
+    steps: 16,
+    wallMs: 3 * 60_000,
+    tokens: 120_000,
+    missingUsageCalls: 8,
+  },
+  深挖: {
+    gear: '深挖',
+    searches: 20,
+    opens: 30,
+    steps: 40,
+    wallMs: 15 * 60_000,
+    tokens: 400_000,
+    missingUsageCalls: 20,
+  },
 };
+
+/** e2e 可经 STAFFDESK_E2E_TOKEN_BUDGET 压 tokens 顶；非正数忽略。 */
+export function budgetFor(gear: BudgetGear): Budget {
+  const base = BUDGETS[gear];
+  const raw = process.env.STAFFDESK_E2E_TOKEN_BUDGET;
+  if (!raw) return base;
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n <= 0) return base;
+  return { ...base, tokens: Math.floor(n) };
+}
+
+/** ADR 0059：只判费用维——抽取阶段发生在搜索/打开计数停止增长之后，别拿零填充别的维度。 */
+export function hitFeeCap(budget: Budget, spend: TaskFeeSpend): boolean {
+  return spend.totalTokens >= budget.tokens || spend.missingUsageCalls >= budget.missingUsageCalls;
+}
+
+/** ADR 0059：费用维先于搜索/打开/步数/墙钟，避免混成普通「触顶」。 */
+export function capHit(args: {
+  budget: Budget;
+  searches: number;
+  opens: number;
+  steps: number;
+  elapsedMs: number;
+  spend: TaskFeeSpend;
+}): TaskStopReason | undefined {
+  if (hitFeeCap(args.budget, args.spend)) {
+    return '费用触顶';
+  }
+  if (
+    args.searches >= args.budget.searches ||
+    args.opens >= args.budget.opens ||
+    args.steps >= args.budget.steps ||
+    args.elapsedMs >= args.budget.wallMs
+  ) {
+    return '触顶';
+  }
+  return undefined;
+}
 
 export interface TaskAuditRow {
   taskId: string;
@@ -41,6 +108,8 @@ export interface ResearchDeps {
   queryFor: (state: State, objectId: string) => string;
   onAudit?: ((audit: TaskAuditRow) => void) | undefined;
   shouldStop?: (() => boolean) | undefined;
+  /** 任务内 LLM usage 累计；缺省空花费。抽取路径与单测注入共用。 */
+  usageSpend?: (() => TaskFeeSpend) | undefined;
 }
 
 export interface ResearchRunOptions {
@@ -88,7 +157,7 @@ export async function runResearchTask(
   options: ResearchRunOptions = {},
 ): Promise<ResearchResult> {
   const obj = state.objects.find((o) => o.id === objectId);
-  const budget = BUDGETS[gear];
+  const budget = budgetFor(gear);
   const started = deps.now?.() ?? Date.now();
   const task = runningTask(
     options.task ?? createResearchTask(state, objectId, gear, deps, options),
@@ -172,14 +241,25 @@ export async function runResearchTask(
   const stoppedBeforeDoctor = finishIfManuallyStopped();
   if (stoppedBeforeDoctor) return stoppedBeforeDoctor;
 
-  const hitCap = () => {
-    const elapsed = (deps.now?.() ?? Date.now()) - started;
-    return (
-      searches >= budget.searches ||
-      opens >= budget.opens ||
-      steps >= budget.steps ||
-      elapsed >= budget.wallMs
-    );
+  const currentCap = (): TaskStopReason | undefined =>
+    capHit({
+      budget,
+      searches,
+      opens,
+      steps,
+      elapsedMs: (deps.now?.() ?? Date.now()) - started,
+      spend: deps.usageSpend?.() ?? emptyFeeSpend(),
+    });
+
+  const logCap = (reason: TaskStopReason) => {
+    const spend = deps.usageSpend?.() ?? emptyFeeSpend();
+    log(reason, {
+      searches,
+      opens,
+      steps,
+      tokens: spend.totalTokens,
+      missingUsageCalls: spend.missingUsageCalls,
+    });
   };
 
   const doctor = await deps.reach.doctor();
@@ -229,9 +309,10 @@ export async function runResearchTask(
   for (const hit of hits) {
     const stoppedBeforeOpen = finishIfManuallyStopped();
     if (stoppedBeforeOpen) return stoppedBeforeOpen;
-    if (hitCap()) {
-      stopReason = '触顶';
-      log('触顶', { searches, opens, steps });
+    const openedCap = currentCap();
+    if (openedCap) {
+      stopReason = openedCap;
+      logCap(openedCap);
       break;
     }
     steps += 1;
@@ -257,9 +338,12 @@ export async function runResearchTask(
     if (stoppedAfterOpen) return stoppedAfterOpen;
   }
 
-  if (!stopReason && hitCap()) {
-    stopReason = '触顶';
-    log('触顶', { searches, opens, steps });
+  if (!stopReason) {
+    const endCap = currentCap();
+    if (endCap) {
+      stopReason = endCap;
+      logCap(endCap);
+    }
   }
   const stoppedBeforeFinish = finishIfManuallyStopped();
   if (stoppedBeforeFinish) return stoppedBeforeFinish;
