@@ -1,11 +1,18 @@
 import type Database from 'better-sqlite3';
 import { BRIEF_SPECS, DEFAULT_SLOT_DEFS } from '@shared/scenario';
 import type { BriefSpecBlock, ScenarioKind } from '@shared/types';
+import { metaGet, metaSet } from './persist';
 
 const PRESET_AT = '1970-01-01T00:00:00.000Z';
 
+// 0057：种子门是 app_meta 首启标记，不是「表空才插」——用户清空谓词表后重启，
+// 不得被默认槽重新插回；既有已种子的库（表非空、无标记）只补写标记，不重复播种。
+const PRESETS_SEEDED_KEY = 'presets_seeded';
+
 /** 首启只写场景预设包：槽表 + 简报说明。不写虚构对象/来源/主张。 */
 export function seedPresets(db: Database.Database): void {
+  if (metaGet(db, PRESETS_SEEDED_KEY) === '1') return;
+
   const slotCount = db.prepare('SELECT COUNT(*) AS n FROM slot_defs').get() as { n: number };
   if (slotCount.n === 0) {
     const insert = db.prepare(
@@ -27,6 +34,7 @@ export function seedPresets(db: Database.Database): void {
     tx();
   }
 
+  // 简报说明表与槽表共用同一扇门（0057）：同标记同口径，删空后同样不得复活。
   const specCount = db.prepare('SELECT COUNT(*) AS n FROM scenario_brief_specs').get() as {
     n: number;
   };
@@ -41,6 +49,8 @@ export function seedPresets(db: Database.Database): void {
     });
     tx();
   }
+
+  metaSet(db, PRESETS_SEEDED_KEY, '1');
 }
 
 export function listSlotDefs(db: Database.Database): typeof DEFAULT_SLOT_DEFS {

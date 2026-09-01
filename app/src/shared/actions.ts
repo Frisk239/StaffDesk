@@ -145,6 +145,19 @@ export type Action =
   | { type: 'DELETE_OBJECT'; id: string }
   | { type: 'RESTORE_OBJECT'; id: string }
   | { type: 'ADD_SLOT'; name: string; kind: ObjectKind; arity: '单值' | '多值' }
+  | {
+      // 0057：编辑是直接改账本的人手设置动作（改名 / 单值↔多值 / 场景适用标记），不进撤销卡。
+      // kind 不可改：换种类等于跨分区搬家，抽取按对象种类走映射会乱。
+      type: 'UPDATE_SLOT';
+      name: string;
+      kind: ObjectKind;
+      next: {
+        name?: string | undefined;
+        arity?: '单值' | '多值' | undefined;
+        scenarios?: ScenarioKind[] | undefined;
+      };
+    }
+  | { type: 'REMOVE_SLOT'; name: string; kind: ObjectKind }
   | { type: 'ENQUEUE_WRITE'; draft: Omit<WriteProposal, 'id'> }
   | {
       type: 'CONFIRM_WRITE';

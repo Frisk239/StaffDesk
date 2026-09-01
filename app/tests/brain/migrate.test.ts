@@ -271,7 +271,47 @@ describe('建库与迁移', () => {
     expect(settings.load()?.providers[0]?.apiKey).toBe('');
     migrated.close();
   });
+
+  it('既有库（表非空、无标记）打开后补写种子标记，不重复播种（0057）', () => {
+    const file = tmpBrain();
+    const first = openBrain(file);
+    const seeded = slotCount(first.db);
+    expect(seeded).toBe(DEFAULT_SLOT_DEFS.length);
+    // 模拟标记缺失的既有库：清掉标记后重开，槽表已非空——只补标记，不得再插一份默认槽。
+    first.db.prepare("DELETE FROM app_meta WHERE key = 'presets_seeded'").run();
+    first.close();
+
+    const again = openBrain(file);
+    expect(slotCount(again.db)).toBe(seeded);
+    const marker = again.db
+      .prepare("SELECT value FROM app_meta WHERE key = 'presets_seeded'")
+      .get() as { value: string } | undefined;
+    expect(marker?.value).toBe('1');
+    again.close();
+  });
+
+  it('删空槽表与简报说明表后重开不被默认种子复活（0057 首启标记）', () => {
+    const file = tmpBrain();
+    const first = openBrain(file);
+    expect(slotCount(first.db)).toBeGreaterThan(0);
+    first.db.exec('DELETE FROM slot_defs');
+    first.db.exec('DELETE FROM scenario_brief_specs');
+    first.close();
+
+    const again = openBrain(file);
+    expect(slotCount(again.db)).toBe(0);
+    const specCount = again.db.prepare('SELECT COUNT(*) AS n FROM scenario_brief_specs').get() as {
+      n: number;
+    };
+    expect(specCount.n).toBe(0);
+    again.close();
+  });
 });
+
+function slotCount(db: import('better-sqlite3').Database): number {
+  const row = db.prepare('SELECT COUNT(*) AS n FROM slot_defs').get() as { n: number };
+  return row.n;
+}
 
 function columnNames(db: import('better-sqlite3').Database, table: string): string[] {
   return (db.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[]).map(

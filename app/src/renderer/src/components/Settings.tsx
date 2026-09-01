@@ -15,7 +15,15 @@ import {
   X,
 } from '@phosphor-icons/react';
 import { useStore } from '../store';
-import type { LlmModel, LlmProvider, ObjectKind, ThemePreference } from '@shared/types';
+import { briefSpecPredicates, SCENARIOS } from '@shared/scenario';
+import type {
+  LlmModel,
+  LlmProvider,
+  ObjectKind,
+  ScenarioKind,
+  SlotDef,
+  ThemePreference,
+} from '@shared/types';
 
 const CUBES: { id: ThemePreference; label: string; Icon: typeof Sun }[] = [
   { id: 'light', label: '明亮', Icon: Sun },
@@ -223,9 +231,15 @@ function SlotTable() {
   const [name, setName] = useState('');
   const [kind, setKind] = useState<ObjectKind>('组织');
   const [arity, setArity] = useState<'单值' | '多值'>('单值');
+  // 0057：行内编辑/删除入口；受保护槽（内置简报说明引用）仍可改取值与场景，禁改名禁删。
+  const [editingKey, setEditingKey] = useState<string | null>(null);
+  const [deletingKey, setDeletingKey] = useState<string | null>(null);
 
   const kinds: ObjectKind[] = ['人', '组织', '项目'];
   const scenarioLabel = (s: string[]) => (s.length === 0 ? '通用' : s.join('、'));
+  const slotKey = (d: SlotDef) => `${d.kind}\u0000${d.name}`;
+  const editing = state.slotDefs.find((d) => slotKey(d) === editingKey) ?? null;
+  const deleting = state.slotDefs.find((d) => slotKey(d) === deletingKey) ?? null;
 
   return (
     <div className="slot-editor">
@@ -240,13 +254,40 @@ function SlotTable() {
             <div className="slot-table">
               {state.slotDefs
                 .filter((d) => d.kind === k)
-                .map((d) => (
-                  <div className="slot-table-row" key={`${d.kind}-${d.name}`}>
-                    <span className="slot-name">{d.name}</span>
-                    <span className="tag grey">{d.arity}</span>
-                    <span className="slot-scenarios">{scenarioLabel(d.scenarios)}</span>
-                  </div>
-                ))}
+                .map((d) => {
+                  const locked = briefSpecPredicates().has(d.name);
+                  return (
+                    <div className="slot-table-row" key={`${d.kind}-${d.name}`}>
+                      <span className="slot-name">
+                        {d.name}
+                        {locked && <span className="tag grey">简报引用</span>}
+                      </span>
+                      <span className="tag grey">{d.arity}</span>
+                      <span className="slot-scenarios">{scenarioLabel(d.scenarios)}</span>
+                      <span className="slot-row-actions">
+                        <button
+                          type="button"
+                          className="icon-ghost"
+                          aria-label={`编辑槽 ${d.name}`}
+                          title="编辑槽"
+                          onClick={() => setEditingKey(slotKey(d))}
+                        >
+                          <PencilSimple size={14} />
+                        </button>
+                        <button
+                          type="button"
+                          className="icon-ghost danger"
+                          aria-label={`删除槽 ${d.name}`}
+                          title={locked ? '内置简报说明引用该槽，暂不能删除' : '删除槽'}
+                          disabled={locked}
+                          onClick={() => setDeletingKey(slotKey(d))}
+                        >
+                          <Trash size={14} />
+                        </button>
+                      </span>
+                    </div>
+                  );
+                })}
             </div>
           </section>
         ))}
@@ -308,6 +349,211 @@ function SlotTable() {
           </button>
         </div>
       </form>
+      {editing && (
+        <SlotEditDialog
+          slot={editing}
+          onClose={() => setEditingKey(null)}
+          onRequestDelete={() => {
+            setEditingKey(null);
+            setDeletingKey(slotKey(editing));
+          }}
+        />
+      )}
+      {deleting && <SlotDeleteDialog slot={deleting} onClose={() => setDeletingKey(null)} />}
+    </div>
+  );
+}
+
+/** 0057：槽编辑 mini-dialog——改名（受保护槽禁用）、单值/多值切换、场景适用勾选（空选 = 通用）。 */
+function SlotEditDialog({
+  slot,
+  onClose,
+  onRequestDelete,
+}: {
+  slot: SlotDef;
+  onClose: () => void;
+  onRequestDelete: () => void;
+}) {
+  const { dispatch } = useStore();
+  const [draftName, setDraftName] = useState(slot.name);
+  const [arity, setArity] = useState<'单值' | '多值'>(slot.arity);
+  const [sceneSet, setSceneSet] = useState<Set<ScenarioKind>>(new Set(slot.scenarios));
+  const locked = briefSpecPredicates().has(slot.name);
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') onClose();
+    };
+    document.addEventListener('keydown', onKeyDown);
+    return () => document.removeEventListener('keydown', onKeyDown);
+  }, [onClose]);
+
+  const toggleScene = (scenario: ScenarioKind) => {
+    setSceneSet((prev) => {
+      const next = new Set(prev);
+      if (next.has(scenario)) next.delete(scenario);
+      else next.add(scenario);
+      return next;
+    });
+  };
+
+  const save = () => {
+    dispatch({
+      type: 'UPDATE_SLOT',
+      name: slot.name,
+      kind: slot.kind,
+      next: {
+        ...(locked ? {} : { name: draftName }),
+        arity,
+        scenarios: [...sceneSet],
+      },
+    });
+    onClose();
+  };
+
+  return (
+    <div className="mini-overlay" role="presentation" onMouseDown={onClose}>
+      <div
+        className="mini-dialog"
+        role="dialog"
+        aria-modal="true"
+        aria-label="编辑槽"
+        onMouseDown={(event) => event.stopPropagation()}
+      >
+        <div className="mini-head">
+          编辑字段
+          <button type="button" className="icon-ghost" onClick={onClose} aria-label="关闭">
+            <X size={14} />
+          </button>
+        </div>
+        <label className="field">
+          字段名
+          <input
+            value={draftName}
+            disabled={locked}
+            aria-label="槽名"
+            onChange={(e) => setDraftName(e.target.value)}
+          />
+        </label>
+        {locked && (
+          <p className="bind-hint">内置简报说明引用该字段，暂不能改名（场景数据化后解除）。</p>
+        )}
+        <fieldset className="slot-choice">
+          <legend>取值</legend>
+          <div>
+            {(['单值', '多值'] as const).map((a) => (
+              <button
+                key={a}
+                type="button"
+                className={arity === a ? 'on' : ''}
+                onClick={() => setArity(a)}
+              >
+                {a}
+              </button>
+            ))}
+          </div>
+        </fieldset>
+        <fieldset className="slot-choice">
+          <legend>适用场景（全不勾 = 通用）</legend>
+          <div className="slot-scene-grid">
+            <label className={`bind-option${sceneSet.size === 0 ? ' on' : ''}`}>
+              <input
+                type="checkbox"
+                checked={sceneSet.size === 0}
+                onChange={() => setSceneSet(new Set())}
+              />
+              <span>通用（全部场景）</span>
+            </label>
+            {SCENARIOS.map((scenario) => (
+              <label key={scenario} className={`bind-option${sceneSet.has(scenario) ? ' on' : ''}`}>
+                <input
+                  type="checkbox"
+                  checked={sceneSet.has(scenario)}
+                  onChange={() => toggleScene(scenario)}
+                />
+                <span>{scenario}</span>
+              </label>
+            ))}
+          </div>
+        </fieldset>
+        <div className="mini-foot">
+          <button
+            type="button"
+            className="icon-ghost danger"
+            aria-label="删除槽"
+            title={locked ? '内置简报说明引用该槽，暂不能删除' : '删除槽'}
+            disabled={locked}
+            onClick={onRequestDelete}
+          >
+            <Trash size={16} />
+          </button>
+          <button type="button" className="ghost" onClick={onClose}>
+            取消
+          </button>
+          <button type="button" className="primary" onClick={save} disabled={!draftName.trim()}>
+            保存
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/** 0057：删除确认——先把影响数说清（成立主张 N 条将降为未编目、涉及对象 M 个），danger 确认。 */
+function SlotDeleteDialog({ slot, onClose }: { slot: SlotDef; onClose: () => void }) {
+  const { state, dispatch } = useStore();
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') onClose();
+    };
+    document.addEventListener('keydown', onKeyDown);
+    return () => document.removeEventListener('keydown', onKeyDown);
+  }, [onClose]);
+
+  const claimCount = state.claims.filter(
+    (claim) =>
+      claim.predicate === slot.name &&
+      claim.status === '成立' &&
+      (state.objects.some((o) => o.id === claim.objectId && o.kind === slot.kind) ||
+        !state.objects.some((o) => o.id === claim.objectId)),
+  );
+  const objectCount = new Set(claimCount.map((claim) => claim.objectId)).size;
+
+  return (
+    <div className="mini-overlay" role="presentation" onMouseDown={onClose}>
+      <div
+        className="mini-dialog"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="delete-slot-title"
+        aria-describedby="delete-slot-detail"
+        onMouseDown={(event) => event.stopPropagation()}
+      >
+        <div className="mini-head" id="delete-slot-title">
+          删除字段
+        </div>
+        <p className="dim" id="delete-slot-detail">
+          删除「{slot.name}」会把 {claimCount.length} 条成立主张降为「未编目」（涉及 {objectCount}{' '}
+          个对象）：不再参与冲突判定，简报只作「材料提到」，整理会提议编目。
+          已关窗主张保留原名作历史。此操作不提供一键撤销。
+        </p>
+        <div className="mini-foot">
+          <button type="button" className="ghost" onClick={onClose}>
+            取消
+          </button>
+          <button
+            type="button"
+            className="primary danger"
+            onClick={() => {
+              dispatch({ type: 'REMOVE_SLOT', name: slot.name, kind: slot.kind });
+              onClose();
+            }}
+          >
+            确认删除
+          </button>
+        </div>
+      </div>
     </div>
   );
 }

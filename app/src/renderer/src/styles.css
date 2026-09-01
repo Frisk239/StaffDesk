@@ -3687,7 +3687,7 @@ html[data-theme='dark'] .window {
 .slot-table-row {
   min-width: 0;
   display: grid;
-  grid-template-columns: minmax(120px, 0.9fr) 46px minmax(180px, 1.6fr);
+  grid-template-columns: minmax(120px, 0.9fr) 46px minmax(150px, 1.4fr) auto;
   align-items: center;
   gap: 10px;
   min-height: 36px;
@@ -3695,6 +3695,19 @@ html[data-theme='dark'] .window {
   border-radius: 8px;
   padding: 5px 10px;
   font-size: 13px;
+}
+.slot-row-actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+.slot-name .tag.grey {
+  margin-left: 6px;
+}
+.slot-scene-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 6px;
 }
 .slot-name,
 .slot-scenarios {
