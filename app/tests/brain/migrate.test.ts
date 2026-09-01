@@ -455,6 +455,144 @@ describe('建库与迁移', () => {
     brain.close();
   });
 
+  it('v11 迁移把角色落到绑定、关闭原因收主键新版、写队列收设角色（0062）', () => {
+    const file = tmpBrain();
+    const legacy = new Database(file);
+    legacy.pragma('journal_mode = WAL');
+    legacy.exec(`
+      CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL);
+      CREATE TABLE sources (
+        id TEXT PRIMARY KEY,
+        title TEXT NOT NULL,
+        body TEXT NOT NULL,
+        path TEXT NOT NULL,
+        role TEXT,
+        workspace_id TEXT,
+        unparsed INTEGER NOT NULL DEFAULT 0,
+        origin_json TEXT,
+        segments_json TEXT,
+        content_hash TEXT,
+        fetched_at TEXT,
+        created_at TEXT NOT NULL
+      );
+      CREATE TABLE source_bindings (
+        source_id TEXT NOT NULL,
+        object_id TEXT NOT NULL,
+        PRIMARY KEY (source_id, object_id)
+      );
+      CREATE TABLE claims (
+        id TEXT PRIMARY KEY,
+        object_id TEXT NOT NULL,
+        predicate TEXT NOT NULL,
+        text TEXT NOT NULL,
+        status TEXT NOT NULL,
+        unverified INTEGER NOT NULL DEFAULT 1,
+        valid_from TEXT,
+        valid_to TEXT,
+        close_reason TEXT CHECK (close_reason IN ('世界已变', '从未成立', '来源删除', '对象误建')),
+        source_id TEXT NOT NULL,
+        span TEXT,
+        source_start INTEGER,
+        source_end INTEGER,
+        source_locator TEXT,
+        superseded_by TEXT,
+        created_at TEXT NOT NULL
+      );
+      CREATE TABLE write_queue (
+        id TEXT PRIMARY KEY,
+        object_id TEXT NOT NULL,
+        kind TEXT NOT NULL CHECK (kind IN ('晋升', '纠正', '整理', '绑定', '批量晋升', '批量回退', '场景')),
+        task_id TEXT,
+        headline TEXT NOT NULL,
+        evidence TEXT NOT NULL,
+        claim_id TEXT,
+        claim_ids TEXT,
+        source_id TEXT,
+        object_ids TEXT,
+        target_predicate TEXT,
+        outbound INTEGER,
+        template_json TEXT,
+        position INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL
+      );
+      CREATE TABLE app_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+    `);
+    legacy
+      .prepare("INSERT INTO schema_migrations (version, applied_at) VALUES (10, '2026-09-01')")
+      .run();
+    legacy
+      .prepare(
+        `INSERT INTO sources (id, title, body, path, role, created_at)
+         VALUES ('src-1', '官网', '正文', '手给', '主键', '2026-09-01')`,
+      )
+      .run();
+    legacy
+      .prepare("INSERT INTO source_bindings (source_id, object_id) VALUES ('src-1', 'obj-a')")
+      .run();
+    legacy
+      .prepare("INSERT INTO source_bindings (source_id, object_id) VALUES ('src-1', 'obj-b')")
+      .run();
+    legacy
+      .prepare(
+        `INSERT INTO claims (
+           id, object_id, predicate, text, status, unverified, source_id, created_at
+         ) VALUES ('cl-1', 'obj-a', '后端主栈', '主栈是 Go', '成立', 0, 'src-1', '2026-09-01')`,
+      )
+      .run();
+    legacy
+      .prepare(
+        `INSERT INTO write_queue (id, object_id, kind, headline, evidence, position, created_at)
+         VALUES ('wr-1', 'obj-a', '晋升', '旧队列行', '旧证据', 0, '2026-09-01')`,
+      )
+      .run();
+    legacy.prepare("INSERT INTO app_meta VALUES ('presets_seeded', '1')").run();
+    legacy.close();
+
+    const brain = openBrain(file);
+    const bindCols = columnNames(brain.db, 'source_bindings');
+    expect(bindCols).toContain('role');
+    const binds = brain.db
+      .prepare('SELECT object_id, role FROM source_bindings ORDER BY object_id')
+      .all() as { object_id: string; role: string }[];
+    expect(binds).toEqual([
+      { object_id: 'obj-a', role: '主键' },
+      { object_id: 'obj-b', role: '主键' },
+    ]);
+
+    const claimDdl = brain.db
+      .prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'claims'")
+      .get() as { sql: string };
+    expect(claimDdl.sql).toContain('被主键新版取代');
+    brain.db
+      .prepare(
+        `UPDATE claims SET status = '过时', close_reason = '被主键新版取代' WHERE id = 'cl-1'`,
+      )
+      .run();
+    const closed = brain.db.prepare('SELECT close_reason FROM claims WHERE id = ?').get('cl-1') as {
+      close_reason: string;
+    };
+    expect(closed.close_reason).toBe('被主键新版取代');
+
+    const writeDdl = brain.db
+      .prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'write_queue'")
+      .get() as { sql: string };
+    expect(writeDdl.sql).toContain('设角色');
+    expect(columnNames(brain.db, 'write_queue')).toContain('role');
+    brain.db
+      .prepare(
+        `INSERT INTO write_queue (id, object_id, kind, headline, evidence, source_id, role, position, created_at)
+         VALUES ('wr-role', 'obj-a', '设角色', '标为主键', '证据', 'src-1', '主键', 1, '2026-09-01')`,
+      )
+      .run();
+    expect(brain.snapshot().writeQueue.find((w) => w.id === 'wr-role')?.role).toBe('主键');
+
+    const version = brain.db
+      .prepare('SELECT MAX(version) AS version FROM schema_migrations')
+      .get() as { version: number };
+    expect(version.version).toBeGreaterThanOrEqual(11);
+    brain.close();
+  });
+
   it('首启后槽名与 DEFAULT_SLOT_DEFS 一致、场景模板与种子源四件套一致，且对象/来源/主张计数为 0', () => {
     const brain = openBrain(tmpBrain());
     const snap = brain.snapshot();

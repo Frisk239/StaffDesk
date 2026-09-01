@@ -13,11 +13,13 @@ import type {
   ScenarioTemplate,
   SlotDef,
   Source,
+  SourceRole,
   State,
   TaskAudit,
   WriteProposal,
   Workspace,
 } from '@shared/types';
+import { bindingRole } from '@shared/primarySource';
 
 /** app_meta 读写工具：机器级/库级标记的收口（0056：app_meta 在 persist 写射程外，只经此处显式动）。 */
 export function metaSet(db: Database.Database, key: string, value: string): void {
@@ -209,7 +211,7 @@ const PERSIST_TABLES: readonly PersistTable[] = [
           title: s.title,
           body: s.body,
           path: s.path,
-          role: s.role ?? null,
+          role: null,
           workspace_id: s.workspaceId ?? null,
           unparsed: s.unparsed ? 1 : 0,
           origin_json: s.origin ? JSON.stringify(s.origin) : null,
@@ -224,7 +226,8 @@ const PERSIST_TABLES: readonly PersistTable[] = [
   },
   {
     table: 'source_bindings',
-    columns: ['source_id', 'object_id'],
+    // 0062：role 落在绑定表；脏判走 role 列 UPDATE，不回头全量重写。
+    columns: ['source_id', 'object_id', 'role'],
     primaryKey: ['source_id', 'object_id'],
     collection: (state) => state.sources,
     rows: (state) => {
@@ -232,7 +235,7 @@ const PERSIST_TABLES: readonly PersistTable[] = [
       for (const s of state.sources) {
         if (!isPersistentSource(s)) continue;
         for (const oid of s.boundObjectIds) {
-          rows.push({ source_id: s.id, object_id: oid });
+          rows.push({ source_id: s.id, object_id: oid, role: bindingRole(s, oid) });
         }
       }
       return rows;
@@ -377,6 +380,7 @@ const PERSIST_TABLES: readonly PersistTable[] = [
       'target_predicate',
       'outbound',
       'template_json',
+      'role',
       'position',
       'created_at',
     ],
@@ -400,6 +404,7 @@ const PERSIST_TABLES: readonly PersistTable[] = [
           outbound: typeof write.outbound === 'boolean' ? (write.outbound ? 1 : 0) : null,
           // M27：场景草稿四件套整体落 JSON；其余 kind 留 NULL。
           template_json: write.template ? JSON.stringify(write.template) : null,
+          role: write.role ?? null,
           // 0056 约束一例外：position 跟随数组下标重排，必须进 UPDATE 写集与脏判。
           position,
           created_at: stateStamp(state),
@@ -709,8 +714,8 @@ function syncTable(db: Database.Database, table: PersistTable, wanted: PersistRo
   const dataColumns = table.columns.filter(
     (column) => column !== 'created_at' && !table.primaryKey.includes(column),
   );
-  // 关联表（object_relations / source_bindings）主键即全部列，dataColumns 为空：同键行必等，
-  // 只需补 INSERT，无 UPDATE 可言。
+  // 关联表 object_relations 主键即全部列，dataColumns 为空：同键行必等，只需补 INSERT。
+  // source_bindings 自 0062 起 role 是非主键列：同键改角色走 UPDATE，不回头全量重写。
   const upd =
     dataColumns.length === 0
       ? null
@@ -917,20 +922,27 @@ export function loadLedger(db: Database.Database): LedgerRows {
     return obj;
   });
 
-  const binds = db.prepare('SELECT source_id, object_id FROM source_bindings').all() as {
+  const binds = db.prepare('SELECT source_id, object_id, role FROM source_bindings').all() as {
     source_id: string;
     object_id: string;
+    role: SourceRole | null;
   }[];
   const bindMap = new Map<string, string[]>();
+  const bindRoleMap = new Map<string, Record<string, SourceRole>>();
   for (const b of binds) {
     const list = bindMap.get(b.source_id) ?? [];
     list.push(b.object_id);
     bindMap.set(b.source_id, list);
+    if (b.role === '主键') {
+      const roles = bindRoleMap.get(b.source_id) ?? {};
+      roles[b.object_id] = '主键';
+      bindRoleMap.set(b.source_id, roles);
+    }
   }
   const sources = (
     db
       .prepare(
-        `SELECT id, title, body, path, role, workspace_id, unparsed,
+        `SELECT id, title, body, path, workspace_id, unparsed,
                 origin_json, segments_json, content_hash, fetched_at
          FROM sources ORDER BY created_at`,
       )
@@ -939,7 +951,6 @@ export function loadLedger(db: Database.Database): LedgerRows {
       title: string;
       body: string;
       path: Source['path'];
-      role: Source['role'] | null;
       workspace_id: string | null;
       unparsed: number;
       origin_json: string | null;
@@ -955,7 +966,8 @@ export function loadLedger(db: Database.Database): LedgerRows {
       path: s.path,
       boundObjectIds: bindMap.get(s.id) ?? [],
     };
-    if (s.role) src.role = s.role;
+    const roles = bindRoleMap.get(s.id);
+    if (roles && Object.keys(roles).length > 0) src.bindingRoles = roles;
     if (s.workspace_id) src.workspaceId = s.workspace_id;
     if (s.unparsed) src.unparsed = true;
     const origin = parseJson<Source['origin']>(s.origin_json);
@@ -1103,7 +1115,7 @@ export function loadLedger(db: Database.Database): LedgerRows {
     db
       .prepare(
         `SELECT id, object_id, kind, task_id, headline, evidence, claim_id, claim_ids,
-                source_id, object_ids, target_predicate, outbound, template_json
+                source_id, object_ids, target_predicate, outbound, template_json, role
          FROM write_queue ORDER BY position, created_at, id`,
       )
       .all() as {
@@ -1120,6 +1132,7 @@ export function loadLedger(db: Database.Database): LedgerRows {
       target_predicate: string | null;
       outbound: number | null;
       template_json: string | null;
+      role: WriteProposal['role'] | null;
     }[]
   ).map((row) => {
     const write: WriteProposal = {
@@ -1141,6 +1154,7 @@ export function loadLedger(db: Database.Database): LedgerRows {
     // M27（0051/0058）：场景草稿读回（解析失败视为无草稿，确认侧守卫会拒空名/表外谓词）。
     const template = parseJson<WriteProposal['template']>(row.template_json);
     if (template) write.template = template;
+    if (row.role === '主键' || row.role === '转述') write.role = row.role;
     return write;
   });
 

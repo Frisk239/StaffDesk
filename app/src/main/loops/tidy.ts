@@ -1,5 +1,6 @@
-import type { Claim, Proposal, State } from '@shared/types';
-import { normalizeValue } from '@shared/scenario';
+import type { Claim, Proposal, Source, State } from '@shared/types';
+import { deriveConflicts, normalizeValue } from '@shared/scenario';
+import { bindingRole } from '@shared/primarySource';
 
 /**
  * 复核提示阈值（天）：validFrom 距今天超过该天数才提议「标过时」。
@@ -201,6 +202,70 @@ export function proposeRelations(state: State, objectId: string, seq: number): P
     });
   }
   return out;
+}
+
+/**
+ * 0062：冲突双方均出自主键绑定且来源时间可辨（新 v 旧）时，提议关窗旧版。
+ * 人确认才关窗；生成提议本身不消解冲突（0029）。转述一侧永不进入此卡。
+ */
+export function proposeSupersedeByPrimary(state: State, objectId: string, seq: number): Proposal[] {
+  const pairs = deriveConflicts(state.claims, state.slotDefs);
+  const out: Proposal[] = [];
+  for (const pair of pairs) {
+    const a = state.claims.find((c) => c.id === pair.claimIdA);
+    const b = state.claims.find((c) => c.id === pair.claimIdB);
+    if (!a || !b || a.objectId !== objectId || b.objectId !== objectId) continue;
+    const srcA = state.sources.find((s) => s.id === a.sourceId);
+    const srcB = state.sources.find((s) => s.id === b.sourceId);
+    if (!srcA || !srcB) continue;
+    if (bindingRole(srcA, objectId) !== '主键' || bindingRole(srcB, objectId) !== '主键') continue;
+    const ordered = orderBySourceTime(a, srcA, b, srcB);
+    if (!ordered) continue;
+    const [older, newer] = ordered;
+    const already = state.proposals.some(
+      (p) =>
+        p.pending &&
+        p.payload.kind === '主键新版过时' &&
+        p.payload.oldClaimId === older.id &&
+        p.payload.newClaimId === newer.id,
+    );
+    if (already) continue;
+    if (
+      out.some(
+        (p) =>
+          p.payload.kind === '主键新版过时' &&
+          p.payload.oldClaimId === older.id &&
+          p.payload.newClaimId === newer.id,
+      )
+    ) {
+      continue;
+    }
+    out.push({
+      id: `prop-primary-${seq}-${out.length}`,
+      type: '整理',
+      title: '建议：旧版过时？',
+      detail: [
+        `旧版：· ${older.text}`,
+        `新版：· ${newer.text}`,
+        '两侧都出自主键。确认后关窗旧版，关闭原因「被主键新版取代」；冲突不自动消解，关窗后派生关系才消失。',
+      ].join('\n'),
+      payload: { kind: '主键新版过时', oldClaimId: older.id, newClaimId: newer.id },
+      pending: true,
+    });
+  }
+  return out;
+}
+
+/** 来源时间：fetchedAt / origin.fetchedAt，否则主张 validFrom。缺一侧或相等则不可辨。 */
+function orderBySourceTime(a: Claim, srcA: Source, b: Claim, srcB: Source): [Claim, Claim] | null {
+  const timeA = sourceTime(srcA, a);
+  const timeB = sourceTime(srcB, b);
+  if (!timeA || !timeB || timeA === timeB) return null;
+  return timeA < timeB ? [a, b] : [b, a];
+}
+
+function sourceTime(source: Source, claim: Claim): string | undefined {
+  return source.fetchedAt ?? source.origin?.fetchedAt ?? claim.validFrom;
 }
 
 /** 文本是否出现该全名；出现位置若被更长的既有对象名盖住则不算（前缀误配）。 */

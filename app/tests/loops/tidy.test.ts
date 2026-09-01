@@ -8,9 +8,10 @@ import {
   proposeMergeDuplicates,
   proposeNewObjects,
   proposeRelations,
+  proposeSupersedeByPrimary,
   STALE_AFTER_DAYS,
 } from '../../src/main/loops/tidy';
-import type { Claim, DeskObject, Proposal, State } from '@shared/types';
+import type { Claim, DeskObject, Proposal, Source, State } from '@shared/types';
 
 function claimOf(partial: Partial<Claim> & Pick<Claim, 'id' | 'text'>): Claim {
   return {
@@ -34,13 +35,14 @@ function stateWith(
   claims: State['claims'],
   proposals: Proposal[] = [],
   objects: DeskObject[] = [objectOf({ id: 'o1', kind: '组织', name: '甲' })],
+  sources: Source[] = [],
 ): State {
   return {
     ...emptyUiFields(),
     workspaces: [{ id: 'ws', name: '区', scenario: '求职面试' }],
     currentWorkspaceId: 'ws',
     objects,
-    sources: [],
+    sources,
     claims,
     slotDefs: DEFAULT_SLOT_DEFS,
     // 0058：场景模板是账本数据——用种子基线构造（断言依赖内置 spec 的场景必须带内置模板）。
@@ -439,6 +441,109 @@ describe('补关系提议', () => {
         stateWith([claimOf({ id: 'c1', text: '乙同事在场。', objectId: 'o4' })], [], objects()),
         'o1',
         6,
+      ),
+    ).toEqual([]);
+  });
+});
+
+describe('主键新版过时提议 0062', () => {
+  const sources: Source[] = [
+    {
+      id: 's-old',
+      title: '旧官网',
+      body: '主栈是 Go',
+      path: '手给',
+      boundObjectIds: ['o1'],
+      bindingRoles: { o1: '主键' },
+      fetchedAt: '2024-01-01T00:00:00.000Z',
+    },
+    {
+      id: 's-new',
+      title: '新官网',
+      body: '主栈是 Rust',
+      path: '手给',
+      boundObjectIds: ['o1'],
+      bindingRoles: { o1: '主键' },
+      fetchedAt: '2026-06-01T00:00:00.000Z',
+    },
+    {
+      id: 's-press',
+      title: '媒体',
+      body: '主栈是 Java',
+      path: '调研',
+      boundObjectIds: ['o1'],
+      fetchedAt: '2026-08-01T00:00:00.000Z',
+    },
+  ];
+
+  it('双方都是主键且来源时间可辨时提议关窗旧版', () => {
+    const out = proposeSupersedeByPrimary(
+      stateWith(
+        [
+          claimOf({
+            id: 'c-old',
+            text: '主栈是 Go',
+            sourceId: 's-old',
+            validFrom: '2024-01-01',
+          }),
+          claimOf({
+            id: 'c-new',
+            text: '主栈是 Rust',
+            sourceId: 's-new',
+            validFrom: '2026-06-01',
+          }),
+        ],
+        [],
+        [objectOf({ id: 'o1', kind: '组织', name: '甲' })],
+        sources,
+      ),
+      'o1',
+      9,
+    );
+    expect(out).toHaveLength(1);
+    expect(out[0]?.title).toBe('建议：旧版过时？');
+    expect(out[0]?.payload).toEqual({
+      kind: '主键新版过时',
+      oldClaimId: 'c-old',
+      newClaimId: 'c-new',
+    });
+  });
+
+  it('转述一侧不提议；时间不可辨不提议', () => {
+    const objects = [objectOf({ id: 'o1', kind: '组织', name: '甲' })];
+    expect(
+      proposeSupersedeByPrimary(
+        stateWith(
+          [
+            claimOf({ id: 'c-old', text: '主栈是 Go', sourceId: 's-old' }),
+            claimOf({ id: 'c-press', text: '主栈是 Java', sourceId: 's-press' }),
+          ],
+          [],
+          objects,
+          sources,
+        ),
+        'o1',
+        9,
+      ),
+    ).toEqual([]);
+    const noTime: Source[] = sources.map((s) => ({
+      ...s,
+      fetchedAt: undefined,
+      origin: undefined,
+    }));
+    expect(
+      proposeSupersedeByPrimary(
+        stateWith(
+          [
+            claimOf({ id: 'c-old', text: '主栈是 Go', sourceId: 's-old' }),
+            claimOf({ id: 'c-new', text: '主栈是 Rust', sourceId: 's-new' }),
+          ],
+          [],
+          objects,
+          noTime,
+        ),
+        'o1',
+        9,
       ),
     ).toEqual([]);
   });
