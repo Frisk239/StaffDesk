@@ -10,20 +10,33 @@ import {
   PencilSimple,
   Plugs,
   Plus,
+  SquaresFour,
   Sun,
   Trash,
   X,
 } from '@phosphor-icons/react';
 import { useStore } from '../store';
-import { briefSpecPredicates, SCENARIOS } from '@shared/scenario';
+import { briefSpecPredicates } from '@shared/scenario';
 import type {
+  BriefBlockKind,
+  BriefSpecBlock,
   LlmModel,
   LlmProvider,
   ObjectKind,
+  Predicate,
   ScenarioKind,
+  ScenarioTemplate,
   SlotDef,
   ThemePreference,
 } from '@shared/types';
+
+// 0058：简报说明块四类（background / slots / synthesis / gaps），下拉只给人看的中文标签。
+const BLOCK_KIND_LABELS: Record<BriefBlockKind, string> = {
+  background: '背景（非槽主张）',
+  slots: '槽位（指定字段）',
+  synthesis: '综合（须指回主张）',
+  gaps: '材料缺口',
+};
 
 const CUBES: { id: ThemePreference; label: string; Icon: typeof Sun }[] = [
   { id: 'light', label: '明亮', Icon: Sun },
@@ -38,7 +51,7 @@ function fmtCtx(n: number) {
 }
 
 export function SettingsModal({ open, onClose }: { open: boolean; onClose: () => void }) {
-  const [section, setSection] = useState<'通用' | '谓词表' | '模型'>('通用');
+  const [section, setSection] = useState<'通用' | '谓词表' | '模型' | '场景模板'>('通用');
 
   useEffect(() => {
     if (!open) return;
@@ -66,12 +79,19 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
           <button className={section === '模型' ? 'on' : ''} onClick={() => setSection('模型')}>
             <Cpu size={16} /> 模型
           </button>
+          <button
+            className={section === '场景模板' ? 'on' : ''}
+            onClick={() => setSection('场景模板')}
+          >
+            <SquaresFour size={16} /> 场景模板
+          </button>
         </nav>
         <div className="settings-content">
           <div className="settings-content-head">
             {section === '通用' && <h2 className="settings-h">通用设置</h2>}
             {section === '模型' && <h2 className="settings-h">模型设置</h2>}
             {section === '谓词表' && <h2 className="settings-h">受控谓词表</h2>}
+            {section === '场景模板' && <h2 className="settings-h">场景模板</h2>}
             <button className="settings-close" type="button" onClick={onClose} aria-label="关闭">
               <X size={14} />
             </button>
@@ -92,6 +112,7 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
           )}
           {section === '谓词表' && <SlotTable />}
           {section === '模型' && <ModelsWorkbench />}
+          {section === '场景模板' && <ScenarioTemplates />}
         </div>
       </div>
     </div>
@@ -255,12 +276,13 @@ function SlotTable() {
               {state.slotDefs
                 .filter((d) => d.kind === k)
                 .map((d) => {
-                  const locked = briefSpecPredicates().has(d.name);
+                  // 0058：模板集已是数据行，「简报引用」只作提示标记（reducer 改名/删除走级联改写）。
+                  const lockedTag = briefSpecPredicates(state.scenarioTemplates).has(d.name);
                   return (
                     <div className="slot-table-row" key={`${d.kind}-${d.name}`}>
                       <span className="slot-name">
                         {d.name}
-                        {locked && <span className="tag grey">简报引用</span>}
+                        {lockedTag && <span className="tag grey">简报引用</span>}
                       </span>
                       <span className="tag grey">{d.arity}</span>
                       <span className="slot-scenarios">{scenarioLabel(d.scenarios)}</span>
@@ -278,8 +300,8 @@ function SlotTable() {
                           type="button"
                           className="icon-ghost danger"
                           aria-label={`删除槽 ${d.name}`}
-                          title={locked ? '内置简报说明引用该槽，暂不能删除' : '删除槽'}
-                          disabled={locked}
+                          title="删除槽"
+
                           onClick={() => setDeletingKey(slotKey(d))}
                         >
                           <Trash size={14} />
@@ -374,11 +396,14 @@ function SlotEditDialog({
   onClose: () => void;
   onRequestDelete: () => void;
 }) {
-  const { dispatch } = useStore();
+  // 0058：briefSpecPredicates 改吃模板集；场景勾选候选也改读模板名清单（数据行）。
+  const { state, dispatch } = useStore();
   const [draftName, setDraftName] = useState(slot.name);
   const [arity, setArity] = useState<'单值' | '多值'>(slot.arity);
   const [sceneSet, setSceneSet] = useState<Set<ScenarioKind>>(new Set(slot.scenarios));
-  const locked = briefSpecPredicates().has(slot.name);
+  // 0058：被简报说明引用不再上锁——改名/删除走 reducer 级联改写（重写模板谓词 / 撤空块），
+  // 此处只保留提示性标记（lockedTag），不禁用任何操作。
+  const lockedTag = briefSpecPredicates(state.scenarioTemplates).has(slot.name);
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -403,7 +428,7 @@ function SlotEditDialog({
       name: slot.name,
       kind: slot.kind,
       next: {
-        ...(locked ? {} : { name: draftName }),
+        ...(draftName.trim() === slot.name ? {} : { name: draftName }),
         arity,
         scenarios: [...sceneSet],
       },
@@ -430,13 +455,15 @@ function SlotEditDialog({
           字段名
           <input
             value={draftName}
-            disabled={locked}
+
             aria-label="槽名"
             onChange={(e) => setDraftName(e.target.value)}
           />
         </label>
-        {locked && (
-          <p className="bind-hint">内置简报说明引用该字段，暂不能改名（场景数据化后解除）。</p>
+        {lockedTag && (
+          <p className="bind-hint">
+            简报说明引用此字段：改名会同步改写各场景的简报说明，删除会从块中移除并撤下空块。
+          </p>
         )}
         <fieldset className="slot-choice">
           <legend>取值</legend>
@@ -464,14 +491,15 @@ function SlotEditDialog({
               />
               <span>通用（全部场景）</span>
             </label>
-            {SCENARIOS.map((scenario) => (
-              <label key={scenario} className={`bind-option${sceneSet.has(scenario) ? ' on' : ''}`}>
+            {/* 0058：候选改读 state.scenarioTemplates 名清单——场景是数据行，含自定义模板。 */}
+            {state.scenarioTemplates.map((t) => (
+              <label key={t.name} className={`bind-option${sceneSet.has(t.name) ? ' on' : ''}`}>
                 <input
                   type="checkbox"
-                  checked={sceneSet.has(scenario)}
-                  onChange={() => toggleScene(scenario)}
+                  checked={sceneSet.has(t.name)}
+                  onChange={() => toggleScene(t.name)}
                 />
-                <span>{scenario}</span>
+                <span>{t.name}</span>
               </label>
             ))}
           </div>
@@ -481,8 +509,7 @@ function SlotEditDialog({
             type="button"
             className="icon-ghost danger"
             aria-label="删除槽"
-            title={locked ? '内置简报说明引用该槽，暂不能删除' : '删除槽'}
-            disabled={locked}
+            title="删除槽"
             onClick={onRequestDelete}
           >
             <Trash size={16} />
@@ -551,6 +578,258 @@ function SlotDeleteDialog({ slot, onClose }: { slot: SlotDef; onClose: () => voi
             }}
           >
             确认删除
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/** 0058：场景模板管理区——列表（名称 + 内置标记 + 建对象引导摘要）与新建/编辑/删除入口。 */
+function ScenarioTemplates() {
+  const { state, dispatch } = useStore();
+  // 'new' = 新建空模板；ScenarioTemplate = 编辑既有（改名走 previousName，由 reducer 守卫）。
+  const [draft, setDraft] = useState<'new' | ScenarioTemplate | null>(null);
+
+  return (
+    <div className="settings-body">
+      <div className="settings-block">
+        <p className="models-lead">
+          场景模板决定建区后的字段预设、简报说明、建对象引导与说明书。内置基线可改内容、不可删除；被工作区引用的模板先移除或改区再删。
+        </p>
+        <div className="tpl-list">
+          {state.scenarioTemplates.map((t) => (
+            <div className="tpl-row" key={t.name}>
+              <span className="slot-name">
+                {t.name}
+                {t.builtin && <span className="tag grey">内置</span>}
+              </span>
+              <span className="slot-scenarios">{t.hint}</span>
+              <span className="slot-row-actions">
+                <button
+                  type="button"
+                  className="icon-ghost"
+                  aria-label={`编辑模板 ${t.name}`}
+                  title="编辑模板"
+                  onClick={() => setDraft(t)}
+                >
+                  <PencilSimple size={14} />
+                </button>
+                <button
+                  type="button"
+                  className="icon-ghost danger"
+                  aria-label={`删除模板 ${t.name}`}
+                  title={t.builtin ? '内置基线，不可删除' : '删除模板'}
+                  disabled={t.builtin}
+                  onClick={() => dispatch({ type: 'REMOVE_SCENARIO_TEMPLATE', name: t.name })}
+                >
+                  <Trash size={14} />
+                </button>
+              </span>
+            </div>
+          ))}
+        </div>
+        <div>
+          <button type="button" className="primary small" onClick={() => setDraft('new')}>
+            <Plus size={12} /> 新建模板
+          </button>
+        </div>
+      </div>
+      {draft && (
+        <ScenarioTemplateDialog
+          template={draft === 'new' ? null : draft}
+          onClose={() => setDraft(null)}
+        />
+      )}
+    </div>
+  );
+}
+
+/**
+ * 0058：模板编辑 mini-dialog——名称（内置禁改）、建对象引导、说明书、简报说明块编辑。
+ * 块标题/表外谓词/撞名等守卫在 reducer（applyAction），失败只 toast，不在 UI 重复实现。
+ */
+function ScenarioTemplateDialog({
+  template,
+  onClose,
+}: {
+  template: ScenarioTemplate | null;
+  onClose: () => void;
+}) {
+  const { state, dispatch } = useStore();
+  const [name, setName] = useState(template?.name ?? '');
+  const [hint, setHint] = useState(template?.hint ?? '');
+  const [playbook, setPlaybook] = useState(template?.playbook ?? '');
+  const [blocks, setBlocks] = useState<BriefSpecBlock[]>(() =>
+    template
+      ? template.briefSpec.map((b) => ({
+          ...b,
+          predicates: b.predicates ? [...b.predicates] : undefined,
+        }))
+      : [
+          // 空模板默认两块，对齐「自定义」基线：背景 + 材料缺口。
+          { title: '关键事实', kind: 'background' },
+          { title: '材料缺口', kind: 'gaps' },
+        ],
+  );
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') onClose();
+    };
+    document.addEventListener('keydown', onKeyDown);
+    return () => document.removeEventListener('keydown', onKeyDown);
+  }, [onClose]);
+
+  const patchBlock = (index: number, patch: Partial<BriefSpecBlock>) => {
+    setBlocks((prev) => prev.map((b, i) => (i === index ? { ...b, ...patch } : b)));
+  };
+  const togglePredicate = (index: number, predicate: Predicate) => {
+    setBlocks((prev) =>
+      prev.map((b, i) => {
+        if (i !== index) return b;
+        const set = new Set(b.predicates ?? []);
+        if (set.has(predicate)) set.delete(predicate);
+        else set.add(predicate);
+        return { ...b, predicates: [...set] };
+      }),
+    );
+  };
+  const changeKind = (index: number, kind: BriefBlockKind) => {
+    // 谓词只装 slots 块（0033 组装口径），切走即弃，不留语义错位的数组。
+    patchBlock(index, kind === 'slots' ? { kind } : { kind, predicates: undefined });
+  };
+
+  // 0025：候选 = 受控谓词表全部槽名（同槽名跨种类只展示一次），不许自开槽。
+  const slotNames = [...new Set(state.slotDefs.map((d) => d.name))];
+
+  const save = () => {
+    dispatch({
+      type: 'UPSERT_SCENARIO_TEMPLATE',
+      template: {
+        name,
+        builtin: template?.builtin ?? false,
+        hint,
+        playbook,
+        briefSpec: blocks,
+      },
+      previousName: template?.name,
+    });
+    onClose();
+  };
+
+  return (
+    <div className="mini-overlay" role="presentation" onMouseDown={onClose}>
+      <div
+        className="mini-dialog tpl-dialog"
+        role="dialog"
+        aria-modal="true"
+        aria-label={template ? `编辑场景模板 ${template.name}` : '新建场景模板'}
+        onMouseDown={(event) => event.stopPropagation()}
+      >
+        <div className="mini-head">
+          {template ? '编辑场景模板' : '新建场景模板'}
+          <button type="button" className="icon-ghost" onClick={onClose} aria-label="关闭">
+            <X size={14} />
+          </button>
+        </div>
+        <label className="field">
+          模板名称
+          <input
+            value={name}
+            disabled={template?.builtin ?? false}
+            aria-label="模板名称"
+            onChange={(e) => setName(e.target.value)}
+          />
+        </label>
+        {template?.builtin && <p className="bind-hint">内置基线，名称不可改；内容仍可编辑。</p>}
+        <label className="field">
+          建对象引导
+          <input
+            value={hint}
+            aria-label="建对象引导"
+            placeholder="建对象时的提示语，例如：公司或岗位名"
+            onChange={(e) => setHint(e.target.value)}
+          />
+        </label>
+        <label className="field">
+          说明书
+          <textarea
+            rows={4}
+            value={playbook}
+            aria-label="说明书"
+            placeholder="每次开场必读的规矩：出站纪律、未知占位、简报说明"
+            onChange={(e) => setPlaybook(e.target.value)}
+          />
+        </label>
+        <div className="field">
+          简报说明
+          <div className="tpl-blocks">
+            {blocks.map((block, index) => (
+              <div className="tpl-block" key={index}>
+                <div className="tpl-block-head">
+                  <input
+                    value={block.title}
+                    aria-label={`块 ${index + 1} 标题`}
+                    placeholder="块标题"
+                    onChange={(e) => patchBlock(index, { title: e.target.value })}
+                  />
+                  <select
+                    value={block.kind}
+                    aria-label={`块 ${index + 1} 类型`}
+                    onChange={(e) => changeKind(index, e.target.value as BriefBlockKind)}
+                  >
+                    {(Object.keys(BLOCK_KIND_LABELS) as BriefBlockKind[]).map((kind) => (
+                      <option key={kind} value={kind}>
+                        {BLOCK_KIND_LABELS[kind]}
+                      </option>
+                    ))}
+                  </select>
+                  <button
+                    type="button"
+                    className="icon-ghost danger"
+                    aria-label={`删除块 ${index + 1}`}
+                    title="删除块"
+                    disabled={blocks.length <= 1}
+                    onClick={() => setBlocks((prev) => prev.filter((_, i) => i !== index))}
+                  >
+                    <Trash size={14} />
+                  </button>
+                </div>
+                {block.kind === 'slots' && (
+                  <div className="slot-scene-grid">
+                    {slotNames.map((slotName) => (
+                      <label
+                        key={slotName}
+                        className={`bind-option${block.predicates?.includes(slotName) ? ' on' : ''}`}
+                      >
+                        <input
+                          type="checkbox"
+                          checked={block.predicates?.includes(slotName) ?? false}
+                          onChange={() => togglePredicate(index, slotName)}
+                        />
+                        <span>{slotName}</span>
+                      </label>
+                    ))}
+                  </div>
+                )}
+              </div>
+            ))}
+            <button
+              type="button"
+              className="ghost small"
+              onClick={() => setBlocks((prev) => [...prev, { title: '', kind: 'background' }])}
+            >
+              <Plus size={12} /> 加块
+            </button>
+          </div>
+        </div>
+        <div className="mini-foot">
+          <button type="button" className="ghost" onClick={onClose}>
+            取消
+          </button>
+          <button type="button" className="primary" onClick={save} disabled={!name.trim()}>
+            保存
           </button>
         </div>
       </div>

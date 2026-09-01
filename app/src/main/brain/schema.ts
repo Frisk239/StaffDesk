@@ -1,5 +1,5 @@
-/** M1 schema。新版本走 schema_migrations，禁止裸改历史。v7 是 operations(action) 索引——只进迁移门次，不进 SCHEMA_SQL。 */
-export const SCHEMA_VERSION = 7;
+/** M1 schema。新版本走 schema_migrations，禁止裸改历史。v8（0058）：workspaces 去 scenario 枚举 CHECK、scenario_brief_specs 死表退役、scenario_templates 建表（建表走本文件 CREATE TABLE IF NOT EXISTS，门次只做重建与退役）。v7 是 operations(action) 索引——只进迁移门次，不进 SCHEMA_SQL。 */
+export const SCHEMA_VERSION = 8;
 
 export const SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -10,7 +10,7 @@ CREATE TABLE IF NOT EXISTS schema_migrations (
 CREATE TABLE IF NOT EXISTS workspaces (
   id TEXT PRIMARY KEY,
   name TEXT NOT NULL,
-  scenario TEXT NOT NULL CHECK (scenario IN ('求职面试', '求学申请', '技术选型', '尽调研究', '自定义')),
+  scenario TEXT NOT NULL,
   created_at TEXT NOT NULL
 );
 
@@ -61,9 +61,14 @@ CREATE TABLE IF NOT EXISTS slot_defs (
   UNIQUE (name, kind)
 );
 
-CREATE TABLE IF NOT EXISTS scenario_brief_specs (
-  scenario TEXT PRIMARY KEY CHECK (scenario IN ('求职面试', '求学申请', '技术选型', '尽调研究', '自定义')),
-  spec TEXT NOT NULL
+-- 0058：场景升为数据行。内置四模板 + 「自定义」空白基线由首启种子写入（presets）。
+CREATE TABLE IF NOT EXISTS scenario_templates (
+  name TEXT PRIMARY KEY,
+  builtin INTEGER NOT NULL DEFAULT 0,
+  hint TEXT NOT NULL DEFAULT '',
+  playbook TEXT NOT NULL DEFAULT '',
+  brief_spec TEXT NOT NULL DEFAULT '[]',
+  created_at TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS claims (
@@ -254,7 +259,7 @@ export const REQUIRED_TABLES = [
   'sources',
   'source_bindings',
   'slot_defs',
-  'scenario_brief_specs',
+  'scenario_templates',
   'claims',
   'memories',
   'proposals',

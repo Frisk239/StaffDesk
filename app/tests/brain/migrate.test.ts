@@ -2,10 +2,16 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { BRIEF_SPECS, DEFAULT_SLOT_DEFS } from '@shared/scenario';
+import Database from 'better-sqlite3';
+import {
+  builtinScenarioTemplates,
+  DEFAULT_SLOT_DEFS,
+  SCENARIO_HINTS,
+  BRIEF_SPECS,
+} from '@shared/scenario';
+import { CUSTOM_BASELINE_PLAYBOOK } from '@shared/playbook';
 import {
   ftsExists,
-  listBriefSpecs,
   listSlotDefs,
   openBrain,
   tableNames,
@@ -193,7 +199,69 @@ describe('建库与迁移', () => {
     brain.close();
   });
 
-  it('首启后槽名/简报说明与 DEFAULT_SLOT_DEFS/BRIEF_SPECS 一致，且对象/来源/主张计数为 0', () => {
+  it('v8 迁移拆除 workspaces 的 scenario 枚举 CHECK，死表退役、模板表就位（0058）', () => {
+    const file = tmpBrain();
+    // 手工搭 v7 形态旧库：workspaces 带枚举 CHECK + 存量行 + 死表 + 版本行 7。
+    const legacy = new Database(file);
+    legacy.pragma('journal_mode = WAL');
+    legacy.exec(`
+      CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL);
+      CREATE TABLE workspaces (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        scenario TEXT NOT NULL CHECK (scenario IN ('求职面试', '求学申请', '技术选型', '尽调研究', '自定义')),
+        created_at TEXT NOT NULL
+      );
+      CREATE TABLE scenario_brief_specs (scenario TEXT PRIMARY KEY, spec TEXT NOT NULL);
+      CREATE TABLE app_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+    `);
+    legacy
+      .prepare("INSERT INTO schema_migrations (version, applied_at) VALUES (7, '2026-08-31')")
+      .run();
+    legacy
+      .prepare("INSERT INTO workspaces VALUES ('ws-1', '旧区', '求职面试', '2026-08-01')")
+      .run();
+    legacy.prepare("INSERT INTO scenario_brief_specs VALUES ('求职面试', '[]')").run();
+    legacy.prepare("INSERT INTO app_meta VALUES ('presets_seeded', '1')").run();
+    legacy.close();
+
+    const brain = openBrain(file);
+    // 重建保行：存量工作区一行不少，CHECK 拆除。
+    const rows = brain.db
+      .prepare('SELECT id, name, scenario FROM workspaces ORDER BY id')
+      .all() as { id: string; scenario: string }[];
+    expect(rows).toEqual([{ id: 'ws-1', name: '旧区', scenario: '求职面试' }]);
+    const ddl = brain.db
+      .prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'workspaces'")
+      .get() as { sql: string };
+    expect(ddl.sql).not.toContain('CHECK');
+    const tables = tableNames(brain);
+    expect(tables).not.toContain('scenario_brief_specs');
+    expect(tables).toContain('scenario_templates');
+    // 既有库路径：presets_seeded='1' 不挡模板新键，五行种子照种。
+    expect(templateCount(brain.db)).toBe(5);
+    // 自定义场景名现在合法：插入并重开读回。
+    brain.db
+      .prepare(
+        `INSERT INTO workspaces (id, name, scenario, created_at)
+         VALUES ('ws-custom', '自定义场景区', '慈善尽调', '2026-09-01T00:00:00.000Z')`,
+      )
+      .run();
+    const version = brain.db
+      .prepare('SELECT MAX(version) AS version FROM schema_migrations')
+      .get() as { version: number };
+    expect(version.version).toBeGreaterThanOrEqual(8);
+    brain.close();
+
+    const again = openBrain(file);
+    const row = again.db
+      .prepare('SELECT scenario FROM workspaces WHERE id = ?')
+      .get('ws-custom') as { scenario: string };
+    expect(row.scenario).toBe('慈善尽调');
+    again.close();
+  });
+
+  it('首启后槽名与 DEFAULT_SLOT_DEFS 一致、场景模板与种子源四件套一致，且对象/来源/主张计数为 0', () => {
     const brain = openBrain(tmpBrain());
     const snap = brain.snapshot();
     expect(snap.objects).toHaveLength(0);
@@ -214,11 +282,28 @@ describe('建库与迁移', () => {
       expect(hit?.scenarios).toEqual(def.scenarios);
     }
 
-    const specs = listBriefSpecs(brain.db);
-    expect(Object.keys(specs).sort()).toEqual(Object.keys(BRIEF_SPECS).sort());
-    for (const key of Object.keys(BRIEF_SPECS) as (keyof typeof BRIEF_SPECS)[]) {
-      expect(specs[key]).toEqual(BRIEF_SPECS[key]);
+    // 0058：种子模板 = 四内置 + 「自定义」空白基线，全部 builtin；四件套（hint/playbook/briefSpec）
+    // 与种子常量逐字一致，内存快照与库内行同源。
+    expect(snap.scenarioTemplates.map((t) => t.name)).toEqual([
+      '求职面试',
+      '求学申请',
+      '技术选型',
+      '尽调研究',
+      '自定义',
+    ]);
+    expect(snap.scenarioTemplates.every((t) => t.builtin)).toBe(true);
+    expect(snap.scenarioTemplates).toEqual(builtinScenarioTemplates());
+    for (const template of snap.scenarioTemplates) {
+      expect(template.hint).toBe(SCENARIO_HINTS[template.name]);
+      expect(template.briefSpec).toEqual(BRIEF_SPECS[template.name]);
     }
+    expect(snap.scenarioTemplates.find((t) => t.name === '自定义')?.playbook).toBe(
+      CUSTOM_BASELINE_PLAYBOOK,
+    );
+    const rowCount = brain.db.prepare('SELECT COUNT(*) AS n FROM scenario_templates').get() as {
+      n: number;
+    };
+    expect(rowCount.n).toBe(5);
 
     const dump = JSON.stringify(snap);
     expect(dump).not.toMatch(/栈桥科技|周若水|NordStream|LuftData/);
@@ -290,23 +375,53 @@ describe('建库与迁移', () => {
     again.close();
   });
 
+  it('场景模板种子用独立新键：既有库补键不重播，删空模板表重启不复活（0058）', () => {
+    const file = tmpBrain();
+    const first = openBrain(file);
+    // 首启种五行并写新键；键与 presets_seeded 各管各的表，互不复用。
+    expect(templateCount(first.db)).toBe(5);
+    expect(templateMarker(first.db)).toBe('1');
+    // 模拟 v7 升级而来的既有库：键被清掉但表非空——只补键，不得重播成十行。
+    first.db.prepare("DELETE FROM app_meta WHERE key = 'scenario_templates_seeded'").run();
+    first.close();
+
+    const again = openBrain(file);
+    expect(templateCount(again.db)).toBe(5);
+    expect(templateMarker(again.db)).toBe('1');
+    // 删空模板表后重启不得复活（0057 删空不复活纪律沿用）；内置模板也照删不救。
+    again.db.exec('DELETE FROM scenario_templates');
+    again.close();
+
+    const third = openBrain(file);
+    expect(templateCount(third.db)).toBe(0);
+    expect(third.snapshot().scenarioTemplates).toEqual([]);
+    third.close();
+  });
+
   it('删空槽表与简报说明表后重开不被默认种子复活（0057 首启标记）', () => {
     const file = tmpBrain();
     const first = openBrain(file);
     expect(slotCount(first.db)).toBeGreaterThan(0);
     first.db.exec('DELETE FROM slot_defs');
-    first.db.exec('DELETE FROM scenario_brief_specs');
     first.close();
 
     const again = openBrain(file);
     expect(slotCount(again.db)).toBe(0);
-    const specCount = again.db.prepare('SELECT COUNT(*) AS n FROM scenario_brief_specs').get() as {
-      n: number;
-    };
-    expect(specCount.n).toBe(0);
     again.close();
   });
 });
+
+function templateCount(db: import('better-sqlite3').Database): number {
+  const row = db.prepare('SELECT COUNT(*) AS n FROM scenario_templates').get() as { n: number };
+  return row.n;
+}
+
+function templateMarker(db: import('better-sqlite3').Database): string | undefined {
+  const row = db
+    .prepare("SELECT value FROM app_meta WHERE key = 'scenario_templates_seeded'")
+    .get() as { value: string } | undefined;
+  return row?.value;
+}
 
 function slotCount(db: import('better-sqlite3').Database): number {
   const row = db.prepare('SELECT COUNT(*) AS n FROM slot_defs').get() as { n: number };

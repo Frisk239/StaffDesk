@@ -14,19 +14,20 @@ import {
   UploadSimple,
   User,
 } from '@phosphor-icons/react';
-import { SCENARIOS, SCENARIO_HINTS } from '@shared/scenario';
 import type { LlmProvider, ObjectKind, ScenarioKind } from '@shared/types';
 import { useStore } from '../store';
 
 const STEPS = ['选择用途', '连接模型', '检查连接', '建立对象', '放入材料'] as const;
 
-const SCENARIO_ICONS = {
+// 0058：场景是数据行——图标表只认内置键，未知模板（自定义）回落通用图标；
+// 「自定义」键保留作其一。hint/名称一律来自 state.scenarioTemplates。
+const SCENARIO_ICONS: Record<string, typeof Buildings> = {
   求职面试: Buildings,
   求学申请: GraduationCap,
   技术选型: Code,
   尽调研究: MagnifyingGlass,
   自定义: Sparkle,
-} satisfies Record<ScenarioKind, typeof Buildings>;
+};
 
 const OBJECTS: { kind: ObjectKind; title: string; hint: string; Icon: typeof User }[] = [
   { kind: '组织', title: '组织', hint: '公司、学校或机构', Icon: Buildings },
@@ -237,22 +238,23 @@ export function Onboarding({ onClose }: { onClose: () => void }) {
                   <p>选择用途后，StaffDesk 会加载对应的字段与简报结构。以后仍可调整。</p>
                 </div>
                 <div className="scenario-grid">
-                  {SCENARIOS.map((item) => {
-                    const Icon = SCENARIO_ICONS[item];
+                  {/* 0058：场景清单改读 state.scenarioTemplates；图标按名取，未知模板用通用图标。 */}
+                  {state.scenarioTemplates.map((item) => {
+                    const Icon = SCENARIO_ICONS[item.name] ?? Sparkle;
                     return (
                       <button
-                        key={item}
+                        key={item.name}
                         type="button"
-                        className={scenario === item ? 'on' : ''}
-                        aria-pressed={scenario === item}
-                        onClick={() => setScenario(item)}
+                        className={scenario === item.name ? 'on' : ''}
+                        aria-pressed={scenario === item.name}
+                        onClick={() => setScenario(item.name)}
                       >
                         <Icon size={18} />
                         <span>
-                          <strong>{item}</strong>
-                          <small>{SCENARIO_HINTS[item]}</small>
+                          <strong>{item.name}</strong>
+                          <small>{item.hint}</small>
                         </span>
-                        {scenario === item && <CheckCircle size={17} weight="fill" />}
+                        {scenario === item.name && <CheckCircle size={17} weight="fill" />}
                       </button>
                     );
                   })}

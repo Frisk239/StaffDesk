@@ -1,6 +1,13 @@
 import type { ScenarioKind } from './types';
 
-/** 说明书：按场景预置、人维护。开场注入，不是记忆。 */
+/** 「自定义」空白基线说明书：种子字段之一，兼作会话注入缺模板时的常量兜底（0058）。 */
+export const CUSTOM_BASELINE_PLAYBOOK = [
+  '出站纪律：只根据账本里已有主张回答，每句能指回主张。',
+  '未知占位：材料不够就说未知，不准用常识编。',
+  '闲聊不写主张。',
+].join('\n');
+
+/** 0058：说明书降级为种子源（只被 presets 播种引用）；运行时读 state.scenarioTemplates。 */
 export const DEFAULT_PLAYBOOK: Record<ScenarioKind, string> = {
   求职面试: [
     '出站纪律：只根据账本里已有主张回答，每句能指回主张。',
@@ -26,9 +33,5 @@ export const DEFAULT_PLAYBOOK: Record<ScenarioKind, string> = {
     '简报说明：对象是谁、关键事实、风险与冲突、材料缺口。',
     '闲聊不写主张。',
   ].join('\n'),
-  自定义: [
-    '出站纪律：只根据账本里已有主张回答，每句能指回主张。',
-    '未知占位：材料不够就说未知，不准用常识编。',
-    '闲聊不写主张。',
-  ].join('\n'),
+  自定义: CUSTOM_BASELINE_PLAYBOOK,
 };

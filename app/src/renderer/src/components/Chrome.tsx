@@ -18,7 +18,6 @@ import {
   Users,
 } from '@phosphor-icons/react';
 import { useStore } from '../store';
-import { SCENARIOS, SCENARIO_HINTS } from '@shared/scenario';
 import type { DeskTask, ObjectKind, ScenarioKind, View } from '@shared/types';
 
 function currentTitle(view: View, objects: { id: string; name: string }[]): string {
@@ -265,23 +264,31 @@ export function SessionList({ width, open }: { width: number; open: boolean }) {
             )}
             {draft === 'workspace' && (
               <div className="ws-kinds scenario-kinds">
-                {SCENARIOS.map((s) => (
+                {/* 0058：场景清单改读 state.scenarioTemplates（数据行），名称 + hint 来自模板。 */}
+                {state.scenarioTemplates.map((t) => (
                   <button
-                    key={s}
+                    key={t.name}
                     type="button"
-                    className={scenario === s ? 'on' : ''}
-                    onClick={() => setScenario(s)}
+                    className={scenario === t.name ? 'on' : ''}
+                    onClick={() => setScenario(t.name)}
                   >
-                    {s}
+                    {t.name}
                   </button>
                 ))}
-                <span className="dim scenario-hint">{SCENARIO_HINTS[scenario]}</span>
+                <span className="dim scenario-hint">
+                  {state.scenarioTemplates.find((t) => t.name === scenario)?.hint ?? ''}
+                </span>
               </div>
             )}
             <input
               autoFocus
               value={name}
-              placeholder={draft === 'workspace' ? '工作区名称' : '对象名称'}
+              placeholder={
+                draft === 'workspace'
+                  ? '工作区名称'
+                  : // 0058：建对象引导按当前工作区场景模板差异化；缺模板或空引导回落基线。
+                    state.scenarioTemplates.find((t) => t.name === ws?.scenario)?.hint || '对象名称'
+              }
               onChange={(e) => setName(e.target.value)}
               onKeyDown={(e) => {
                 if (e.key === 'Escape') closeDraft();

@@ -1,5 +1,5 @@
 import { isWriteIntent, scriptReply, type ChatReply } from '@shared/chat';
-import { DEFAULT_PLAYBOOK } from '@shared/playbook';
+import { CUSTOM_BASELINE_PLAYBOOK } from '@shared/playbook';
 import { scenarioOfWorkspace } from '@shared/scenario';
 import type { State } from '@shared/types';
 import type { ModelCompletion } from '../llm/runtime';
@@ -41,7 +41,12 @@ export async function runSessionTurn(
 
   const obj = state.objects.find((o) => o.id === objectId);
   const scenario = obj ? scenarioOfWorkspace(state.workspaces, obj.workspaceId) : '求职面试';
-  const playbook = DEFAULT_PLAYBOOK[scenario];
+  // 0058：说明书改读场景模板；缺模板回落「自定义」基线模板，再缺回落种子常量兜底
+  // （种子源常量可接受：内容与首启种子同源，只在异常态旧备份上触达）。
+  const playbook =
+    state.scenarioTemplates.find((t) => t.name === scenario)?.playbook ??
+    state.scenarioTemplates.find((t) => t.name === '自定义')?.playbook ??
+    CUSTOM_BASELINE_PLAYBOOK;
   const recalled = recallForPrompt(state, objectId, text, deps.db);
   const allowed = new Set(recalled.map((c) => c.id));
   const system = [

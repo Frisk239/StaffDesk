@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { emptyUiFields } from '@shared/defaults';
-import { DEFAULT_SLOT_DEFS } from '@shared/scenario';
+import { builtinScenarioTemplates, DEFAULT_SLOT_DEFS } from '@shared/scenario';
 import {
   proposeCatalogUncataloged,
   proposeDropUnverified,
@@ -43,6 +43,8 @@ function stateWith(
     sources: [],
     claims,
     slotDefs: DEFAULT_SLOT_DEFS,
+    // 0058：场景模板是账本数据——用种子基线构造（断言依赖内置 spec 的场景必须带内置模板）。
+    scenarioTemplates: builtinScenarioTemplates(),
     briefs: [],
     memories: [],
     inbox: [],

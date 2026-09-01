@@ -3,12 +3,14 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { bannedHit, buildBrief } from '@shared/brief';
-import { briefSpecPredicates, deriveConflicts } from '@shared/scenario';
+import { deriveConflicts } from '@shared/scenario';
 import { openBrain, type Brain } from '../../src/main/brain';
 import { proposeCatalogUncataloged } from '../../src/main/loops/tidy';
 import { completeExtraction } from '../helpers/extraction';
 
-// 0057：谓词表编辑刀——改名三重级联、BRIEF_SPECS 保护、删除降级语义、种子防复活。
+// 0057：谓词表编辑刀——改名四重级联、删除降级语义、种子防复活。
+// 0058：M25「内置简报引用禁改禁删」保护解除，改断言级联改写——
+// 槽改名重写各模板 briefSpec 谓词；删槽从块内剔除谓词、空块整块撤下。
 // 全程真临时 brain（undo-restart 模式），不 mock、不出网。
 
 const dirs: string[] = [];
@@ -55,6 +57,28 @@ function setupPerson() {
   const source = brain.snapshot().sources.find((s) => !s.virtual);
   if (!source) throw new Error('无来源');
   brain.dispatch({ type: 'BIND_CONFIRMED', sourceId: source.id, objectIds: [obj.id] });
+  return { brain, obj, source };
+}
+
+/** 求职面试区里带「后端主栈」主张的组织对象：简报说明「技术信号」块引用该槽。 */
+function setupOrgWithBackendSlot() {
+  const brain = openBrain(tmpBrain());
+  brains.push(brain);
+  brain.dispatch({ type: 'ADD_WORKSPACE', name: '技术区', scenario: '求职面试' });
+  brain.dispatch({ type: 'ADD_OBJECT', kind: '组织', name: '某司' });
+  const obj = brain.snapshot().objects[0];
+  if (!obj) throw new Error('无对象');
+  brain.dispatch({
+    type: 'ADD_SOURCE',
+    title: '技术资料',
+    body: '后端主栈是 Go。',
+  });
+  const source = brain.snapshot().sources.find((s) => !s.virtual);
+  if (!source) throw new Error('无来源');
+  brain.dispatch({ type: 'BIND_CONFIRMED', sourceId: source.id, objectIds: [obj.id] });
+  completeExtraction(brain, source.id, [
+    { predicate: '后端主栈', text: '后端主栈是 Go', span: '后端主栈是 Go' },
+  ]);
   return { brain, obj, source };
 }
 
@@ -154,42 +178,73 @@ describe('槽编辑：改名级联（0057）', () => {
   });
 });
 
-describe('槽编辑：守卫（0057）', () => {
-  it('被内置简报说明引用的槽禁改禁删，改向被引用的新名同样拒', () => {
-    const { brain } = setupPerson();
+describe('槽编辑：内置简报引用的级联改写（0058，M25 保护解除）', () => {
+  it('改名被引用槽不再拒绝：各模板简报说明的谓词同步换名，简报槽块跟新名走', () => {
+    const { brain, obj } = setupOrgWithBackendSlot();
     brain.dispatch({
       type: 'UPDATE_SLOT',
       name: '后端主栈',
       kind: '组织',
-      next: { name: '主栈' },
+      next: { name: '后端技术栈' },
     });
-    expect(brain.snapshot().toast?.text).toBe(
-      '内置简报说明引用该槽，暂不能改名（场景数据化后解除）',
-    );
-    expect(brain.snapshot().slotDefs.some((d) => d.name === '后端主栈' && d.kind === '组织')).toBe(
-      true,
-    );
 
-    brain.dispatch({ type: 'REMOVE_SLOT', name: '后端主栈', kind: '组织' });
-    expect(brain.snapshot().toast?.text).toBe(
-      '内置简报说明引用该槽，暂不能删除（场景数据化后解除）',
-    );
-    expect(brain.snapshot().slotDefs.some((d) => d.name === '后端主栈')).toBe(true);
-
-    brain.dispatch({
-      type: 'UPDATE_SLOT',
-      name: '教育背景',
-      kind: '人',
-      next: { name: '使用技术' },
-    });
-    expect(brain.snapshot().toast?.text).toBe(
-      '内置简报说明引用该槽，暂不能改名（场景数据化后解除）',
-    );
-    expect(brain.snapshot().slotDefs.some((d) => d.name === '教育背景' && d.kind === '人')).toBe(
-      true,
-    );
+    const st = brain.snapshot();
+    expect(st.toast?.text).toBe('已改名「后端主栈」→「后端技术栈」');
+    expect(st.slotDefs.some((d) => d.name === '后端技术栈' && d.kind === '组织')).toBe(true);
+    // 全部模板的 briefSpec 不再出现旧名；求职面试模板的「技术信号」块谓词换成新名。
+    for (const template of st.scenarioTemplates) {
+      for (const block of template.briefSpec) {
+        expect(block.predicates ?? []).not.toContain('后端主栈');
+      }
+    }
+    const jobTemplate = st.scenarioTemplates.find((t) => t.name === '求职面试');
+    const techBlock = jobTemplate?.briefSpec.find((b) => b.title === '技术信号');
+    expect(techBlock?.predicates).toEqual(['后端技术栈', '使用技术']);
+    // 简报以模板为准：主张已随改名重写，装进「技术信号」块，不落 unknown。
+    const brief = buildBrief(st, obj.id);
+    const block = brief.blocks.find((b) => b.title === '技术信号');
+    expect(block).toBeDefined();
+    expect(block?.sentences.some((s) => s.claimIds.length > 0)).toBe(true);
+    expect(
+      brief.blocks.some(
+        (b) => b.title === '技术信号' && b.sentences.every((s) => s.kind === 'unknown'),
+      ),
+    ).toBe(false);
+    // 持久化：重开后模板 briefSpec 的改写不回弹。
+    const file = brain.filePath;
+    brain.close();
+    const again = openBrain(file);
+    brains.push(again);
+    const reopened = again.snapshot().scenarioTemplates.find((t) => t.name === '求职面试');
+    expect(reopened?.briefSpec.find((b) => b.title === '技术信号')?.predicates).toEqual([
+      '后端技术栈',
+      '使用技术',
+    ]);
   });
 
+  it('删除被引用槽不再拒绝：块内剔除该谓词，谓词清空的 slots 块整块撤下并在 toast 说明', () => {
+    const { brain } = setupOrgWithBackendSlot();
+    // 「风险信号」被两块引用：尽调研究「风险与冲突」（单谓词，将清空撤下）、
+    // 技术选型「风险与依赖」（双谓词，剔除后保留另一谓词）。
+    brain.dispatch({ type: 'REMOVE_SLOT', name: '风险信号', kind: '组织' });
+
+    const st = brain.snapshot();
+    expect(st.toast?.text).toBe('已删除槽「风险信号」，并从简报说明撤下 1 个空块');
+    const dueDiligence = st.scenarioTemplates.find((t) => t.name === '尽调研究');
+    expect(dueDiligence?.briefSpec.some((b) => b.title === '风险与冲突')).toBe(false);
+    const selection = st.scenarioTemplates.find((t) => t.name === '技术选型');
+    expect(selection?.briefSpec.find((b) => b.title === '风险与依赖')?.predicates).toEqual([
+      '性能口径',
+    ]);
+    for (const template of st.scenarioTemplates) {
+      for (const block of template.briefSpec) {
+        expect(block.predicates ?? []).not.toContain('风险信号');
+      }
+    }
+  });
+});
+
+describe('槽编辑：守卫（0057）', () => {
   it('next 全缺省原样返回：seq 不动、槽表与 toast 不变', () => {
     const { brain } = setupPerson();
     const before = brain.snapshot();
@@ -222,7 +277,7 @@ describe('槽编辑：守卫（0057）', () => {
     brain.dispatch({ type: 'REMOVE_SLOT', name: '不存在槽', kind: '人' });
     expect(brain.snapshot().toast?.text).toBe('没有这个槽');
 
-    // (名,种类) 是槽的地址：同名槽在其他分区不可寻址，也不误触保护。
+    // (名,种类) 是槽的地址：同名槽在其他分区不可寻址，也不触发级联改写。
     brain.dispatch({ type: 'REMOVE_SLOT', name: '后端主栈', kind: '项目' });
     expect(brain.snapshot().toast?.text).toBe('没有这个槽');
   });
@@ -317,27 +372,31 @@ describe('槽编辑：删除降级（0057）', () => {
     expect(withdrawn?.decision).toBe('reject');
   });
 
-  it('无主张的槽删除不带转入计数后缀；删空全部非保护槽后重启不被种子复活', () => {
+  it('无主张的槽删除不带转入计数后缀；全部槽可改可删，删光谓词表重启不被种子复活（0058）', () => {
     const { brain } = setupPerson();
     brain.dispatch({ type: 'REMOVE_SLOT', name: '岗位要点', kind: '项目' });
     expect(brain.snapshot().toast?.text).toBe('已删除槽「岗位要点」');
 
-    for (const name of ['教育背景', '公开观点']) {
-      brain.dispatch({ type: 'REMOVE_SLOT', name, kind: '人' });
+    // M25 保护已解除：连内置简报引用的槽也可删——级联改写由 reducer 兜住。
+    const all = brain.snapshot().slotDefs.map((d) => ({ name: d.name, kind: d.kind }));
+    for (const { name, kind } of all) {
+      brain.dispatch({ type: 'REMOVE_SLOT', name, kind });
     }
-    brain.dispatch({ type: 'REMOVE_SLOT', name: '办公地点', kind: '组织' });
     const stripped = brain.snapshot().slotDefs;
-    const protectedNames = briefSpecPredicates();
-    expect(stripped.length).toBe(20);
-    expect(stripped.every((d) => protectedNames.has(d.name))).toBe(true);
+    expect(stripped).toHaveLength(0);
+    // 引用槽全删光：各模板 briefSpec 的 slots 块全部撤下，只剩 background/synthesis/gaps。
+    for (const template of brain.snapshot().scenarioTemplates) {
+      for (const block of template.briefSpec) {
+        expect(block.kind === 'slots').toBe(false);
+      }
+    }
 
     const file = brain.filePath;
     brain.close();
     const again = openBrain(file);
     brains.push(again);
     const st = again.snapshot();
-    expect(st.slotDefs.length).toBe(20);
-    expect(st.slotDefs.some((d) => d.name === '教育背景')).toBe(false);
+    expect(st.slotDefs.length).toBe(0);
     const marker = again.db
       .prepare("SELECT value FROM app_meta WHERE key = 'presets_seeded'")
       .get() as { value: string } | undefined;

@@ -1,6 +1,7 @@
 import type Database from 'better-sqlite3';
 import type {
   Brief,
+  BriefSpecBlock,
   ChatMessage,
   Claim,
   DeletedSourceRecovery,
@@ -9,6 +10,7 @@ import type {
   IngestJob,
   Memory,
   Proposal,
+  ScenarioTemplate,
   SlotDef,
   Source,
   State,
@@ -82,7 +84,7 @@ type PersistRow = Record<string, PersistValue>;
 
 /**
  * 0056：persist 写射程内单表的行构造器。全量重写与差异写入共用同一份代码，防两路漂移；
- * operations、certs、scenario_brief_specs、schema_migrations 不在射程（约束二）。
+ * operations、certs、schema_migrations 不在射程（约束二）。
  */
 interface PersistTable {
   table: string;
@@ -216,6 +218,23 @@ const PERSIST_TABLES: readonly PersistTable[] = [
         kind: slot.kind,
         arity: slot.arity,
         scenarios: JSON.stringify(slot.scenarios),
+        created_at: stateStamp(state),
+      })),
+  },
+  {
+    // 0058：场景模板。自然键 name（slot_defs 同款教训：改名=删旧插新，无合成 id 移位）。
+    // brief_spec 是块清单 JSON；builtin 0/1 落库，读回转布尔。
+    table: 'scenario_templates',
+    columns: ['name', 'builtin', 'hint', 'playbook', 'brief_spec', 'created_at'],
+    primaryKey: ['name'],
+    collection: (state) => state.scenarioTemplates,
+    rows: (state) =>
+      state.scenarioTemplates.map((t) => ({
+        name: t.name,
+        builtin: t.builtin ? 1 : 0,
+        hint: t.hint,
+        playbook: t.playbook,
+        brief_spec: JSON.stringify(t.briefSpec),
         created_at: stateStamp(state),
       })),
   },
@@ -517,6 +536,7 @@ export function persistLedger(db: Database.Database, state: State): void {
       DELETE FROM sources;
       DELETE FROM workspaces;
       DELETE FROM slot_defs;
+      DELETE FROM scenario_templates;
     `);
 
     for (const table of PERSIST_TABLES) {
@@ -723,6 +743,7 @@ export type LedgerRows = {
   sources: Source[];
   ingestJobs: IngestJob[];
   slotDefs: SlotDef[];
+  scenarioTemplates: ScenarioTemplate[];
   claims: Claim[];
   memories: Memory[];
   proposals: Proposal[];
@@ -849,6 +870,31 @@ export function loadLedger(db: Database.Database): LedgerRows {
     arity: s.arity,
     scenarios: JSON.parse(s.scenarios) as SlotDef['scenarios'],
   }));
+
+  // 0058：场景模板读回——builtin 0/1 转布尔，brief_spec JSON 容错（坏行降空块，回落由消费端兜）。
+  const scenarioTemplates = (
+    db
+      .prepare(
+        'SELECT name, builtin, hint, playbook, brief_spec FROM scenario_templates ORDER BY created_at',
+      )
+      .all() as {
+      name: string;
+      builtin: number;
+      hint: string;
+      playbook: string;
+      brief_spec: string;
+    }[]
+  ).map((r) => {
+    const spec = parseJson<unknown>(r.brief_spec);
+    return {
+      name: r.name,
+      builtin: r.builtin === 1,
+      hint: r.hint,
+      playbook: r.playbook,
+      // 非 JSON 或非数组（null/对象）一律降空块：buildBrief 缺模板自有回落（0058）。
+      briefSpec: Array.isArray(spec) ? (spec as BriefSpecBlock[]) : [],
+    };
+  });
 
   const claims = (
     db.prepare('SELECT * FROM claims ORDER BY created_at, id').all() as {
@@ -1127,6 +1173,7 @@ export function loadLedger(db: Database.Database): LedgerRows {
     sources,
     ingestJobs,
     slotDefs,
+    scenarioTemplates,
     claims,
     memories,
     proposals,

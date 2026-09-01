@@ -2,7 +2,7 @@ import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 import Database from 'better-sqlite3';
 import { SCHEMA_SQL, SCHEMA_VERSION } from './schema';
-import { seedPresets } from './presets';
+import { seedPresets, seedScenarioTemplates } from './presets';
 import { recreateClaimsFts } from './fts';
 
 export function nowIso(): string {
@@ -40,6 +40,9 @@ export function migrate(db: Database.Database): void {
   if (current < 7) {
     migrateToV7(db);
   }
+  if (current < 8) {
+    migrateToV8(db);
+  }
   if (current < SCHEMA_VERSION) {
     db.prepare('INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)').run(
       SCHEMA_VERSION,
@@ -47,6 +50,7 @@ export function migrate(db: Database.Database): void {
     );
   }
   seedPresets(db);
+  seedScenarioTemplates(db);
 }
 
 function migrateToV3(db: Database.Database): void {
@@ -79,6 +83,34 @@ function migrateToV6(db: Database.Database): void {
  *  只进迁移门次、不进 SCHEMA_SQL：CREATE INDEX IF NOT EXISTS 幂等，空库与旧库都经 migrate() 应用。 */
 function migrateToV7(db: Database.Database): void {
   db.exec('CREATE INDEX IF NOT EXISTS idx_operations_action ON operations(action)');
+}
+
+/**
+ * v8（0058）：场景升为数据行，一个门次全做、整事务——
+ * 重建 workspaces 去掉 scenario 枚举 CHECK（new→copy→drop→rename，SQLite 不能 ALTER CHECK）；
+ * DROP scenario_brief_specs 死表（从未被运行时读过）；scenario_templates 建表不走门次，
+ * 由 migrate() 开头的 SCHEMA_SQL（CREATE TABLE IF NOT EXISTS）对空库与旧库统一生效。
+ * REQUIRED_TABLES 同步：删 scenario_brief_specs、加 scenario_templates——漏一处备份恢复全线炸。
+ */
+function migrateToV8(db: Database.Database): void {
+  const tx = db.transaction(() => {
+    db.exec(`
+      CREATE TABLE workspaces_v8 (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        scenario TEXT NOT NULL,
+        created_at TEXT NOT NULL
+      );
+    `);
+    db.exec(
+      `INSERT INTO workspaces_v8 (id, name, scenario, created_at)
+       SELECT id, name, scenario, created_at FROM workspaces`,
+    );
+    db.exec('DROP TABLE workspaces');
+    db.exec('ALTER TABLE workspaces_v8 RENAME TO workspaces');
+    db.exec('DROP TABLE IF EXISTS scenario_brief_specs');
+  });
+  tx();
 }
 
 function addColumn(db: Database.Database, table: string, column: string, definition: string): void {
