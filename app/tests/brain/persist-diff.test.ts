@@ -430,6 +430,67 @@ function playScript(full: Brain, diff: Brain): ScriptHandles {
     sources: [],
   });
 
+  // ── 0057/0058 槽编辑与场景模板 CRUD：新表 scenario_templates 与新动作进等价射程 ──
+  // 模板新建→改名（previousName）→删槽级联撤简报块；槽改名/切值/场景标记/删除全走 reducer 级联。
+  vi.advanceTimersByTime(10 * 60_000);
+  act({
+    type: 'UPSERT_SCENARIO_TEMPLATE',
+    template: {
+      name: '尽调跟踪',
+      builtin: false,
+      hint: '盯一个标的',
+      playbook: '出站纪律：只根据账本里已有主张回答。',
+      briefSpec: [
+        { title: '关键事实', kind: 'background' },
+        { title: '标的信号', kind: 'slots', predicates: ['自定义槽'] },
+      ],
+    },
+  });
+  act({
+    type: 'UPSERT_SCENARIO_TEMPLATE',
+    template: {
+      name: '尽调深挖',
+      builtin: false,
+      hint: '盯一个标的并盯供应链',
+      playbook: '出站纪律：只根据账本里已有主张回答。',
+      briefSpec: [
+        { title: '关键事实', kind: 'background' },
+        { title: '标的信号', kind: 'slots', predicates: ['自定义槽'] },
+      ],
+    },
+    previousName: '尽调跟踪',
+  });
+  // ── M27（0051/0058）：kind「场景」写卡携 template_json 草稿入队且保持挂起──
+  // v9 新列的读写由此进等价射程；确认路径由 scenario-template.test 单独罩着。
+  vi.advanceTimersByTime(5 * 60_000);
+  act({
+    type: 'ENQUEUE_WRITE',
+    draft: {
+      objectId: obj.id,
+      kind: '场景',
+      headline: '起草场景：AI 起草区',
+      evidence: '按用户口述起草，槽只取受控表现有槽',
+      template: {
+        name: 'AI 起草区',
+        builtin: false,
+        hint: '盯一摊事',
+        playbook: '出站纪律：只根据账本里已有主张回答。',
+        briefSpec: [{ title: '关键事实', kind: 'background' }],
+      },
+    },
+  });
+  // 槽改名 + 单值→多值 + 场景适用标记：主张谓词与模板 briefSpec 谓词同步重写都在 diff 射程内。
+  act({
+    type: 'UPDATE_SLOT',
+    name: '自定义槽',
+    kind: '组织',
+    next: { name: '自定义槽二', arity: '多值', scenarios: ['尽调深挖'] },
+  });
+  // 删模板级联剔除槽的场景适用名（F1），数组剔空即该槽退化通用。
+  act({ type: 'REMOVE_SCENARIO_TEMPLATE', name: '尽调深挖' });
+  act({ type: 'ADD_SLOT', name: '抛弃槽', kind: '组织', arity: '单值' });
+  act({ type: 'REMOVE_SLOT', name: '抛弃槽', kind: '组织' });
+
   // ── 模型设置（不落业务库）+ 偏好 + 绑定撤销 + 杂项 UI ──
   vi.advanceTimersByTime(10 * 60_000);
   act({
@@ -480,6 +541,7 @@ const BUSINESS_TABLES = [
   'sources',
   'source_bindings',
   'slot_defs',
+  'scenario_templates',
   'claims',
   'memories',
   'proposals',
@@ -573,6 +635,11 @@ describe('按脏表差异写入与全量重写等价（0056）', { timeout: 20_0
     expect(ledger.tasks.length).toBeGreaterThanOrEqual(2);
     expect(ledger.taskAudits.length).toBeGreaterThanOrEqual(2);
     expect(ledger.ingestJobs.length).toBeGreaterThan(0);
+    // 0058 新表必须真有行（内置 5 行种子），否则深相等对新表是空对空。
+    expect(ledger.scenarioTemplates.length).toBeGreaterThanOrEqual(5);
+    expect(ledger.slotDefs.some((d) => d.name === '自定义槽二' && d.scenarios.length === 0)).toBe(
+      true,
+    );
     expect((ledger.chatByObject[handles.objId] ?? []).length).toBeGreaterThan(0);
     expect(ledger.seq).toBeGreaterThan(10);
     expect(ledger.themePreference).toBe('dark');

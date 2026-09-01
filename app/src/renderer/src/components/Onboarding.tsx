@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   Buildings,
   Check,
@@ -122,7 +122,7 @@ export function Onboarding({ onClose }: { onClose: () => void }) {
     setStep(2);
   };
 
-  const runCheck = async () => {
+  const runCheck = useCallback(async () => {
     if (!provider.apiKey.trim()) return;
     setChecking(true);
     try {
@@ -130,7 +130,22 @@ export function Onboarding({ onClose }: { onClose: () => void }) {
     } finally {
       setChecking(false);
     }
-  };
+  }, [provider, modelId]);
+
+  // 0041「资格认证：首启默认跑、可跳过」：进入检查步时，未跑过且未被跳过就自动触发一次。
+  // 三态：已认证 / 已跑未过（留下完成记录）/ 未跑——只有「未跑」默认跑；认证中与未配置不触发，
+  // 防重复请求与无谓探测；跳过后再次进入也不自动跑，人工入口「开始检查」始终保留。
+  const autoCheckFired = useRef(false);
+  const checkSkipped = useRef(false);
+  const checkRan = Boolean(cert.connect || cert.capability || cert.completedAt);
+
+  useEffect(() => {
+    if (step !== 2 || autoCheckFired.current || checkSkipped.current) return;
+    if (checking || !provider.apiKey.trim()) return;
+    if (cert.status !== '未认证' || checkRan) return;
+    autoCheckFired.current = true;
+    void runCheck();
+  }, [step, checking, checkRan, cert.status, provider.apiKey, runCheck]);
 
   const createObjects = async () => {
     for (const item of OBJECTS) {
@@ -497,7 +512,15 @@ export function Onboarding({ onClose }: { onClose: () => void }) {
                 </button>
               )}
               {step === 2 && cert?.status !== '已认证' && (
-                <button type="button" className="onboarding-later" onClick={() => setStep(3)}>
+                <button
+                  type="button"
+                  className="onboarding-later"
+                  onClick={() => {
+                    // 「稍后检查」= 跳过默认跑：之后回到本步不再自动触发。
+                    checkSkipped.current = true;
+                    setStep(3);
+                  }}
+                >
                   稍后检查
                 </button>
               )}

@@ -21,12 +21,51 @@ export interface ChatReply {
 /** 会改账本或记忆的入口，不走主会话只读循环。 */
 export function isWriteIntent(text: string): boolean {
   const t = text.trim();
+  if (parseScenarioDraftIntent(t)) return true; // 起草场景也走写侧（takeover），不进只读会话
   if (/^记下来[:：]/.test(t)) return true;
   if (/这句不对|纠正/.test(t)) return true;
   if (/删掉|永久删除|移除工作区/.test(t)) return true;
   if (/晋升/.test(t)) return true;
   if (/并入/.test(t)) return true;
   return false;
+}
+
+// M27：AI 提议起草场景的意图。「起草场景「X」…」「帮我建个场景模板…」；
+// 问句（怎么建场景模板）不算——那是求助不是委托。
+const SCENARIO_DRAFT_RE =
+  /起草一?[个只]?场景(?:模板)?|(?:帮我|给我|替我)?(?:新建|创建|建)(?:一?[个只]?)?场景模板/;
+
+export interface ScenarioDraftIntent {
+  /** 使用者点名的场景名；没点名时为空串，由起草模型自拟。 */
+  name: string;
+  /** 场景名之外的起草要求（无引号名时回落整句）。 */
+  brief: string;
+}
+
+/** 命中返回意图载荷，否则 null。ipc 据此改走起草钩子，本轮不做脚本回复。 */
+export function parseScenarioDraftIntent(text: string): ScenarioDraftIntent | null {
+  const t = text.trim();
+  if (!SCENARIO_DRAFT_RE.test(t)) return null;
+  if (/^(怎么|如何|什么|啥|哪|为什么|为啥)/.test(t)) return null;
+  // 场景名：优先取引号内名（「」/“”/""），无则取触发词后的短语。
+  const quoted =
+    t.match(/[「]([^「」]{1,30})[」]/) ??
+    t.match(/[“]([^“”]{1,30})[”]/) ??
+    t.match(/"([^"]{1,30})"/);
+  if (quoted?.[1]?.trim()) {
+    const name = quoted[1].trim();
+    const brief = t.replace(quoted[0], '').trim() || t;
+    return { name, brief };
+  }
+  const hit = SCENARIO_DRAFT_RE.exec(t);
+  if (!hit) return null;
+  const tail = t
+    .slice(hit.index + hit[0].length)
+    .replace(/^[\s:：,，、\-—]+/, '')
+    .replace(/^(一个|个|一)/, '')
+    .split(/[，。,;；、\n?？!！]/)[0]
+    ?.trim();
+  return { name: tail && tail.length <= 12 ? tail : '', brief: t };
 }
 
 export function scriptReply(state: State, objectId: string, text: string): ChatReply {

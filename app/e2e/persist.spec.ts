@@ -39,7 +39,8 @@ test('建对象后重启对象仍在', async () => {
   const brainFile = join(dir, 'brain.db');
   const launch = () =>
     electron.launch({
-      args: ['.'],
+      // user-data-dir 指到临时目录：机器级产品设置不落真实用户 profile。
+      args: ['.', `--user-data-dir=${join(dir, 'userData')}`],
       cwd: appDir,
       env: {
         ...process.env,
@@ -76,7 +77,8 @@ test('待确认写提议重启后仍显示并可确认', async () => {
   const brainFile = join(dir, 'brain.db');
   const launch = () =>
     electron.launch({
-      args: ['.'],
+      // user-data-dir 指到临时目录：机器级产品设置不落真实用户 profile。
+      args: ['.', `--user-data-dir=${join(dir, 'userData')}`],
       cwd: appDir,
       env: {
         ...process.env,

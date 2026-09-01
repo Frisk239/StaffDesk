@@ -171,7 +171,7 @@ test('Inbox 文本、TXT 与 PDF 导入都会写入真实正文', async () => {
   writeFileSync(txt, '真实 TXT 材料包含岗位画像。');
   writeFileSync(pdf, simplePdf('PDF material says Acme uses Rust.'));
   const app = await electron.launch({
-    args: ['.'],
+    args: ['.', `--user-data-dir=${join(dir, 'userData')}`],
     cwd: appDir,
     env: {
       ...process.env,

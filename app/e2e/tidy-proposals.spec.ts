@@ -37,7 +37,8 @@ test('整理提议卡出现且合并与编目交互全链落地', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'staffdesk-tidy-e2e-'));
   const brainFile = join(dir, 'brain.db');
   const app = await electron.launch({
-    args: ['.'],
+    // user-data-dir 指到临时目录：model-settings/qualification 等机器级状态不落真实用户 profile。
+    args: ['.', `--user-data-dir=${join(dir, 'userData')}`],
     cwd: appDir,
     env: {
       ...process.env,
@@ -147,7 +148,8 @@ test('建对象提议：抽取发现的新主体选种类确认后进入对象�
   const dir = mkdtempSync(join(tmpdir(), 'staffdesk-newobj-e2e-'));
   const brainFile = join(dir, 'brain.db');
   const app = await electron.launch({
-    args: ['.'],
+    // user-data-dir 指到临时目录：机器级产品设置不落真实用户 profile。
+    args: ['.', `--user-data-dir=${join(dir, 'userData')}`],
     cwd: appDir,
     env: {
       ...process.env,

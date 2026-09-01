@@ -94,10 +94,12 @@ test('任务列表页汇总已完成任务并可打开回放', async () => {
 
     await expect(win.getByRole('heading', { name: '任务' })).toBeVisible();
     await expect(win.getByText('任务列表组织').first()).toBeVisible();
-    await expect(win.getByText('调研', { exact: true })).toBeVisible();
-    await expect(win.getByText('已完成', { exact: true })).toBeVisible();
-    await expect(win.getByText('深挖', { exact: true })).toBeVisible();
-    await expect(win.getByText('2026-08-30 17:00')).toBeVisible();
+    // M27 起任务页有种类/状态筛选 chips（文本与行内 tag 撞名），断言收窄到任务行内。
+    const row = win.locator('.all-object-row');
+    await expect(row.getByText('调研', { exact: true })).toBeVisible();
+    await expect(row.getByText('已完成', { exact: true })).toBeVisible();
+    await expect(row.getByText('深挖', { exact: true })).toBeVisible();
+    await expect(row.getByText('2026-08-30 17:00')).toBeVisible();
 
     await win.getByRole('button', { name: '打开回放' }).click();
     await expect(win.getByRole('heading', { name: '任务回放' })).toBeVisible();

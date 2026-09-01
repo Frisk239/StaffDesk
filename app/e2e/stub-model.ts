@@ -13,19 +13,40 @@ export interface StubClaimDraft {
   span: string;
 }
 
-export async function serveStubModel(claims: StubClaimDraft[]): Promise<{
+/** M27：场景模板起草循环的桩应答（结构对齐 loops/scenarioDraft 的 zod schema）。 */
+export interface StubScenarioDraft {
+  name: string;
+  hint: string;
+  playbook: string;
+  blocks: Array<{ title: string; kind: string; predicates?: string[] }>;
+}
+
+export async function serveStubModel(
+  claims: StubClaimDraft[],
+  scenario?: StubScenarioDraft,
+): Promise<{
   server: Server;
   baseUrl: string;
 }> {
   const server = createServer((req, res) => {
     if (req.method === 'POST' && req.url?.endsWith('/chat/completions')) {
-      res.writeHead(200, { 'content-type': 'application/json' });
-      res.end(
-        JSON.stringify({
-          id: 'stub-completion',
-          choices: [{ message: { role: 'assistant', content: JSON.stringify({ claims }) } }],
-        }),
-      );
+      // 起草循环的 system 提示带「场景模板起草器」标记：给出场景草稿，否则按抽取桩应答。
+      const chunks: Buffer[] = [];
+      req.on('data', (chunk: Buffer) => chunks.push(chunk));
+      req.on('end', () => {
+        const body = Buffer.concat(chunks).toString('utf8');
+        const content =
+          scenario && body.includes('场景模板起草器')
+            ? JSON.stringify(scenario)
+            : JSON.stringify({ claims });
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(
+          JSON.stringify({
+            id: 'stub-completion',
+            choices: [{ message: { role: 'assistant', content } }],
+          }),
+        );
+      });
       return;
     }
     res.writeHead(404, { 'content-type': 'text/plain' });

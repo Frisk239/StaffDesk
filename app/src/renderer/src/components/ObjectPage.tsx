@@ -168,6 +168,7 @@ function RelationsSection({ obj }: { obj: DeskObject }) {
   const { state, dispatch } = useStore();
   const [panelOpen, setPanelOpen] = useState(false);
   const [checked, setChecked] = useState<Set<string>>(new Set());
+  const [candidateFilter, setCandidateFilter] = useState('');
 
   // 悬边容错：find 不到的 id 直接跳过，不让对象页崩。
   const related = obj.relationIds.flatMap((id) => {
@@ -191,6 +192,12 @@ function RelationsSection({ obj }: { obj: DeskObject }) {
     }))
     .filter((g) => g.items.length > 0);
 
+  // 候选搜索：按名称过滤，勾选状态不随过滤丢失（隐藏项保留在确认载荷里）。
+  const keyword = candidateFilter.trim().toLowerCase();
+  const visibleCandidates = candidates
+    .map((g) => ({ ...g, items: g.items.filter((o) => o.name.toLowerCase().includes(keyword)) }))
+    .filter((g) => g.items.length > 0);
+
   const toggle = (id: string) => {
     setChecked((prev) => {
       const next = new Set(prev);
@@ -209,6 +216,7 @@ function RelationsSection({ obj }: { obj: DeskObject }) {
 
   const closePanel = () => {
     setChecked(new Set());
+    setCandidateFilter('');
     setPanelOpen(false);
   };
 
@@ -255,8 +263,20 @@ function RelationsSection({ obj }: { obj: DeskObject }) {
       {panelOpen && (
         <div className="bind-panel">
           <div className="bind-panel-title">添加关系</div>
+          {candidates.length > 0 && (
+            <input
+              className="bind-search"
+              value={candidateFilter}
+              placeholder="搜索对象"
+              aria-label="搜索对象"
+              onChange={(e) => setCandidateFilter(e.target.value)}
+            />
+          )}
           {candidates.length === 0 && <div className="dim">本工作区没有可关联的对象</div>}
-          {candidates.map((g) => (
+          {candidates.length > 0 && visibleCandidates.length === 0 && (
+            <div className="dim">没有匹配的对象</div>
+          )}
+          {visibleCandidates.map((g) => (
             <div className="bind-group" key={g.kind}>
               <div className="bind-group-title">{g.kind}</div>
               {g.items.map((o) => (
