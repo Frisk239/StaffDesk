@@ -38,6 +38,7 @@ export function PendingView() {
     if (p.type !== '整理') return false;
     if (p.payload.kind === '整理' || p.payload.kind === '标过时')
       return tidyInWs(p.payload.claimId);
+    if (p.payload.kind === '主键新版过时') return tidyInWs(p.payload.oldClaimId);
     if (p.payload.kind === '丢弃未核') return tidyInWs(p.payload.claimIds[0] ?? '');
     if (p.payload.kind === '合并重复') return tidyInWs(p.payload.keepId);
     // 建对象挂在抽取语境对象的账页；建关系挂在锚对象账页（两端任一在当前区即显示）。
@@ -85,6 +86,18 @@ export function PendingView() {
         <>
           <button className="btn primary sm" onClick={() => decide(p.id, 'accept-close')}>
             确认已过时（关窗）
+          </button>
+          <button className="btn outline sm danger-hover" onClick={() => decide(p.id, 'reject')}>
+            驳回
+          </button>
+        </>
+      );
+    }
+    if (p.payload.kind === '主键新版过时') {
+      return (
+        <>
+          <button className="btn primary sm" onClick={() => decide(p.id, 'accept-close')}>
+            确认旧版过时（关窗）
           </button>
           <button className="btn outline sm danger-hover" onClick={() => decide(p.id, 'reject')}>
             驳回

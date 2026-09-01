@@ -2,7 +2,8 @@ import { useEffect, useRef, useState } from 'react';
 import type { ReactElement } from 'react';
 import { closedClaims, conflictsOf, isExtracting, projectionClaims, useStore } from '../store';
 import { scenarioOfWorkspace, slotsForScene } from '@shared/scenario';
-import type { Claim, DeskObject, Predicate } from '@shared/types';
+import type { Claim, DeskObject, Predicate, SourceRole } from '@shared/types';
+import { bindingRole } from '@shared/primarySource';
 import { SourceDeleteDialog } from './SourceDeleteDialog';
 
 // 0033：谓词槽表是数据（state.slotDefs），按对象种类分区，再按对象所在工作区的场景过滤；通用槽恒显示。
@@ -393,7 +394,7 @@ export function SourcesPane({ objectId }: { objectId: string }) {
             </button>
             <div className="source-meta">
               <span className="tag path">{s.path}</span>
-              {s.role && <span className="tag role">{s.role}</span>}
+              <span className="tag role">{bindingRole(s, objectId)}</span>
               {job?.status === '抽取中' && (
                 <span className="tag amber">
                   <span className="pulse-dot inline" /> 抽取中
@@ -436,6 +437,27 @@ export function SourcesPane({ objectId }: { objectId: string }) {
             )}
             {isOpen && (
               <div className="source-actions">
+                <button
+                  type="button"
+                  className="btn outline sm"
+                  onClick={() => {
+                    const nextRole: SourceRole =
+                      bindingRole(s, objectId) === '主键' ? '转述' : '主键';
+                    dispatch({
+                      type: 'ENQUEUE_WRITE',
+                      draft: {
+                        objectId,
+                        kind: '设角色',
+                        sourceId: s.id,
+                        role: nextRole,
+                        headline: nextRole === '主键' ? '标为主键？' : '改为转述？',
+                        evidence: `来源「${s.title}」当前是${bindingRole(s, objectId)}。确认后只改当前对象上的角色。`,
+                      },
+                    });
+                  }}
+                >
+                  {bindingRole(s, objectId) === '主键' ? '改为转述' : '标为主键'}
+                </button>
                 <button
                   type="button"
                   className="btn outline sm"

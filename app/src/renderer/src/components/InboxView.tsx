@@ -189,7 +189,6 @@ export function InboxView() {
                   <span className="tag">未绑定</span>
                   <span className="tag path">{s.path}</span>
                   <span className="tag grey">{originLabel(s.origin?.kind)}</span>
-                  {s.role && <span className="tag role">{s.role}</span>}
                   {s.unparsed && <span className="tag grey">旧版待重新导入</span>}
                 </div>
               </button>
@@ -209,7 +208,6 @@ export function InboxView() {
               <span>{selected.title}</span>
               <span className="tag path">{selected.path}</span>
               <span className="tag grey">{originLabel(selected.origin?.kind)}</span>
-              {selected.role && <span className="tag role">{selected.role}</span>}
               {selected.origin?.pageCount && (
                 <span className="tag grey">{selected.origin.pageCount} 页</span>
               )}

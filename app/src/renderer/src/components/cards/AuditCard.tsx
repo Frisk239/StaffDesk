@@ -1,5 +1,6 @@
 import { conflictsOf, useStore } from '../../store';
 import type { Claim } from '@shared/types';
+import { bindingRole } from '@shared/primarySource';
 
 function highlightSpan(body: string, span: string) {
   const i = body.indexOf(span);
@@ -7,7 +8,10 @@ function highlightSpan(body: string, span: string) {
   const lineStart = body.lastIndexOf('\n', i - 1) + 1;
   const rawBefore = body.slice(Math.max(lineStart, i - 40), i);
   const afterNl = body.indexOf('\n', i + span.length);
-  const rawAfter = body.slice(i + span.length, afterNl < 0 ? i + span.length + 60 : Math.min(afterNl, i + span.length + 60));
+  const rawAfter = body.slice(
+    i + span.length,
+    afterNl < 0 ? i + span.length + 60 : Math.min(afterNl, i + span.length + 60),
+  );
   return (
     <>
       {rawBefore}
@@ -46,8 +50,8 @@ export function AuditCard({ claimId }: { claimId: string }) {
         <div className="kv-row">
           <span className="kv-k">进料路径</span>
           <span className="kv-v">
-            {source?.virtual ? '使用者陈述' : source?.path ?? '—'}
-            {source?.role ? ` · ${source.role}` : ''}
+            {source?.virtual ? '使用者陈述' : (source?.path ?? '—')}
+            {source && !source.virtual ? ` · ${bindingRole(source, claim.objectId)}` : ''}
           </span>
         </div>
         <div className="kv-row">
@@ -63,7 +67,10 @@ export function AuditCard({ claimId }: { claimId: string }) {
         {claim.supersededBy && (
           <div className="kv-row">
             <span className="kv-k">接替主张</span>
-            <button className="btn ghost sm" onClick={() => dispatch({ type: 'OPEN_AUDIT_CARD', claimId: claim.supersededBy! })}>
+            <button
+              className="btn ghost sm"
+              onClick={() => dispatch({ type: 'OPEN_AUDIT_CARD', claimId: claim.supersededBy! })}
+            >
               打开接替
             </button>
           </div>
@@ -77,7 +84,11 @@ export function AuditCard({ claimId }: { claimId: string }) {
             <div className="conflict-pair wide">
               <Side claim={claim} current />
               {foes.map((f) => (
-                <Side key={f.id} claim={f} onOpen={() => dispatch({ type: 'OPEN_AUDIT_CARD', claimId: f.id })} />
+                <Side
+                  key={f.id}
+                  claim={f}
+                  onOpen={() => dispatch({ type: 'OPEN_AUDIT_CARD', claimId: f.id })}
+                />
               ))}
             </div>
           </div>
@@ -114,11 +125,19 @@ export function AuditCard({ claimId }: { claimId: string }) {
               晋升
             </button>
           )}
-          <button type="button" className="btn outline sm" onClick={() => dispatch({ type: 'OPEN_CORRECT_CARD', claimId: claim.id })}>
+          <button
+            type="button"
+            className="btn outline sm"
+            onClick={() => dispatch({ type: 'OPEN_CORRECT_CARD', claimId: claim.id })}
+          >
             这句不对
           </button>
           {source && !source.virtual && (
-            <button type="button" className="btn outline sm" onClick={() => dispatch({ type: 'FOCUS_SOURCE', sourceId: source.id })}>
+            <button
+              type="button"
+              className="btn outline sm"
+              onClick={() => dispatch({ type: 'FOCUS_SOURCE', sourceId: source.id })}
+            >
               看来源全文
             </button>
           )}
@@ -131,7 +150,15 @@ export function AuditCard({ claimId }: { claimId: string }) {
   );
 }
 
-function Side({ claim, current, onOpen }: { claim: Claim; current?: boolean; onOpen?: () => void }) {
+function Side({
+  claim,
+  current,
+  onOpen,
+}: {
+  claim: Claim;
+  current?: boolean;
+  onOpen?: () => void;
+}) {
   const { state } = useStore();
   const src = state.sources.find((s) => s.id === claim.sourceId);
   return (
@@ -140,9 +167,10 @@ function Side({ claim, current, onOpen }: { claim: Claim; current?: boolean; onO
       <span className="claim-meta">
         {current && <span className="tag slot">当前</span>}
         {claim.unverified && <span className="tag amber">未核</span>}
-        <span className="tag grey">{src ? (src.virtual ? '使用者陈述' : src.title) : claim.sourceId}</span>
+        <span className="tag grey">
+          {src ? (src.virtual ? '使用者陈述' : src.title) : claim.sourceId}
+        </span>
       </span>
     </button>
   );
 }
-
