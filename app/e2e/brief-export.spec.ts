@@ -135,7 +135,9 @@ test('简报可复制与导出 Markdown（引用转脚注），主键主张带�
       dialog.showSaveDialog = async () => ({ canceled: false, filePath });
     }, exportedPath);
     await win.getByRole('button', { name: '导出 .md' }).click();
-    await expect(win.getByText(/简报已导出/)).toBeVisible();
+    // 导出链 = IPC + 保存对话框 stub + 文件写盘：慢盘 CI 上偶发超默认 5s（PR #31 两连挂、
+    // 同树 main 运行过）——放宽到 15s，属环境余量非掩盖失败（后续断言仍会抓真错）。
+    await expect(win.getByText(/简报已导出/)).toBeVisible({ timeout: 15_000 });
     const exported = readFileSync(exportedPath, 'utf8');
     expect(exported).toContain('# 简报导出组织');
     expect(exported).toContain('（主键来源）[^1]');
