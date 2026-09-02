@@ -152,7 +152,8 @@ function CodeBlock({ lang, code }: { lang: string; code: string }) {
   const [copied, setCopied] = useState(false);
   const copy = async () => {
     try {
-      await navigator.clipboard.writeText(code);
+      // 复制走主进程 clipboard IPC——0047 权限全拒会拦下 navigator.clipboard（同简报复制姿势）。
+      await window.staffdesk.copyBrief(code);
       setCopied(true);
       window.setTimeout(() => setCopied(false), 1200);
     } catch {
