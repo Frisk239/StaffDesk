@@ -3158,8 +3158,16 @@ textarea {
   flex-direction: column;
   height: 100%;
 }
+/* PR #29 CI：嵌入式列布局里历史 chip 条与主区头部在窄面板几何下互相挤压、chip 拦截按钮
+ * 指针事件——历史条钉住自身高度、主区 min-height:0 + 提层级，指针事件永远归主内容。 */
+.brief-view.embedded .brief-history {
+  flex: none;
+}
 .brief-view.embedded .brief-main {
   padding: 14px 16px 24px;
+  min-height: 0;
+  position: relative;
+  z-index: 1;
 }
 
 .settings-overlay {
