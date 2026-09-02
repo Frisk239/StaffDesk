@@ -52,7 +52,12 @@ jobs:
         run: npm run typecheck
         working-directory: app
       - name: test
+        # Electron-as-node 在此 runner 上会让 vite-node 的 fork 临时缓存整片 ENOENT（PR #29，
+        # 零断言失败也 exit 1）；单测跑纯 Node——better-sqlite3 是 N-API prebuild 运行时无关，
+        # Electron 运行时由本 job 的 native:check 与 windows e2e job 双重覆盖。
         run: npm run test
+        env:
+          STAFFDESK_VITEST_RUNTIME: node
         working-directory: app
       - name: build
         run: npm run build
