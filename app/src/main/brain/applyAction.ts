@@ -37,8 +37,15 @@ import {
   proposeMergeDuplicates,
   proposeNewObjects,
   proposeRelations,
+  proposeSupersedeByPrimary,
 } from '../loops/tidy';
 import { deriveConflicts, normalizeValue } from '@shared/scenario';
+import {
+  bindingRole,
+  dropBindingRole,
+  shouldSuggestPrimary,
+  withBindingRole,
+} from '@shared/primarySource';
 import { scriptReply } from '@shared/chat';
 import { attachTurn } from '@shared/turn';
 import { dreamMemoryProposals } from '../loops/memoryDream';
@@ -94,6 +101,9 @@ function proposalTouchesClaims(state: State, proposalId: string, claimIds: Set<s
   if (!proposal) return false;
   if (proposal.payload.kind === '整理' || proposal.payload.kind === '标过时')
     return claimIds.has(proposal.payload.claimId);
+  if (proposal.payload.kind === '主键新版过时') {
+    return claimIds.has(proposal.payload.oldClaimId) || claimIds.has(proposal.payload.newClaimId);
+  }
   if (proposal.payload.kind === '丢弃未核') {
     return proposal.payload.claimIds.some((id) => claimIds.has(id));
   }
@@ -481,6 +491,13 @@ function enqueueWrite(state: State, draft: Omit<WriteProposal, 'id'>): State {
       seq: state.seq + 1,
     };
   }
+  if (draft.kind === '设角色' && (!draft.sourceId || !draft.role)) {
+    return {
+      ...state,
+      toast: { text: '无出处的写提议不许生成', id: state.seq },
+      seq: state.seq + 1,
+    };
+  }
   const claim = draft.claimId ? state.claims.find((c) => c.id === draft.claimId) : undefined;
   if (
     claim &&
@@ -527,6 +544,49 @@ function enqueueTaskClaimReview(state: State, taskId: string): State {
   });
 }
 
+/** 0062：绑定时域名启发只进 takeover，人点才写角色，永不自动定。 */
+function maybeEnqueuePrimarySuggestions(
+  state: State,
+  sourceId: string,
+  objectIds: string[],
+): State {
+  const source = state.sources.find((item) => item.id === sourceId);
+  if (!source) return state;
+  let next = state;
+  for (const objectId of objectIds) {
+    if (bindingRole(source, objectId) === '主键') continue;
+    const object = next.objects.find((item) => item.id === objectId);
+    if (!object || !shouldSuggestPrimary(source, object, next.claims)) continue;
+    const queued = next.writeQueue.some(
+      (write) =>
+        write.kind === '设角色' &&
+        write.sourceId === sourceId &&
+        write.objectId === objectId &&
+        write.role === '主键',
+    );
+    if (queued) continue;
+    next = enqueueWrite(next, {
+      objectId,
+      kind: '设角色',
+      sourceId,
+      role: '主键',
+      headline: '建议标为主键？',
+      evidence: [
+        `来源「${source.title}」的域名与「${object.name}」的官网或主页一致。`,
+        '确认后按当前对象标为主键；拒绝则保持转述。系统不会自动定。',
+      ].join('\n'),
+    });
+  }
+  return next;
+}
+
+function appendSupersedeProposals(state: State, objectIds: string[]): State {
+  const ids = [...new Set(objectIds)];
+  const fresh = ids.flatMap((objectId) => proposeSupersedeByPrimary(state, objectId, state.seq));
+  if (fresh.length === 0) return state;
+  return { ...state, proposals: [...state.proposals, ...fresh] };
+}
+
 function enqueueTaskClaimReviewForSource(state: State, sourceId: string): State {
   const source = state.sources.find((item) => item.id === sourceId);
   const taskId = source ? sourceResearchTaskId(source) : null;
@@ -552,6 +612,10 @@ function proposalObjectId(state: State, proposalId: string): string | null {
   // 建关系挂在锚对象账页；建对象挂在抽取语境对象（fromObjectId）的账页。
   if (p.payload.kind === '建关系') return p.payload.objectId;
   if (p.payload.kind === '建对象') return p.payload.fromObjectId;
+  if (p.payload.kind === '主键新版过时') {
+    const oldClaimId = p.payload.oldClaimId;
+    return state.claims.find((c) => c.id === oldClaimId)?.objectId ?? null;
+  }
   const claimId = p.payload.claimId;
   return (
     state.claims.find((c) => c.id === claimId)?.objectId ??
@@ -644,9 +708,15 @@ export function reducer(state: State, action: Action): State {
         };
       }
       const seq = state.seq;
-      const sources = state.sources.map((s) =>
-        s.id === action.sourceId ? { ...s, boundObjectIds: action.objectIds } : s,
-      );
+      const sources = state.sources.map((s) => {
+        if (s.id !== action.sourceId) return s;
+        const kept = { ...s.bindingRoles };
+        for (const key of Object.keys(kept)) {
+          if (!action.objectIds.includes(key)) delete kept[key];
+        }
+        const bindingRoles = Object.keys(kept).length > 0 ? kept : undefined;
+        return { ...s, boundObjectIds: action.objectIds, bindingRoles };
+      });
       const jobs = [
         ...state.extractJobs.filter((job) => job.sourceId !== action.sourceId),
         { sourceId: action.sourceId, status: '抽取中' as const },
@@ -665,12 +735,13 @@ export function reducer(state: State, action: Action): State {
         objectId,
       );
       next = ensureTab(next, objectId, '来源', false);
-      return pushCard(
+      next = pushCard(
         next,
         objectId,
         { kind: '结果', result: '绑定', undo: { kind: '绑定', sourceId: action.sourceId } },
         `已绑定 ${action.objectIds.length} 个对象 · 抽取中`,
       );
+      return maybeEnqueuePrimarySuggestions(next, action.sourceId, action.objectIds);
     }
 
     case 'UNBIND_SOURCE': {
@@ -678,6 +749,7 @@ export function reducer(state: State, action: Action): State {
       if (!source || source.virtual || !source.boundObjectIds.includes(action.objectId))
         return state;
       const remainingObjectIds = source.boundObjectIds.filter((id) => id !== action.objectId);
+      const previousRole = bindingRole(source, action.objectId);
       const droppedClaims = state.claims.filter(
         (claim) => claim.sourceId === action.sourceId && claim.objectId === action.objectId,
       );
@@ -686,7 +758,9 @@ export function reducer(state: State, action: Action): State {
       const next: State = {
         ...state,
         sources: state.sources.map((item) =>
-          item.id === action.sourceId ? { ...item, boundObjectIds: remainingObjectIds } : item,
+          item.id === action.sourceId
+            ? { ...dropBindingRole(item, action.objectId), boundObjectIds: remainingObjectIds }
+            : item,
         ),
         claims: state.claims.filter(
           (claim) => !(claim.sourceId === action.sourceId && claim.objectId === action.objectId),
@@ -735,12 +809,68 @@ export function reducer(state: State, action: Action): State {
             sourceId: action.sourceId,
             objectId: action.objectId,
             claims: droppedClaims.map((claim) => ({ ...claim })),
+            role: previousRole,
           },
         },
         `已解绑「${sourceTitle}」：撤下该对象下 ${droppedClaims.length} 条主张${
           remainingObjectIds.length === 0 ? '，来源回到 Inbox' : ''
         }`,
       );
+    }
+
+    case 'SET_SOURCE_ROLE': {
+      // 0062：绑定级角色。默认转述；同一来源对不同对象可不同。不自动关窗。
+      const source = state.sources.find((item) => item.id === action.sourceId);
+      if (!source || source.virtual || !source.boundObjectIds.includes(action.objectId)) {
+        return state;
+      }
+      const previousRole = bindingRole(source, action.objectId);
+      if (previousRole === action.role) return state;
+      let next: State = {
+        ...state,
+        sources: state.sources.map((item) =>
+          item.id === action.sourceId ? withBindingRole(item, action.objectId, action.role) : item,
+        ),
+        proposals:
+          action.role === '转述'
+            ? state.proposals.map((p) => {
+                const payload = p.payload;
+                if (!p.pending || payload.kind !== '主键新版过时') {
+                  return p;
+                }
+                const oldC = state.claims.find((c) => c.id === payload.oldClaimId);
+                const newC = state.claims.find((c) => c.id === payload.newClaimId);
+                const touches =
+                  (oldC?.sourceId === action.sourceId && oldC.objectId === action.objectId) ||
+                  (newC?.sourceId === action.sourceId && newC.objectId === action.objectId);
+                return touches ? { ...p, pending: false, decision: 'reject' as const } : p;
+              })
+            : state.proposals,
+        toast: {
+          text: action.role === '主键' ? '已标为主键' : '已改为转述',
+          id: state.seq,
+        },
+        seq: state.seq + 1,
+      };
+      next = pushCard(
+        next,
+        action.objectId,
+        {
+          kind: '结果',
+          result: '整理',
+          undo: {
+            kind: '设角色',
+            sourceId: action.sourceId,
+            objectId: action.objectId,
+            previousRole,
+          },
+        },
+        action.role === '主键'
+          ? `已将来源「${source.title}」标为主键（仅当前对象）`
+          : `已将来源「${source.title}」改为转述（仅当前对象）`,
+      );
+      if (action.role === '主键') next = appendSupersedeProposals(next, [action.objectId]);
+      return next;
     }
 
     case 'DELETE_SOURCE': {
@@ -970,6 +1100,7 @@ export function reducer(state: State, action: Action): State {
           ...proposeCatalogUncataloged(next, objectId, tidySeq),
           ...proposeNewObjects(next, objectId, tidySeq, action.unknownObjectNames),
           ...proposeRelations(next, objectId, tidySeq),
+          ...src.boundObjectIds.flatMap((oid) => proposeSupersedeByPrimary(next, oid, tidySeq)),
         ].filter((p): p is Proposal => p !== null);
         if (fresh.length > 0) next = { ...next, proposals: [...next.proposals, ...fresh] };
       }
@@ -1469,6 +1600,66 @@ export function reducer(state: State, action: Action): State {
           objectId,
           { kind: '结果', result: '拒绝' },
           '已驳回合并提议，重复主张原样保留',
+        );
+      }
+      // 0062：主键新版过时——人确认才关窗，关闭原因「被主键新版取代」；undo 复用关窗补偿（0034）。
+      if (prop.payload.kind === '主键新版过时') {
+        if (!objectId) return state;
+        const payload = prop.payload;
+        const oldClaimId = payload.oldClaimId;
+        if (action.decision === 'accept-close') {
+          const today = new Date().toISOString().slice(0, 10);
+          const target = state.claims.find((c) => c.id === oldClaimId);
+          if (!target || target.status === '过时') {
+            return {
+              ...state,
+              proposals: state.proposals.map((p) =>
+                p.id === prop.id ? { ...p, pending: false, decision: 'accept-close' } : p,
+              ),
+            };
+          }
+          return pushCard(
+            {
+              ...state,
+              claims: state.claims.map((c) =>
+                c.id === oldClaimId
+                  ? {
+                      ...c,
+                      status: '过时' as const,
+                      validTo: today,
+                      closeReason: '被主键新版取代' as const,
+                      supersededBy: payload.newClaimId,
+                    }
+                  : c,
+              ),
+              proposals: state.proposals.map((p) =>
+                p.id === prop.id ? { ...p, pending: false, decision: 'accept-close' } : p,
+              ),
+              toast: { text: '已关窗（被主键新版取代）', id: state.seq },
+              seq: state.seq + 1,
+            },
+            objectId,
+            {
+              kind: '结果',
+              claimId: oldClaimId,
+              result: '关窗',
+              undo: { kind: '关窗', claimId: oldClaimId },
+            },
+            '已确认旧版过时并关窗，关闭原因「被主键新版取代」',
+          );
+        }
+        return pushCard(
+          {
+            ...state,
+            proposals: state.proposals.map((p) =>
+              p.id === prop.id ? { ...p, pending: false, decision: 'reject' } : p,
+            ),
+            toast: { text: '已驳回', id: state.seq },
+            seq: state.seq + 1,
+          },
+          objectId,
+          { kind: '结果', result: '拒绝' },
+          '已驳回旧版过时提议，冲突双方仍并排',
         );
       }
       // 标过时——复核提示的落点：人确认才关窗（世界已变），undo 复用关窗补偿重开（历史不改写，0034）。
@@ -2312,6 +2503,13 @@ export function reducer(state: State, action: Action): State {
           sourceId: head.sourceId,
           objectIds: head.objectIds,
         });
+      } else if (head.kind === '设角色' && head.sourceId && head.role) {
+        st = reducer(st, {
+          type: 'SET_SOURCE_ROLE',
+          sourceId: head.sourceId,
+          objectId: head.objectId,
+          role: head.role,
+        });
       }
       return st;
     }
@@ -2419,7 +2617,7 @@ export function reducer(state: State, action: Action): State {
             claims: st.claims.filter((c) => !affected.includes(c.sourceId)),
             pendingClaims: st.pendingClaims.filter((c) => !affected.includes(c.sourceId)),
             sources: st.sources.map((s) =>
-              s.id === undo.sourceId ? { ...s, boundObjectIds: [] } : s,
+              s.id === undo.sourceId ? { ...s, boundObjectIds: [], bindingRoles: undefined } : s,
             ),
             inbox: st.inbox.includes(undo.sourceId) ? st.inbox : [...st.inbox, undo.sourceId],
             extractJobs: st.extractJobs.filter((j) => !affected.includes(j.sourceId)),
@@ -2440,11 +2638,16 @@ export function reducer(state: State, action: Action): State {
           const restoredClaims = undo.claims.filter((claim) => !existingIds.has(claim.id));
           st = {
             ...st,
-            sources: st.sources.map((item) =>
-              item.id === undo.sourceId && !item.boundObjectIds.includes(undo.objectId)
-                ? { ...item, boundObjectIds: [...item.boundObjectIds, undo.objectId] }
-                : item,
-            ),
+            sources: st.sources.map((item) => {
+              if (item.id !== undo.sourceId || item.boundObjectIds.includes(undo.objectId)) {
+                return item;
+              }
+              const rebound = {
+                ...item,
+                boundObjectIds: [...item.boundObjectIds, undo.objectId],
+              };
+              return undo.role ? withBindingRole(rebound, undo.objectId, undo.role) : rebound;
+            }),
             claims: [...st.claims, ...restoredClaims],
             inbox: st.inbox.filter((id) => id !== undo.sourceId),
             toast: { text: '已撤销解绑，绑定与主张已恢复', id: st.seq },
@@ -2492,6 +2695,15 @@ export function reducer(state: State, action: Action): State {
             { kind: '结果', claimId: undo.claimId, result: '撤销' },
             '已重开旧句，禁写已移除，配套新句一并撤下',
           );
+        case '设角色': {
+          st = reducer(st, {
+            type: 'SET_SOURCE_ROLE',
+            sourceId: undo.sourceId,
+            objectId: undo.objectId,
+            role: undo.previousRole,
+          });
+          return st;
+        }
         case '批量晋升': {
           // Q3：影响面大的补偿走 takeover 确认，不一键。
           return enqueueWrite(st, {
@@ -2563,6 +2775,8 @@ export function reducer(state: State, action: Action): State {
         proposals: state.proposals.filter((p) => {
           if (p.payload.kind === '整理' || p.payload.kind === '标过时')
             return !claimIds.has(p.payload.claimId);
+          if (p.payload.kind === '主键新版过时')
+            return !claimIds.has(p.payload.oldClaimId) && !claimIds.has(p.payload.newClaimId);
           if (p.payload.kind === '丢弃未核')
             return !p.payload.claimIds.some((id) => claimIds.has(id));
           if (p.payload.kind === '合并重复')
@@ -2817,7 +3031,7 @@ export function reducer(state: State, action: Action): State {
             }
           : item,
       );
-      return {
+      let next: State = {
         ...state,
         tasks,
         taskAudits: [
@@ -2840,6 +3054,10 @@ export function reducer(state: State, action: Action): State {
             ? state.view
             : { kind: 'object', objectId: task.objectId },
       };
+      for (const src of incoming) {
+        next = maybeEnqueuePrimarySuggestions(next, src.id, src.boundObjectIds);
+      }
+      return next;
     }
 
     case 'ADD_SLOT': {

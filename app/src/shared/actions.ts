@@ -13,6 +13,7 @@ import type {
   ScenarioTemplate,
   Source,
   SourceOrigin,
+  SourceRole,
   SourceSegment,
   TaskAudit,
   ThemePreference,
@@ -48,6 +49,8 @@ export type Action =
   | { type: 'SET_VIEW'; view: View }
   | { type: 'BIND_CONFIRMED'; sourceId: string; objectIds: string[] }
   | { type: 'UNBIND_SOURCE'; sourceId: string; objectId: string }
+  // 0062：绑定级角色，默认转述；同一 URL 对不同对象可不同。operations 留痕，确认走 takeover。
+  | { type: 'SET_SOURCE_ROLE'; sourceId: string; objectId: string; role: SourceRole }
   | { type: 'DELETE_SOURCE'; sourceId: string; recovery?: DeletedSourceRecovery | undefined }
   | { type: 'RESTORE_DELETED_SOURCE'; recovery: DeletedSourceRecovery }
   | ExtractDoneAction

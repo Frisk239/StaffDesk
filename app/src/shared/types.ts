@@ -52,7 +52,8 @@ export interface Source {
   title: string;
   body: string;
   path: FeedPath;
-  role?: SourceRole | undefined;
+  // 0062：角色在绑定上，不在来源上。缺省 = 转述；只记录显式「主键」。
+  bindingRoles?: Record<string, SourceRole> | undefined;
   boundObjectIds: string[]; // 空 = 未绑定（在 Inbox）
   workspaceId?: string | undefined;
   virtual?: boolean | undefined; // 使用者陈述的落点：不进 Inbox、不进来源侧
@@ -66,7 +67,7 @@ export interface Source {
 // 0030：主张状态收敛为成立/过时；未知只是页面语义（槽内无主张的空格子），不是账本枚举值。
 export type ClaimStatus = '成立' | '过时';
 // 0031/0032：关闭原因补齐「来源删除」「对象误建」。
-export type CloseReason = '世界已变' | '从未成立' | '来源删除' | '对象误建';
+export type CloseReason = '世界已变' | '从未成立' | '来源删除' | '对象误建' | '被主键新版取代';
 // 0025/0033：谓词是受控槽，槽表是数据（state.slotDefs），人可在设置页加槽；'未编目' 是映射不上的特殊值。
 export type Predicate = string;
 
@@ -227,6 +228,12 @@ export type MergeDuplicatesPayload = {
 };
 // 复核提示阈值由整理提议承担：只有人确认 accept-close 才关窗（世界已变），历史不改写（0034）。
 export type MarkStalePayload = { kind: '标过时'; claimId: string };
+// 0062：冲突双方均出自主键绑定且来源时间可辨时，提议关窗旧版；人确认才写，关闭原因「被主键新版取代」。
+export type SupersedeByPrimaryPayload = {
+  kind: '主键新版过时';
+  oldClaimId: string;
+  newClaimId: string;
+};
 // 0037：整理提议的「丢弃未核」类型——未核积压的兜底出口（单条起，批量留待真链）。
 export type DropUnverifiedPayload = {
   kind: '丢弃未核';
@@ -262,6 +269,7 @@ export type ProposalPayload =
   | DropUnverifiedPayload
   | MergeDuplicatesPayload
   | MarkStalePayload
+  | SupersedeByPrimaryPayload
   | NewObjectPayload
   | NewRelationPayload;
 
@@ -302,7 +310,14 @@ export type UndoPayload =
   | { kind: '整理丢弃'; claim: Claim }
   | { kind: '记忆'; memoryId: string }
   | { kind: '绑定'; sourceId: string }
-  | { kind: '解绑'; sourceId: string; objectId: string; claims: Claim[] }
+  | {
+      kind: '解绑';
+      sourceId: string;
+      objectId: string;
+      claims: Claim[];
+      role?: SourceRole | undefined;
+    }
+  | { kind: '设角色'; sourceId: string; objectId: string; previousRole: SourceRole }
   | {
       kind: '关窗';
       claimId: string;
@@ -357,7 +372,8 @@ export interface ChatMessage {
 
 // 「批量回退」（0034）：批量晋升撤销的补偿走 takeover 确认（Q3 裁决）。
 // 「场景」（M27）：AI 起草的场景模板草稿走 takeover，确认即建模板、驳回即弃；免 undo（0058 口径）。
-export type WriteKind = '晋升' | '纠正' | '整理' | '绑定' | '批量晋升' | '批量回退' | '场景';
+export type WriteKind =
+  '晋升' | '纠正' | '整理' | '绑定' | '批量晋升' | '批量回退' | '场景' | '设角色';
 
 export interface WriteProposal {
   id: string;
@@ -372,6 +388,8 @@ export interface WriteProposal {
   objectIds?: string[] | undefined;
   targetPredicate?: Predicate | undefined;
   outbound?: boolean | undefined;
+  // 0062：kind = '设角色' 时的目标角色；确认才写绑定，启发式永不自动定。
+  role?: SourceRole | undefined;
   // M27：kind = '场景' 时的模板草稿四件套；builtin 恒 false，确认复用 UPSERT 守卫（0025 兜底）。
   template?: ScenarioTemplate | undefined;
 }

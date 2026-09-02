@@ -97,7 +97,13 @@ export function Takeover({ objectId }: { objectId: string }) {
   };
 
   const rejectLabel =
-    head.kind === '批量晋升' ? '全部保持' : head.kind === '场景' ? '放弃草稿' : '拒绝';
+    head.kind === '批量晋升'
+      ? '全部保持'
+      : head.kind === '场景'
+        ? '放弃草稿'
+        : head.kind === '设角色'
+          ? '保持原样'
+          : '拒绝';
   const confirmLabel =
     head.kind === '批量晋升'
       ? '全部晋升'
@@ -105,7 +111,11 @@ export function Takeover({ objectId }: { objectId: string }) {
         ? '确认回退'
         : head.kind === '场景'
           ? '创建场景模板'
-          : '确认';
+          : head.kind === '设角色'
+            ? head.role === '转述'
+              ? '改为转述'
+              : '标为主键'
+            : '确认';
 
   return (
     // 只拦裸 Enter（提交语义）；Shift+Enter 在 textarea 里保留换行，与 composer 行为一致。
@@ -183,6 +193,9 @@ export function Takeover({ objectId }: { objectId: string }) {
           )}
           {head.kind === '批量回退' && (
             <div className="takeover-warn">确认后整批回到未核（补偿写，可再晋升）</div>
+          )}
+          {head.kind === '设角色' && (
+            <div className="takeover-warn">只改当前对象上的角色；系统不会自动定主键。</div>
           )}
           {head.kind === '纠正' &&
             (() => {

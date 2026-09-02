@@ -49,6 +49,9 @@ export function migrate(db: Database.Database): void {
   if (current < 10) {
     migrateToV10(db);
   }
+  if (current < 11) {
+    migrateToV11(db);
+  }
   if (current < SCHEMA_VERSION) {
     db.prepare('INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)').run(
       SCHEMA_VERSION,
@@ -235,6 +238,110 @@ function migrateToV10(db: Database.Database): void {
     `);
     db.exec('DROP TABLE tasks');
     db.exec('ALTER TABLE tasks_v10 RENAME TO tasks');
+  });
+  tx();
+}
+
+/**
+ * v11（M29，0062）：绑定级主键角色。
+ * source_bindings 重建加 role（默认转述；旧来源级 sources.role=主键则拷到该来源全部绑定）；
+ * claims 重建把 close_reason CHECK 放开收「被主键新版取代」；
+ * write_queue 重建 kind CHECK 收「设角色」并加 role 列（旧行 NULL）。
+ * SQLite 不能 ALTER CHECK，三表一律 new→copy→drop→rename。
+ */
+function migrateToV11(db: Database.Database): void {
+  const tx = db.transaction(() => {
+    db.exec(`
+      CREATE TABLE source_bindings_v11 (
+        source_id TEXT NOT NULL,
+        object_id TEXT NOT NULL,
+        role TEXT NOT NULL DEFAULT '转述' CHECK (role IN ('主键', '转述')),
+        PRIMARY KEY (source_id, object_id)
+      );
+    `);
+    db.exec(`
+      INSERT INTO source_bindings_v11 (source_id, object_id, role)
+      SELECT b.source_id, b.object_id,
+             CASE WHEN s.role = '主键' THEN '主键' ELSE '转述' END
+      FROM source_bindings b
+      LEFT JOIN sources s ON s.id = b.source_id
+    `);
+    db.exec('DROP TABLE source_bindings');
+    db.exec('ALTER TABLE source_bindings_v11 RENAME TO source_bindings');
+
+    db.exec(`
+      CREATE TABLE claims_v11 (
+        id TEXT PRIMARY KEY,
+        object_id TEXT NOT NULL,
+        predicate TEXT NOT NULL,
+        text TEXT NOT NULL,
+        status TEXT NOT NULL CHECK (status IN ('成立', '过时')),
+        unverified INTEGER NOT NULL DEFAULT 1,
+        valid_from TEXT,
+        valid_to TEXT,
+        close_reason TEXT CHECK (
+          close_reason IN ('世界已变', '从未成立', '来源删除', '对象误建', '被主键新版取代')
+        ),
+        source_id TEXT NOT NULL,
+        span TEXT,
+        source_start INTEGER,
+        source_end INTEGER,
+        source_locator TEXT,
+        superseded_by TEXT,
+        created_at TEXT NOT NULL
+      );
+    `);
+    db.exec(`
+      INSERT INTO claims_v11 (
+        id, object_id, predicate, text, status, unverified, valid_from, valid_to,
+        close_reason, source_id, span, source_start, source_end, source_locator,
+        superseded_by, created_at
+      )
+      SELECT id, object_id, predicate, text, status, unverified, valid_from, valid_to,
+             close_reason, source_id, span, source_start, source_end, source_locator,
+             superseded_by, created_at
+      FROM claims
+    `);
+    db.exec('DROP TABLE claims');
+    db.exec('ALTER TABLE claims_v11 RENAME TO claims');
+    // 重建 claims 后 rowid 换了，旧 FTS 行对不上；触发器在 migrate() 末尾才挂。
+    recreateClaimsFts(db);
+
+    db.exec(`
+      CREATE TABLE write_queue_v11 (
+        id TEXT PRIMARY KEY,
+        object_id TEXT NOT NULL,
+        kind TEXT NOT NULL CHECK (
+          kind IN ('晋升', '纠正', '整理', '绑定', '批量晋升', '批量回退', '场景', '设角色')
+        ),
+        task_id TEXT,
+        headline TEXT NOT NULL,
+        evidence TEXT NOT NULL,
+        claim_id TEXT,
+        claim_ids TEXT,
+        source_id TEXT,
+        object_ids TEXT,
+        target_predicate TEXT,
+        outbound INTEGER,
+        template_json TEXT,
+        role TEXT CHECK (role IN ('主键', '转述')),
+        position INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL
+      );
+    `);
+    db.exec(`
+      INSERT INTO write_queue_v11 (
+        id, object_id, kind, task_id, headline, evidence, claim_id, claim_ids,
+        source_id, object_ids, target_predicate, outbound, template_json, role,
+        position, created_at
+      )
+      SELECT id, object_id, kind, task_id, headline, evidence, claim_id, claim_ids,
+             source_id, object_ids, target_predicate, outbound, template_json, NULL,
+             position, created_at
+      FROM write_queue
+    `);
+    db.exec('DROP TABLE write_queue');
+    db.exec('ALTER TABLE write_queue_v11 RENAME TO write_queue');
   });
   tx();
 }
