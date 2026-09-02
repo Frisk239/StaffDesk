@@ -1,4 +1,5 @@
-import { dialog, ipcMain, type IpcMainInvokeEvent } from 'electron';
+import { clipboard, dialog, ipcMain, type IpcMainInvokeEvent } from 'electron';
+import { writeFile } from 'node:fs/promises';
 import type { BrainBackupExportResult, BrainRestoreResult } from '@shared/api';
 import type { Action } from '@shared/actions';
 import { attachTurn } from '@shared/turn';
@@ -50,6 +51,8 @@ const HANDLED_CHANNELS = [
   { channel: 'extract:run', trusted: true },
   { channel: 'settings:testProvider', trusted: true },
   { channel: 'brief:generate', trusted: true },
+  { channel: 'brief:copy', trusted: true },
+  { channel: 'brief:export', trusted: true },
   { channel: 'brain:export', trusted: true },
   { channel: 'brain:restore', trusted: true },
   { channel: 'task:startResearch', trusted: true },
@@ -77,6 +80,12 @@ export function researchOptionsFor(
   const parent = state.tasks.find((task) => task.id === payload.fromTaskId);
   if (!parent) return {};
   return { kind: '再搜一轮', parentTaskId: parent.id, query: parent.query };
+}
+
+/** 简报导出文件名：对象名里的路径分隔符与空白折成连字符，空的回落「简报」。 */
+function briefFileName(objectName: string | undefined): string {
+  const cleaned = (objectName ?? '').replace(/[\\/:*?"<>|\s]+/g, '-').replace(/^-+|-+$/g, '');
+  return cleaned.slice(0, 40) || '简报';
 }
 
 export function registerIpc(
@@ -447,6 +456,28 @@ export function registerIpc(
     broadcast(next);
     return next;
   });
+
+  // 审计 F4：复制走主进程 clipboard——0047 权限全拒下 renderer 的
+  // navigator.clipboard.writeText 会被 clipboard-sanitized-write 权限静默拦下。
+  handleTrusted('brief:copy', (_event, payload: { markdown: string }): void => {
+    clipboard.writeText(payload.markdown);
+  });
+
+  handleTrusted(
+    'brief:export',
+    async (_event, payload: { markdown: string; objectName?: string }) => {
+      // 审计 F4：简报出站出口——照 brain:export 的保存对话框模式写 .md；正文由 renderer 的
+      // 同一份 Markdown 组装函数提供，主进程不重排格式。
+      const picked = await dialog.showSaveDialog({
+        title: '导出简报',
+        defaultPath: `${briefFileName(payload.objectName)}.md`,
+        filters: [{ name: 'Markdown', extensions: ['md'] }],
+      });
+      if (picked.canceled || !picked.filePath) return null;
+      await writeFile(picked.filePath, payload.markdown, 'utf8');
+      return { filePath: picked.filePath };
+    },
+  );
 
   handleTrusted('brain:export', async (): Promise<BrainBackupExportResult | null> => {
     const picked = await dialog.showSaveDialog({

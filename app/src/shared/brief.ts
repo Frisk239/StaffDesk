@@ -1,5 +1,6 @@
 import type { Brief, BriefBlock, BriefSentence, Claim, State } from './types';
 import { deriveConflicts, normalizeValue, scenarioOfWorkspace } from './scenario';
+import { isPrimaryBacked } from './primarySource';
 
 // 简报组装（纯函数，出站纪律都在这里）：
 // - 0058：简报说明改读场景模板（state.scenarioTemplates，数据行）；
@@ -8,6 +9,7 @@ import { deriveConflicts, normalizeValue, scenarioOfWorkspace } from './scenario
 // - 每个主张句必须带 claimIds；unknown 句是占位，不是世界判断，绝不伪装成主张。
 // - 冲突派生（0029）后按谓词摊开在对应槽块里，不合成「目前有争议」。
 // - 未核必须带标记；未编目不作单边定论（降级为「材料提到」，收进材料缺口）。
+// - 0062：主张句的主键标注按当前对象视角填 primarySourceIds（主张级：其来源绑定是主键才标）。
 // - 未知保持未知，缺口写清楚缺什么。
 
 /**
@@ -39,14 +41,35 @@ function outstationClaims(state: State, objectId: string): Claim[] {
   );
 }
 
-function claimSentence(claim: Claim, flag?: BriefSentence['flag']): BriefSentence {
+function claimSentence(state: State, claim: Claim, flag?: BriefSentence['flag']): BriefSentence {
   return {
     text: claim.text,
     claimIds: [claim.id],
     unverified: claim.unverified,
     kind: 'claim',
     flag,
+    primarySourceIds: primarySourceIdsOf(state, [claim.id]),
   };
+}
+
+/**
+ * 0062：句子的主键标注——claimIds 涉及的主张里，其来源绑定（按当前对象视角）
+ * 是主键的来源 id 集合；没有主键背书时返回 undefined（不写空数组占位）。
+ * buildBrief 与 briefGen 的 LLM 分支共用此函数，两条组句路径的标注不漂移。
+ */
+export function primarySourceIdsOf(
+  state: State,
+  claimIds: readonly string[],
+): string[] | undefined {
+  const ids: string[] = [];
+  for (const id of claimIds) {
+    const claim = state.claims.find((c) => c.id === id);
+    if (!claim || claim.status !== '成立') continue;
+    if (isPrimaryBacked(state, claim) && !ids.includes(claim.sourceId)) {
+      ids.push(claim.sourceId);
+    }
+  }
+  return ids.length > 0 ? ids : undefined;
 }
 
 function unknownSentence(text: string): BriefSentence {
@@ -81,7 +104,7 @@ export function buildBrief(
       return {
         title: blockSpec.title,
         sentences: background.length
-          ? background.map((c) => claimSentence(c))
+          ? background.map((c) => claimSentence(state, c))
           : [unknownSentence(`未知：账本中暂无关于「${blockSpec.title}」的主张，本块不编。`)],
       };
     }
@@ -100,14 +123,14 @@ export function buildBrief(
             if (other && other.predicate === pred) {
               // 每条冲突句只摊一次（取字典序靠前那条开场）
               if (c.id < other.id) {
-                sentences.push(claimSentence(c, '冲突·并排'));
-                sentences.push(claimSentence(other, '冲突·并排'));
+                sentences.push(claimSentence(state, c, '冲突·并排'));
+                sentences.push(claimSentence(state, other, '冲突·并排'));
               }
             } else {
-              sentences.push(claimSentence(c));
+              sentences.push(claimSentence(state, c));
             }
           } else {
-            sentences.push(claimSentence(c));
+            sentences.push(claimSentence(state, c));
           }
         }
       }
@@ -139,6 +162,10 @@ export function buildBrief(
             claimIds: base.map((c) => c.id),
             unverified: base.some((c) => c.unverified),
             kind: 'synthesis',
+            primarySourceIds: primarySourceIdsOf(
+              state,
+              base.map((c) => c.id),
+            ),
           },
         ],
       };
@@ -154,6 +181,7 @@ export function buildBrief(
         unverified: c.unverified,
         kind: 'claim',
         flag: '未编目·不作定论',
+        primarySourceIds: primarySourceIdsOf(state, [c.id]),
       });
     }
     for (const pred of slotPredicates) {
@@ -161,13 +189,14 @@ export function buildBrief(
         sentences.push(unknownSentence(`${pred}：未知（账本内无主张，未编造）。`));
       }
     }
-    const unverifiedCount = out.filter((c) => c.unverified).length;
-    if (unverifiedCount > 0) {
+    const unverifiedIds = out.filter((c) => c.unverified).map((c) => c.id);
+    if (unverifiedIds.length > 0) {
       sentences.push({
-        text: `未核主张 ${unverifiedCount} 条：出站时均带「未核」标记，可按条晋升后再出简报。`,
-        claimIds: out.filter((c) => c.unverified).map((c) => c.id),
+        text: `未核主张 ${unverifiedIds.length} 条：出站时均带「未核」标记，可按条晋升后再出简报。`,
+        claimIds: unverifiedIds,
         unverified: true,
         kind: 'synthesis',
+        primarySourceIds: primarySourceIdsOf(state, unverifiedIds),
       });
     }
     if (sentences.length === 0) sentences.push(unknownSentence('暂无明显材料缺口。'));
