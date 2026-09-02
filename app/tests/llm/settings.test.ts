@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -147,5 +147,16 @@ describe('全局模型配置', () => {
     );
 
     expect(store.load()?.providers.map((provider) => provider.id)).toEqual(['p-deepseek']);
+  });
+
+  it('损坏的配置文件回落默认而不是抛错——完好的 brain 不会被误旁置（评审 M33）', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'staffdesk-model-settings-'));
+    dirs.push(dir);
+    const file = join(dir, 'model-settings.json');
+    writeFileSync(file, '{ 不是 JSON', 'utf8');
+    const store = createJsonModelSettingsStore(file);
+    // F2：openBrain 的 hydrate 会调 load()——这里返回 null（回落默认）而不是抛错，
+    // 启动 catch 才不会把 brain.db 当损坏旁置（0048：模型配置不属大脑数据）。
+    expect(store.load()).toBeNull();
   });
 });
