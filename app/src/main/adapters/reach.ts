@@ -50,6 +50,22 @@ export interface ReachAdapter {
 export type SpawnFn = typeof spawn;
 export type FetchFn = typeof fetch;
 
+// 审计 D1（2026-09-02）：fetch 网络路必须限时——任务墙钟只在步间判（engine capHit），
+// fetch 挂死会让 allSettled / safeOpen 永久悬挂。search 对齐 Exa spawn 的 25s、open 对齐
+// runCommand 默认的 20s。毫秒数经依赖注入仅为单测提速，产品口径不动。
+export interface ReachTimeouts {
+  githubSearchMs?: number | undefined;
+  jinaOpenMs?: number | undefined;
+}
+
+const GITHUB_SEARCH_TIMEOUT_MS = 25_000;
+const JINA_OPEN_TIMEOUT_MS = 20_000;
+
+/** AbortSignal.timeout 到点在 Node 里抛 TimeoutError，人工 abort 抛 AbortError；两处都算限时。 */
+function isTimeoutLike(err: unknown): boolean {
+  return err instanceof Error && (err.name === 'TimeoutError' || err.name === 'AbortError');
+}
+
 export class ReachError extends Error {
   readonly hint?: string | undefined;
 
@@ -142,7 +158,7 @@ function createExaPath(spawnFn: SpawnFn): ReachPath {
 
 // 0061：GitHub 路走匿名 REST（search/repositories，10 次/分钟）——机器红利（gh CLI 登录态、
 // mcporter github server 凭据）不得进产品路径；限速/断网在搜索时按路记失败，不编造命中（0008）。
-function createGitHubPath(fetchFn: FetchFn): ReachPath {
+function createGitHubPath(fetchFn: FetchFn, searchTimeoutMs: number): ReachPath {
   return {
     name: 'GitHub',
     async doctorCheck() {
@@ -155,8 +171,13 @@ function createGitHubPath(fetchFn: FetchFn): ReachPath {
       try {
         res = await fetchFn(url, {
           headers: { Accept: 'application/vnd.github+json', 'User-Agent': 'StaffDesk' },
+          // 审计 D1：挂死的搜索必须限时折错，不许让任务的 allSettled 永久悬挂。
+          signal: AbortSignal.timeout(searchTimeoutMs),
         });
       } catch (err) {
+        if (isTimeoutLike(err)) {
+          throw new ReachError(`GitHub 搜索超时（${Math.round(searchTimeoutMs / 1000)} 秒）`);
+        }
         throw new ReachError(
           compact(err instanceof Error ? err.message : String(err)) || 'GitHub 搜索网络错误',
         );
@@ -227,24 +248,34 @@ async function aggregateDoctor(paths: readonly ReachPath[]): Promise<DoctorResul
 export function createReachAdapter(
   spawnFn: SpawnFn = spawn,
   fetchFn: FetchFn = fetch,
+  timeouts: ReachTimeouts = {},
 ): ReachAdapter {
   // e2e 隔离机没有 Agent Reach；费用触顶 spec 走罐头检索，不触外网。
   if (process.env.STAFFDESK_E2E_REACH === '1') return createE2eReachAdapter();
-  const paths: ReachPath[] = [createExaPath(spawnFn), createGitHubPath(fetchFn)];
+  const paths: ReachPath[] = [
+    createExaPath(spawnFn),
+    createGitHubPath(fetchFn, timeouts.githubSearchMs ?? GITHUB_SEARCH_TIMEOUT_MS),
+  ];
   return {
     paths,
     doctor: () => aggregateDoctor(paths),
     async open(url: string) {
-      return openViaJinaReader(fetchFn, url);
+      return openViaJinaReader(fetchFn, url, timeouts.jinaOpenMs ?? JINA_OPEN_TIMEOUT_MS);
     },
   };
 }
 
-async function openViaJinaReader(fetchFn: FetchFn, url: string): Promise<OpenResult> {
+async function openViaJinaReader(
+  fetchFn: FetchFn,
+  url: string,
+  openTimeoutMs: number,
+): Promise<OpenResult> {
   try {
     const reader = `https://r.jina.ai/${url}`;
     const res = await fetchFn(reader, {
       headers: { Accept: 'text/plain' },
+      // 审计 D1：挂死的打开必须限时折失败（与 HTTP 非 200 同形状），不许让 safeOpen 永久悬挂。
+      signal: AbortSignal.timeout(openTimeoutMs),
     });
     if (!res.ok) {
       return { url, ok: false, body: '', error: `打开失败 HTTP ${res.status}` };
@@ -253,6 +284,14 @@ async function openViaJinaReader(fetchFn: FetchFn, url: string): Promise<OpenRes
     if (!body) return { url, ok: false, body: '', error: '打开后正文为空' };
     return { url, ok: true, body, finalUrl: url };
   } catch (err) {
+    if (isTimeoutLike(err)) {
+      return {
+        url,
+        ok: false,
+        body: '',
+        error: `打开超时（${Math.round(openTimeoutMs / 1000)} 秒）`,
+      };
+    }
     const msg = err instanceof Error ? err.message : String(err);
     return { url, ok: false, body: '', error: compact(msg) };
   }
@@ -309,6 +348,8 @@ export const UNAVAILABLE_ADAPTER: ReachAdapter = {
 
 // e2e 罐头双路：Exa 两命中 + GitHub 两命中（其中一条与 Exa 同 URL，验证去重）。
 // STAFFDESK_E2E_REACH_FAIL 指定路名（如 'GitHub'）让该路搜索恒失败，验证单路失败另一路照常。
+// STAFFDESK_E2E_REACH_HANG（审计 D1）指定 'search' | 'open' 返回永不 settle 的 promise，
+// 验证真实适配器的 AbortSignal.timeout 能把挂死的任务限时收口（罐头自身不超时）。
 function createE2eReachAdapter(): ReachAdapter {
   const exaHits: SearchHit[] = [
     { title: '费用触顶来源甲', url: 'https://e2e.staffdesk.test/a', snippet: '主栈是 Rust' },
@@ -319,12 +360,14 @@ function createE2eReachAdapter(): ReachAdapter {
     { title: '费用触顶来源丙', url: 'https://e2e.staffdesk.test/c', snippet: '团队规模 20 人' },
   ];
   const failPath = process.env.STAFFDESK_E2E_REACH_FAIL;
+  const hang = process.env.STAFFDESK_E2E_REACH_HANG;
   const paths: ReachPath[] = [
     {
       name: 'Exa',
       doctorCheck: async () => ({ ok: true, detail: 'e2e exa' }),
       search: async () => {
         if (failPath === 'Exa') throw new ReachError('Exa e2e 故障注入');
+        if (hang === 'search') return new Promise<SearchHit[]>(() => {});
         return exaHits;
       },
     },
@@ -333,6 +376,7 @@ function createE2eReachAdapter(): ReachAdapter {
       doctorCheck: async () => ({ ok: true, detail: 'e2e github' }),
       search: async () => {
         if (failPath === 'GitHub') throw new ReachError('GitHub 匿名额度用尽（HTTP 403）');
+        if (hang === 'search') return new Promise<SearchHit[]>(() => {});
         return githubHits;
       },
     },
@@ -341,6 +385,7 @@ function createE2eReachAdapter(): ReachAdapter {
     paths,
     doctor: () => aggregateDoctor(paths),
     async open(url: string) {
+      if (hang === 'open') return new Promise<OpenResult>(() => {});
       const hit = [...exaHits, ...githubHits].find((item) => item.url === url) ?? exaHits[0];
       const body = url.endsWith('/a')
         ? '费用触顶组织主栈是 Rust。'

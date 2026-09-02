@@ -4,7 +4,13 @@ import { builtinScenarioTemplates, DEFAULT_SLOT_DEFS } from '@shared/scenario';
 import { emptyFeeSpend } from '@shared/taskFee';
 import type { State } from '@shared/types';
 import type { OpenResult, ReachAdapter, ReachPath, SearchHit } from '../../src/main/adapters/reach';
-import { BUDGETS, capHit, mergeSearchHits, runResearchTask } from '../../src/main/tasks/engine';
+import {
+  BUDGETS,
+  budgetFor,
+  capHit,
+  mergeSearchHits,
+  runResearchTask,
+} from '../../src/main/tasks/engine';
 import { planRadarRun } from '../../src/main/tasks/radar';
 
 function baseState(): State {
@@ -541,5 +547,70 @@ describe('多路检索扇出（0061）', () => {
     expect(result.task.status).toBe('已停止');
     expect(result.task.stopReason).toBe('失败');
     expect(result.sources).toEqual([]);
+  });
+});
+
+describe('挂死兜底（审计 D1）', () => {
+  /** 真实 setTimeout 计时；墙钟档经 e2e 环境变量压小（与 fee-cap 压 tokens 同一注入家族）。 */
+  function withSmallWall<T>(ms: number, run: () => Promise<T>): Promise<T> {
+    const prev = process.env.STAFFDESK_E2E_WALL_MS;
+    process.env.STAFFDESK_E2E_WALL_MS = String(ms);
+    return run().finally(() => {
+      if (prev === undefined) delete process.env.STAFFDESK_E2E_WALL_MS;
+      else process.env.STAFFDESK_E2E_WALL_MS = prev;
+    });
+  }
+
+  it('预算墙钟档可被环境变量压小，非正数忽略', () => {
+    const prev = process.env.STAFFDESK_E2E_WALL_MS;
+    process.env.STAFFDESK_E2E_WALL_MS = '100';
+    try {
+      expect(budgetFor('快搜').wallMs).toBe(100);
+      process.env.STAFFDESK_E2E_WALL_MS = '0';
+      expect(budgetFor('快搜').wallMs).toBe(BUDGETS['快搜'].wallMs);
+    } finally {
+      if (prev === undefined) delete process.env.STAFFDESK_E2E_WALL_MS;
+      else process.env.STAFFDESK_E2E_WALL_MS = prev;
+    }
+  });
+
+  it('搜索扇出挂死时按墙钟折搜索超时，任务失败收口不卡「进行中」', async () => {
+    const reach = onePathReach({
+      search: () => new Promise<SearchHit[]>(() => {}),
+      open: async (url) => ({ url, ok: true, body: '不应打开' }),
+    });
+    const result = await withSmallWall(100, () =>
+      runResearchTask(baseState(), 'org-1', '快搜', {
+        reach,
+        queryFor: () => '验收组织',
+      }),
+    );
+    expect(result.task.status).toBe('已停止');
+    expect(result.task.stopReason).toBe('失败');
+    expect(JSON.stringify(result.audits)).toMatch(/搜索超时/);
+    expect(result.sources).toEqual([]);
+  });
+
+  it('单次打开挂死时按墙钟折打开超时进失败 URL，任务按触顶收口不卡「进行中」', async () => {
+    const reach = onePathReach({
+      search: async () => [
+        { title: '挂死页', url: 'https://a.example/hang', snippet: 'ok' },
+        { title: '正常页', url: 'https://b.example/ok', snippet: 'ok' },
+      ],
+      open: (url) =>
+        url.includes('hang')
+          ? new Promise<OpenResult>(() => {})
+          : Promise.resolve({ url, ok: true, body: '正文' }),
+    });
+    const result = await withSmallWall(100, () =>
+      runResearchTask(baseState(), 'org-1', '快搜', {
+        reach,
+        queryFor: () => '验收组织',
+      }),
+    );
+    expect(result.task.status).not.toBe('进行中');
+    expect(result.task.stopReason).toBe('触顶');
+    expect(result.failedUrls.some((url) => url.includes('hang'))).toBe(true);
+    expect(JSON.stringify(result.audits)).toMatch(/打开超时/);
   });
 });
