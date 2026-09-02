@@ -114,7 +114,8 @@ jobs:
           retention-days: 7
           if-no-files-found: error
       # F1（审计 2026-09-02）：交付链路从「能打包」变「装得上、起得来」——
-      # NSIS oneClick per-user 静默装 /S 到 %LOCALAPPDATA%\Programs\StaffDesk，再启动断言进程存活。
+      # NSIS oneClick /S 静默装后启动断言进程存活。首跑实测落点与 per-user 假设不符
+      # （PR #29 合并后 main 首跑红）：改为多候选路径 + 兜底扫描 + 失败时列目录，以探测为准。
       # StaffDesk 是托盘常驻应用（close 只收进托盘不退进程），验证完必须强制收尾，否则 job 挂到超时。
       - name: Silent install + launch smoke test
         shell: powershell
@@ -124,9 +125,22 @@ jobs:
           Write-Host "Silent-installing $($installer.FullName)"
           $installProc = Start-Process -FilePath $installer.FullName -ArgumentList '/S' -Wait -PassThru
           if ($installProc.ExitCode -ne 0) { throw "installer exited with code $($installProc.ExitCode)" }
-          $installedExe = Join-Path $env:LOCALAPPDATA 'Programs\StaffDesk\StaffDesk.exe'
-          if (-not (Test-Path $installedExe)) { throw "installed exe not found: $installedExe" }
-          Write-Host "Launching installed app"
+          $roots = @(
+            (Join-Path $env:LOCALAPPDATA 'Programs'),
+            'C:\Program Files',
+            'C:\Program Files (x86)'
+          )
+          $installedExe = Get-ChildItem -Path $roots -Filter 'StaffDesk.exe' -Recurse -Depth 2 -ErrorAction SilentlyContinue |
+            Select-Object -First 1 -ExpandProperty FullName
+          if (-not $installedExe) {
+            Write-Host "StaffDesk.exe not found under any root; listing roots for diagnosis:"
+            foreach ($root in $roots) {
+              Write-Host "--- $root"
+              Get-ChildItem -Path $root -ErrorAction SilentlyContinue | Select-Object -First 30 | ForEach-Object { Write-Host $_.Name }
+            }
+            throw "installed StaffDesk.exe not found under $($roots -join ', ')"
+          }
+          Write-Host "Launching installed app at $installedExe"
           Start-Process -FilePath $installedExe
           Start-Sleep -Seconds 15
           $running = Get-Process -Name StaffDesk -ErrorAction SilentlyContinue
