@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { openBrain, type Brain } from '../../src/main/brain';
 import {
   createBrainBackupArchive,
+  quarantineBrainFile,
   readBrainBackupArchive,
   replaceBrainDatabaseFile,
   validateBrainDatabaseBuffer,
@@ -178,5 +179,24 @@ describe('大脑备份与恢复', () => {
 
     const reopened = track(openBrain(targetPath));
     expect(reopened.snapshot().objects.map((object) => object.name)).toContain('仍应存在');
+  });
+
+  it('损坏大脑文件旁置（F2）：改名 .corrupt-<ts> 并清掉 WAL sidecar，原字节不动', () => {
+    const brainFile = tmpBrainPath();
+    writeFileSync(brainFile, 'not a sqlite database at all', 'utf8');
+    writeFileSync(`${brainFile}-wal`, 'stale wal');
+    writeFileSync(`${brainFile}-shm`, 'stale shm');
+
+    const quarantined = quarantineBrainFile(brainFile, () => new Date('2026-09-02T08:09:10.123Z'));
+
+    expect(quarantined).toBe(`${brainFile}.corrupt-2026-09-02T08-09-10-123Z`);
+    expect(existsSync(brainFile)).toBe(false);
+    expect(existsSync(`${brainFile}-wal`)).toBe(false);
+    expect(existsSync(`${brainFile}-shm`)).toBe(false);
+    expect(readFileSync(quarantined!, 'utf8')).toBe('not a sqlite database at all');
+  });
+
+  it('旁置对不存在的大脑文件返回 null 不抛（首启失败不造空文件）', () => {
+    expect(quarantineBrainFile(join(dirname(tmpBrainPath()), 'never-exists.db'))).toBe(null);
   });
 });

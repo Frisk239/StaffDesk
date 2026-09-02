@@ -1,6 +1,6 @@
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { app, BrowserWindow, powerMonitor, safeStorage } from 'electron';
+import { app, BrowserWindow, dialog, powerMonitor, safeStorage } from 'electron';
 import type { BrainRestoreResult } from '@shared/api';
 import type { DeskTask } from '@shared/types';
 import { openBrain, type Brain } from './brain';
@@ -17,12 +17,14 @@ import { dueRadars, latestDueRadar, planRadarRun } from './tasks/radar';
 import { createRadarWatchdog, type RadarWatchdog } from './tasks/radarWatchdog';
 import { applyResearchRun } from './tasks/applyResearchRun';
 import { safeDetail } from './redact';
+import { initLogging, logError } from './logging';
 import { broadcastState } from './windowBroadcast';
 import { createJsonModelSettingsStore } from './llm/settings';
 import { createJsonQualificationStore } from './eval/qualificationStore';
 import {
   backupInfoFromManifest,
   createBrainBackupArchive,
+  quarantineBrainFile,
   readBrainBackupArchive,
   replaceBrainDatabaseFile,
   writeBrainBackupFile,
@@ -32,6 +34,31 @@ let mainWindow: BrowserWindow | null = null;
 let brain: Brain | null = null;
 let radarWatchdog: RadarWatchdog | null = null;
 let onPowerResume: (() => void) | null = null;
+
+// F2/F3（审计 2026-09-02）：userData 不依赖 ready，日志目录最早可用；兜底 handler 挂在模块
+// 加载期——whenReady 之前的异常也要有落点。handler 只记脱敏日志、不再抛（0040 掩码纪律）。
+initLogging(join(app.getPath('userData'), 'logs'));
+process.on('uncaughtException', (error) => {
+  logError('uncaught', error);
+});
+process.on('unhandledRejection', (reason) => {
+  logError('unhandledRejection', reason);
+});
+app.on('render-process-gone', (_event, _webContents, details) => {
+  logError('render-process-gone', new Error(`renderer gone: ${details.reason}`));
+});
+
+/** F2：启动期致命错误的统一出口——原生错误框说清出路后退出进程（不做渲染层错误页）。
+ *  实测 showErrorBox 非阻塞、无窗口时 showMessageBox 也立即返回，等不到用户点按；
+ *  出路文案同时落日志（F3），「重启原位新建空大脑 / 备份 zip 恢复」是可自助走通的主路径。 */
+function fatalStartupError(title: string, message: string): void {
+  logError('startup', new Error(`${title}: ${message}`));
+  dialog.showErrorBox(title, message);
+  // Spec 评审（M33）：showErrorBox 在部分平台上不等用户关框——exit 前给一小段渲染窗口，
+  // 否则原生框随进程销毁，用户看不到出路文案（日志与盘上旁置文件是第二道兜底）。
+  const delayedExit = setTimeout(() => app.exit(1), 3_000);
+  delayedExit.unref();
+}
 
 /** 单条雷达的执行编排：启动一次性补跑、常驻心跳、托盘「立即补跑」共用同一 run（0038）。
  *  失败在 run 内收 TOAST 不外抛——watchdog 的 interval 不产生未处理 rejection。 */
@@ -205,11 +232,21 @@ async function restoreBrainBackup(archivePath: string): Promise<BrainRestoreResu
 }
 
 app.whenReady().then(() => {
+  // F2：启动路径任何一处抛错都不再变成无窗口的未处理 rejection——统一走错误框 + 退出。
+  try {
+    startup();
+  } catch (error) {
+    fatalStartupError('StaffDesk 无法启动', `启动失败：${safeDetail(error, 300)}`);
+  }
+});
+
+function startup(): void {
   // 原生依赖在打开大脑文件之前先加载：ABI 不匹配要在最早处抛出，不拖到首次读写账本。
   try {
     require('better-sqlite3');
   } catch (error) {
-    throw new Error(`better-sqlite3 在主进程加载失败：${String(error)}`);
+    fatalStartupError('StaffDesk 无法启动', `本机原生组件加载失败：${String(error)}`);
+    return;
   }
 
   const dir = secretsDir();
@@ -234,7 +271,30 @@ app.whenReady().then(() => {
   const qualificationStore = createJsonQualificationStore(
     join(app.getPath('userData'), 'quality-qualification.json'),
   );
-  brain = openBrain(path, secrets, modelSettings, qualificationStore);
+  // F2（审计 2026-09-02）：损坏库不再裸抛成「双击无反应」——先旁置损坏文件（复用备份恢复的
+  // rename/sidecar 纪律），错误框写明 brain 路径与两条出路，用户确认后退出；下次启动在原位
+  // 新建空大脑，备份 zip 恢复入口照旧（0048：secrets 与备份目录不在此路径上被动）。
+  try {
+    brain = openBrain(path, secrets, modelSettings, qualificationStore);
+  } catch (error) {
+    const detail = safeDetail(error, 200);
+    logError('startup', error);
+    const quarantined = quarantineBrainFile(path);
+    fatalStartupError(
+      '大脑文件打不开',
+      [
+        `大脑文件无法打开，可能已损坏：\n${path}`,
+        '',
+        `原因：${detail}`,
+        quarantined ? `\n损坏的文件已原样旁置为：\n${quarantined}` : '',
+        '',
+        '接下来可以：',
+        '1. 重新打开 StaffDesk——会自动新建一个空大脑；',
+        '2. 或在启动后的「设置 → 通用 → 恢复大脑备份」里，用之前导出的备份 zip 恢复。',
+      ].join('\n'),
+    );
+    return;
+  }
   const securityPolicy = createRuntimeSecurityPolicy({
     rendererFilePath: rendererFilePath(),
     devServerUrl: process.env.ELECTRON_RENDERER_URL,
@@ -283,7 +343,7 @@ app.whenReady().then(() => {
       createWindow(securityPolicy);
     } else mainWindow?.show();
   });
-});
+}
 
 app.on('window-all-closed', () => {
   if (isQuitting() && process.platform !== 'darwin') app.quit();

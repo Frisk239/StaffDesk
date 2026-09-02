@@ -9,13 +9,20 @@ export function nowIso(): string {
   return new Date().toISOString();
 }
 
-/** 打开大脑文件：空文件建表+预设包；已有文件只跑未应用的迁移。 */
+/** 打开大脑文件：空文件建表+预设包；已有文件只跑未应用的迁移。
+ *  F2（审计 2026-09-02）：任何一步失败都必须先关句柄再抛——损坏库随后要旁置改名，
+ *  Windows 上被打开的 SQLite 句柄拦住 rename，泄漏句柄会让恢复路径整体失效。 */
 export function openDatabase(filePath: string): Database.Database {
   mkdirSync(dirname(filePath), { recursive: true });
   const db = new Database(filePath);
-  db.pragma('journal_mode = WAL');
-  db.pragma('foreign_keys = ON');
-  migrate(db);
+  try {
+    db.pragma('journal_mode = WAL');
+    db.pragma('foreign_keys = ON');
+    migrate(db);
+  } catch (error) {
+    db.close();
+    throw error;
+  }
   return db;
 }
 
