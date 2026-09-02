@@ -19,6 +19,7 @@ import {
   loadLedger,
   persistLedger,
   persistLedgerDiff,
+  pruneOperations,
   type LedgerRows,
   type PersistMode,
 } from './persist';
@@ -149,6 +150,8 @@ export class Brain {
         loggedAction,
         loggedAction.type === 'UNDO_RESULT' ? 'compensating' : null,
       );
+      // 0063：operations 全局行数上限裁旧——先 COUNT 探底，未超限零额外查询，与 taskAudits 同款纪律。
+      pruneOperations(this.db);
     }
     if (loggedAction.type === 'DELETE_SOURCE' || loggedAction.type === 'RESTORE_DELETED_SOURCE') {
       this.cachedRecoveries = listDeletedSourceRecoveries(this.db, next.sources);
