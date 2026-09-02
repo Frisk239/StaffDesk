@@ -2202,8 +2202,14 @@ textarea {
   font-weight: 700;
 }
 .brief-head .dim {
-  margin: 4px 0 20px;
+  margin: 4px 0 12px;
   display: block;
+}
+/* 审计 F4：简报出站出口（复制 Markdown / 导出 .md），按钮几何复用 .btn.outline.sm。 */
+.brief-actions {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 18px;
 }
 .brief-block {
   margin-bottom: 22px;

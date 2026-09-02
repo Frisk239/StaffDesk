@@ -47,14 +47,22 @@ export const BUDGETS: Record<BudgetGear, Budget> = {
   },
 };
 
-/** e2e 可经 STAFFDESK_E2E_TOKEN_BUDGET 压 tokens 顶；非正数忽略。 */
+/** e2e 可经 STAFFDESK_E2E_TOKEN_BUDGET / STAFFDESK_E2E_WALL_MS 压 tokens / 墙钟档；非正数忽略。 */
 export function budgetFor(gear: BudgetGear): Budget {
   const base = BUDGETS[gear];
-  const raw = process.env.STAFFDESK_E2E_TOKEN_BUDGET;
-  if (!raw) return base;
-  const n = Number(raw);
-  if (!Number.isFinite(n) || n <= 0) return base;
-  return { ...base, tokens: Math.floor(n) };
+  let next = base;
+  const tokenRaw = process.env.STAFFDESK_E2E_TOKEN_BUDGET;
+  if (tokenRaw) {
+    const n = Number(tokenRaw);
+    if (Number.isFinite(n) && n > 0) next = { ...next, tokens: Math.floor(n) };
+  }
+  // 审计 D1：小墙钟档配合挂起注入，断言任务限时收口不卡「进行中」。
+  const wallRaw = process.env.STAFFDESK_E2E_WALL_MS;
+  if (wallRaw) {
+    const n = Number(wallRaw);
+    if (Number.isFinite(n) && n > 0) next = { ...next, wallMs: Math.floor(n) };
+  }
+  return next;
 }
 
 /** ADR 0059：只判费用维——抽取阶段发生在搜索/打开计数停止增长之后，别拿零填充别的维度。 */
@@ -251,6 +259,12 @@ export async function runResearchTask(
       spend: deps.usageSpend?.() ?? emptyFeeSpend(),
     });
 
+  // 审计 D1：capHit 只在步间判，搜索扇出或单次打开挂死时步间永远走不到——
+  // 两处等待都以「墙钟剩余」作上限，到点折失败，任务按触顶收口，不卡「进行中」。
+  // 真实适配器的 fetch 另有自身 25s/20s 超时（reach.ts），这里是引擎侧兜底（罐头注入也走它）。
+  const wallRemainingMs = (): number =>
+    Math.max(0, budget.wallMs - ((deps.now?.() ?? Date.now()) - started));
+
   const logCap = (reason: TaskStopReason) => {
     const spend = deps.usageSpend?.() ?? emptyFeeSpend();
     log(reason, {
@@ -288,7 +302,23 @@ export async function runResearchTask(
   if (stoppedBeforeSearch) return stoppedBeforeSearch;
 
   // 0061：并行扇出（async 包装把同步抛错也折成 rejected）；单路失败只记审计、不挡其余路。
-  const settled = await Promise.allSettled(activePaths.map(async (path) => path.search(query)));
+  // 审计 D1：扇出等待受墙钟剩余约束——挂死的路在墙钟内折「搜索超时」，不让 allSettled 永久悬挂。
+  const wallMs = wallRemainingMs();
+  let deadlineTimer: ReturnType<typeof setTimeout> | undefined;
+  const settledOrDeadline = await Promise.race([
+    Promise.allSettled(activePaths.map(async (path) => path.search(query))),
+    new Promise<null>((resolve) => {
+      deadlineTimer = setTimeout(() => resolve(null), wallMs);
+    }),
+  ]);
+  // race 落定即清孤儿定时器——不清会挂满一个墙钟档（评审 M32，有界但没理由留着）。
+  if (deadlineTimer !== undefined) clearTimeout(deadlineTimer);
+  const settled =
+    settledOrDeadline ??
+    activePaths.map(() => ({
+      status: 'rejected' as const,
+      reason: new Error(`搜索超时（墙钟剩余 ${Math.round(wallMs / 1000)} 秒内未返回）`),
+    }));
   const perPath: PathHits[] = [];
   const pathOutcomes: Array<{ name: string; ok: boolean; count: number; error?: string }> = [];
   const failedPaths: Array<{ name: string; error: string; hint?: string | undefined }> = [];
@@ -349,7 +379,8 @@ export async function runResearchTask(
     steps += 1;
     opens += 1;
     log('打开尝试', { url: hit.url, title: hit.title });
-    const page = await safeOpen(deps.reach, hit.url);
+    // 审计 D1：单次打开的等待受墙钟剩余约束——挂死的适配器到点折「打开超时」，记失败 URL 继续。
+    const page = await safeOpen(deps.reach, hit.url, wallRemainingMs());
     if (!page.ok) {
       failedUrls.push(hit.url);
       log('打开失败', { url: hit.url, error: page.error ?? '打开失败' });
@@ -387,10 +418,29 @@ function runningTask(task: DeskTask): DeskTask {
   return next;
 }
 
-async function safeOpen(reach: ReachAdapter, url: string): Promise<OpenResult> {
+async function safeOpen(reach: ReachAdapter, url: string, waitMs: number): Promise<OpenResult> {
+  let deadlineTimer: ReturnType<typeof setTimeout> | undefined;
   try {
-    return await reach.open(url);
+    const opened = await Promise.race([
+      reach.open(url),
+      new Promise<OpenResult>((resolve) => {
+        deadlineTimer = setTimeout(
+          () =>
+            resolve({
+              url,
+              ok: false,
+              body: '',
+              error: `打开超时（墙钟剩余 ${Math.round(waitMs / 1000)} 秒内未返回）`,
+            }),
+          waitMs,
+        );
+      }),
+    ]);
+    // race 落定即清孤儿定时器（评审 M32）；正常打开远快于墙钟，不会先到。
+    if (deadlineTimer !== undefined) clearTimeout(deadlineTimer);
+    return opened;
   } catch (err) {
+    if (deadlineTimer !== undefined) clearTimeout(deadlineTimer);
     return {
       url,
       ok: false,

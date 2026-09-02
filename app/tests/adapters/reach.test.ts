@@ -147,4 +147,32 @@ describe('检索适配层', () => {
     expect(opened.ok).toBe(true);
     expect(opened.body).toBe('真实正文');
   });
+
+  // 审计 D1：注入永不主动 settle、但如实响应 abort 信号的 fetchFn——与真实 fetch 一致，
+  // AbortSignal.timeout 到点才中断。没有限时实现时这两个用例会挂到测试超时红，这就是断言点。
+  // 毫秒数注入只为测试提速，产品口径 25s/20s。
+  function hangingFetch(): FetchFn {
+    return ((_url, init) =>
+      new Promise((_resolve, reject) => {
+        init?.signal?.addEventListener('abort', () => {
+          const err = new Error('The operation was aborted due to timeout');
+          err.name = 'TimeoutError';
+          reject(err);
+        });
+      })) as FetchFn;
+  }
+
+  it('审计 D1：GitHub 搜索挂死时限时抛超时错误，不永久悬挂', async () => {
+    const adapter = createReachAdapter(fakeSpawn('boom', 1), hangingFetch(), {
+      githubSearchMs: 1_500,
+    });
+    await expect(githubPathOf(adapter)?.search('验收组织')).rejects.toThrow(/GitHub 搜索超时/u);
+  });
+
+  it('审计 D1：open 挂死时限时折失败结果（与 HTTP 失败同形状），不永久悬挂', async () => {
+    const adapter = createReachAdapter(fakeSpawn('boom', 1), hangingFetch(), { jinaOpenMs: 1_500 });
+    const opened = await adapter.open('https://example.com/hang');
+    expect(opened.ok).toBe(false);
+    expect(opened.error).toMatch(/打开超时/u);
+  });
 });

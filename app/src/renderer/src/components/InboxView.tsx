@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { UploadSimple } from '@phosphor-icons/react';
-import type { State } from '@shared/types';
+import type { Source, State } from '@shared/types';
 import { useStore } from '../store';
 import { SourceDeleteDialog } from './SourceDeleteDialog';
 
@@ -9,6 +9,15 @@ import { SourceDeleteDialog } from './SourceDeleteDialog';
 // 进料三路：粘贴文本/URL、选择文件。读取、抓取、解析全部在主进程完成；
 // 失败只留导入任务，不会把 URL 或 PDF 占位写成业务来源。
 
+// 审计 F8：旧库遗留的 unparsed 占位只有说明文字——从 origin 定位或标题/正文里提
+// 第一个 http(s) URL 作重导预填；提不出交给用户手粘。宁可空着，不猜协议。
+function recoverableUrl(source: Source): string {
+  const locator = source.origin?.locator ?? '';
+  if (/^https?:\/\//i.test(locator.trim())) return locator.trim();
+  const hit = `${source.title}\n${source.body}`.match(/https?:\/\/[^\s<>"']+/i);
+  return hit?.[0] ?? '';
+}
+
 function originLabel(kind: string | undefined): string {
   if (kind === 'url') return 'URL';
   if (kind === 'file') return '文件';
@@ -16,6 +25,9 @@ function originLabel(kind: string | undefined): string {
   if (kind === 'research') return '调研';
   return '旧版';
 }
+
+/** F8：重导预填与输入校验共用的 URL 判定（评审收口：三处字面量提一）。 */
+const URL_RE = /^https?:\/\//i;
 
 function latestInboxSourceId(state: State): string | null {
   const ids = state.sources
@@ -37,7 +49,8 @@ export function InboxView() {
   const [draft, setDraft] = useState('');
   const [dragOver, setDragOver] = useState(false);
   const [deleteSourceId, setDeleteSourceId] = useState<string | null>(null);
-  const looksUrl = /^https?:\/\//i.test(draft.trim());
+  const [refetchUrl, setRefetchUrl] = useState('');
+  const looksUrl = URL_RE.test(draft.trim());
 
   // 拖到窗口其他位置时拦掉浏览器默认行为（打开文件会覆盖整个应用）。
   useEffect(() => {
@@ -81,6 +94,20 @@ export function InboxView() {
   );
   const selected = sources.find((s) => s.id === selectedId) ?? null;
   const selectedCanBind = Boolean(selected && !selected.unparsed);
+
+  // 选中变化时刷新重导预填：优先 origin 定位，其次标题/正文里提到的第一个 URL。
+  // 预填种子是原始字符串（值比较），effect 不直接引用 selected，避免每次渲染重跑。
+  const refetchSeed = selected?.unparsed ? recoverableUrl(selected) : '';
+  useEffect(() => {
+    setRefetchUrl(refetchSeed);
+  }, [refetchSeed]);
+
+  const refetchLegacy = async () => {
+    if (!selected?.unparsed) return;
+    const url = refetchUrl.trim();
+    if (!URL_RE.test(url)) return;
+    await window.staffdesk.ingestUrl(url);
+  };
 
   const toggle = (id: string) => {
     const next = new Set(checked);
@@ -217,25 +244,59 @@ export function InboxView() {
             <pre className="source-body">{selected.body}</pre>
 
             {!bindOpen ? (
-              <div className="bind-entry">
-                <button
-                  className="primary"
-                  disabled={!selectedCanBind}
-                  onClick={() => setBindOpen(true)}
-                >
-                  绑定
-                </button>
-                <button
-                  type="button"
-                  className="btn outline sm danger-hover"
-                  onClick={() => setDeleteSourceId(selected.id)}
-                >
-                  删除来源
-                </button>
-                {selected.unparsed && (
-                  <span className="bind-hint">旧版占位材料需要重新导入后再绑定</span>
-                )}
-              </div>
+              selected.unparsed ? (
+                <div className="bind-entry">
+                  <form
+                    className="inbox-drop"
+                    onSubmit={(e) => {
+                      e.preventDefault();
+                      void refetchLegacy();
+                    }}
+                  >
+                    <textarea
+                      rows={2}
+                      value={refetchUrl}
+                      placeholder="粘贴原文链接重新获取"
+                      onChange={(e) => setRefetchUrl(e.target.value)}
+                    />
+                    <button
+                      type="submit"
+                      className="primary"
+                      disabled={!URL_RE.test(refetchUrl.trim())}
+                    >
+                      重新获取
+                    </button>
+                  </form>
+                  <span className="bind-hint">
+                    旧版占位只有说明文字，重新获取原文后才能绑定抽取
+                  </span>
+                  {/* Spec 评审（M32）：删除出口无条件——原 URL 已死的占位也必须能删（坏了能救），不与重导成败挂钩。 */}
+                  <button
+                    type="button"
+                    className="btn outline sm danger-hover"
+                    onClick={() => setDeleteSourceId(selected.id)}
+                  >
+                    删除占位
+                  </button>
+                </div>
+              ) : (
+                <div className="bind-entry">
+                  <button
+                    className="primary"
+                    disabled={!selectedCanBind}
+                    onClick={() => setBindOpen(true)}
+                  >
+                    绑定
+                  </button>
+                  <button
+                    type="button"
+                    className="btn outline sm danger-hover"
+                    onClick={() => setDeleteSourceId(selected.id)}
+                  >
+                    删除来源
+                  </button>
+                </div>
+              )
             ) : (
               <div className="bind-panel">
                 <div className="bind-panel-title">绑定到</div>

@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import type { Brief, BriefBlock, State } from '@shared/types';
+import { primarySourceIdsOf } from '@shared/brief';
 import { outboundBrief, verifyBrief } from '../brain/briefOut';
 import type { ChatMessageParam, CompleteResult } from '../llm/chatCompletions';
 
@@ -23,12 +24,19 @@ export async function generateBrief(args: {
   objectId: string;
   briefId: string;
   taskId: string;
-  complete?: ((req: { messages: ChatMessageParam[]; jsonMode?: boolean | undefined }) => Promise<CompleteResult>) | undefined;
+  complete?:
+    | ((req: {
+        messages: ChatMessageParam[];
+        jsonMode?: boolean | undefined;
+      }) => Promise<CompleteResult>)
+    | undefined;
 }): Promise<Brief> {
   const base = outboundBrief(args.state, args.objectId, args.briefId, args.taskId);
   if (!args.complete) return base;
   try {
-    const allowed = args.state.claims.filter((c) => c.objectId === args.objectId && c.status === '成立');
+    const allowed = args.state.claims.filter(
+      (c) => c.objectId === args.objectId && c.status === '成立',
+    );
     const result = await args.complete({
       jsonMode: true,
       messages: [
@@ -58,6 +66,8 @@ export async function generateBrief(args: {
           claimIds: s.claimIds,
           unverified: false,
           kind: s.claimIds.length ? 'claim' : 'unknown',
+          // 0062：LLM 组句不重算主键标注——按 claimIds 从账本回填，与账本组装器同源不漂移。
+          primarySourceIds: primarySourceIdsOf(args.state, s.claimIds),
         })),
       };
     });

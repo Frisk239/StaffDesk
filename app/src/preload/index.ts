@@ -38,6 +38,12 @@ const api: StaffdeskApi = {
   exportBrain: () => ipcRenderer.invoke('brain:export') as ReturnType<StaffdeskApi['exportBrain']>,
   restoreBrain: () =>
     ipcRenderer.invoke('brain:restore') as ReturnType<StaffdeskApi['restoreBrain']>,
+  exportBrief: (markdown, objectName) =>
+    ipcRenderer.invoke('brief:export', { markdown, objectName }) as ReturnType<
+      StaffdeskApi['exportBrief']
+    >,
+  copyBrief: (markdown) =>
+    ipcRenderer.invoke('brief:copy', { markdown }) as ReturnType<StaffdeskApi['copyBrief']>,
   onStateChanged: (cb) => {
     const listener = (_event: unknown, state: State) => {
       cb(state);

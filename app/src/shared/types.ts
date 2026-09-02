@@ -140,6 +140,9 @@ export interface BriefSentence {
   unverified: boolean;
   kind: SentenceKind;
   flag?: '冲突·并排' | '未编目·不作定论' | undefined;
+  // 0062：主键标注按当前对象视角——句内主张的来源绑定是主键时列出来源 id。
+  // 独立可选字段，不进 flag 联合：出站闸 sanitize 重写 flag 的路径不得吞掉它。
+  primarySourceIds?: string[] | undefined;
 }
 
 export interface BriefBlock {

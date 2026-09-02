@@ -13,6 +13,11 @@ export interface BrainBackupExportResult {
   backup: BrainBackupInfo;
 }
 
+// 审计 F4：简报导出 .md 的落点；null = 用户取消保存对话框。
+export interface BriefExportResult {
+  filePath: string;
+}
+
 export interface BrainRestoreResult {
   filePath: string;
   safetyCopyPath: string;
@@ -43,4 +48,6 @@ export interface StaffdeskApi {
   generateBrief: (objectId: string) => Promise<State>;
   exportBrain: () => Promise<BrainBackupExportResult | null>;
   restoreBrain: () => Promise<BrainRestoreResult | null>;
+  exportBrief: (markdown: string, objectName?: string) => Promise<BriefExportResult | null>;
+  copyBrief: (markdown: string) => Promise<void>;
 }
