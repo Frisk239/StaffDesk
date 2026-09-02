@@ -104,10 +104,23 @@ test('简报可复制与导出 Markdown（引用转脚注），主键主张带�
     // 0062：主键绑定来源的主张句在简报里带「主键来源」标注。
     await expect(win.getByText('主键来源').first()).toBeVisible();
 
-    // 复制 Markdown：剪贴板里是脚注化的简报。
+    // 剪贴板是全局系统资源：CI 会话的剪贴板锁被占时 writeText/readText 会阻塞主进程
+    // （PR #28 首次 CI 挂：60s 测试超时 + 60s teardown 超时的双卡死）。测试里 stub 成
+    // 捕获函数（与 brain-backup spec stub dialog 同款姿势），不依赖真剪贴板。
+    await app.evaluate(({ clipboard }) => {
+      const store = { text: '' };
+      clipboard.writeText = async (text: string) => {
+        store.text = text;
+      };
+      (globalThis as { __briefClipboard?: { text: string } }).__briefClipboard = store;
+    });
+
+    // 复制 Markdown：捕获的内容是脚注化的简报。
     await win.getByRole('button', { name: '复制 Markdown' }).click();
     await expect(win.getByRole('button', { name: '已复制' })).toBeVisible();
-    const clipboardText = await app.evaluate(({ clipboard }) => clipboard.readText());
+    const clipboardText = await app.evaluate(
+      () => (globalThis as { __briefClipboard?: { text: string } }).__briefClipboard?.text ?? '',
+    );
     expect(clipboardText).toContain('# 简报导出组织');
     expect(clipboardText).toMatch(/\[\^1\]/u);
     expect(clipboardText).toContain(
