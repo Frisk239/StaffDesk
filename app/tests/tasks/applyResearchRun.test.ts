@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { FEE_AUDIT_KIND, MISSING_USAGE_NOTE, parseFeePayload } from '@shared/taskFee';
 import type { State } from '@shared/types';
-import type { ReachAdapter, SearchHit } from '../../src/main/adapters/reach';
+import type { ReachAdapter, ReachPath, SearchHit } from '../../src/main/adapters/reach';
 import { openBrain, type Brain } from '../../src/main/brain';
 import { applyResearchRun } from '../../src/main/tasks/applyResearchRun';
 
@@ -40,11 +40,24 @@ function seededBrain(): { brain: Brain; objectId: string } {
   return { brain, objectId: object.id };
 }
 
+/** 单路假路径：体检恒绿，search 行为由调用方给定——两个假 reach 共用同一形状。 */
+function fakeExaPath(search: (query: string) => Promise<SearchHit[]>): ReachPath {
+  return {
+    name: 'Exa',
+    doctorCheck: async () => ({ ok: true, detail: 'ok' }),
+    search,
+  };
+}
+
 /** 空结果假 reach：一步走完循环，不产生来源、不触抽取。 */
 function emptyReach(): ReachAdapter {
   return {
-    doctor: async () => ({ ok: true, detail: 'ok' }),
-    search: async () => [],
+    paths: [fakeExaPath(async () => [])],
+    doctor: async () => ({
+      ok: true,
+      detail: 'ok',
+      paths: [{ name: 'Exa', ok: true, detail: 'ok' }],
+    }),
     open: async (url) => ({ url, ok: false, body: '', error: '不应打开' }),
   };
 }
@@ -54,13 +67,19 @@ function pendingReach(): { reach: ReachAdapter; started: () => boolean; finish: 
   let called = false;
   let resolveSearch: ((hits: SearchHit[]) => void) | undefined;
   const reach: ReachAdapter = {
-    doctor: async () => ({ ok: true, detail: 'ok' }),
-    search: () => {
-      called = true;
-      return new Promise<SearchHit[]>((resolve) => {
-        resolveSearch = resolve;
-      });
-    },
+    paths: [
+      fakeExaPath(() => {
+        called = true;
+        return new Promise<SearchHit[]>((resolve) => {
+          resolveSearch = resolve;
+        });
+      }),
+    ],
+    doctor: async () => ({
+      ok: true,
+      detail: 'ok',
+      paths: [{ name: 'Exa', ok: true, detail: 'ok' }],
+    }),
     open: async (url) => ({ url, ok: false, body: '', error: '不应打开' }),
   };
   return { reach, started: () => called, finish: () => resolveSearch?.([]) };
@@ -197,7 +216,7 @@ describe('调研收口编排', () => {
     const onBusy = vi.fn();
     const boom: ReachAdapter = {
       doctor: () => Promise.reject(new Error('体检炸了')),
-      search: async () => [],
+      paths: [],
       open: async (url) => ({ url, ok: false, body: '', error: '不应打开' }),
     };
     await expect(
@@ -230,10 +249,20 @@ describe('调研收口编排', () => {
     const { brain, objectId } = seededBrain();
     const current: Brain | null = brain;
     const failing: ReachAdapter = {
-      doctor: async () => ({ ok: true, detail: 'ok' }),
-      search: async () => {
-        throw new Error('检索不可用');
-      },
+      paths: [
+        {
+          name: 'Exa',
+          doctorCheck: async () => ({ ok: true, detail: 'ok' }),
+          search: async () => {
+            throw new Error('检索不可用');
+          },
+        },
+      ],
+      doctor: async () => ({
+        ok: true,
+        detail: 'ok',
+        paths: [{ name: 'Exa', ok: true, detail: 'ok' }],
+      }),
       open: async (url) => ({ url, ok: false, body: '', error: '不应打开' }),
     };
     const state = requireState(
@@ -288,11 +317,21 @@ describe('调研收口编排', () => {
   it('调研抽取把 usage 记入费用审计；未回传则标注且不当 0', async () => {
     const { brain, objectId } = seededBrain();
     const twoHits: ReachAdapter = {
-      doctor: async () => ({ ok: true, detail: 'ok' }),
-      search: async () => [
-        { title: 'A', url: 'https://a.example/doc', snippet: 'ok' },
-        { title: 'B', url: 'https://b.example/doc', snippet: 'ok' },
+      paths: [
+        {
+          name: 'Exa',
+          doctorCheck: async () => ({ ok: true, detail: 'ok' }),
+          search: async () => [
+            { title: 'A', url: 'https://a.example/doc', snippet: 'ok' },
+            { title: 'B', url: 'https://b.example/doc', snippet: 'ok' },
+          ],
+        },
       ],
+      doctor: async () => ({
+        ok: true,
+        detail: 'ok',
+        paths: [{ name: 'Exa', ok: true, detail: 'ok' }],
+      }),
       open: async (url) => ({ url, ok: true, body: '甲组织主栈是 Go。' }),
     };
     const withUsage = requireState(
@@ -347,11 +386,21 @@ describe('调研收口编排', () => {
   it('抽取累计超 tokens 顶则费用触顶：已打开照写，未抽的保持未知', async () => {
     const { brain, objectId } = seededBrain();
     const twoHits: ReachAdapter = {
-      doctor: async () => ({ ok: true, detail: 'ok' }),
-      search: async () => [
-        { title: 'A', url: 'https://a.example/doc', snippet: 'ok' },
-        { title: 'B', url: 'https://b.example/doc', snippet: 'ok' },
+      paths: [
+        {
+          name: 'Exa',
+          doctorCheck: async () => ({ ok: true, detail: 'ok' }),
+          search: async () => [
+            { title: 'A', url: 'https://a.example/doc', snippet: 'ok' },
+            { title: 'B', url: 'https://b.example/doc', snippet: 'ok' },
+          ],
+        },
       ],
+      doctor: async () => ({
+        ok: true,
+        detail: 'ok',
+        paths: [{ name: 'Exa', ok: true, detail: 'ok' }],
+      }),
       open: async (url) => ({ url, ok: true, body: '甲组织主栈是 Go。' }),
     };
     const state = requireState(

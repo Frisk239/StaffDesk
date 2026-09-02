@@ -85,7 +85,8 @@ test('小预算深挖费用触顶：已打开照写、审计有费用行、任�
     const researchSources = after.sources.filter(
       (source) => source.origin?.kind === 'research' && source.origin.taskId === task?.id,
     );
-    expect(researchSources.length).toBe(2);
+    // 双路罐头（0061）：Exa 两命中 + GitHub 两命中去重一条 → 合并 3 条唯一来源。
+    expect(researchSources.length).toBe(3);
     expect(after.taskAudits.some((audit) => audit.kind === '费用')).toBe(true);
 
     await win.evaluate(async () => {

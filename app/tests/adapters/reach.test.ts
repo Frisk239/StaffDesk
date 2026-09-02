@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import { EventEmitter } from 'node:events';
-import { createReachAdapter, type FetchFn, type SpawnFn } from '../../src/main/adapters/reach';
+import {
+  createReachAdapter,
+  type FetchFn,
+  type ReachAdapter,
+  type SpawnFn,
+} from '../../src/main/adapters/reach';
 
 function fakeSpawn(
   stdout: string,
@@ -25,12 +30,35 @@ function fakeSpawn(
   }) as SpawnFn;
 }
 
+function fakeResponse(status: number, body: unknown): Response {
+  return {
+    ok: status >= 200 && status < 300,
+    status,
+    json: async () => body,
+  } as Response;
+}
+
+/** 约定：GitHub 路是 paths 里的第二路（Exa 第一路）。 */
+function githubPathOf(adapter: ReachAdapter) {
+  return adapter.paths.find((p) => p.name === 'GitHub');
+}
+
+function exaPathOf(adapter: ReachAdapter) {
+  return adapter.paths.find((p) => p.name === 'Exa');
+}
+
 describe('检索适配层', () => {
-  it('doctor 失败时给出安装引导，不抛', async () => {
+  it('体检聚合逐路红绿：Exa 红不挡 GitHub 绿，detail 列出各路状态', async () => {
     const adapter = createReachAdapter(fakeSpawn('', 1));
     const r = await adapter.doctor();
-    expect(r.ok).toBe(false);
-    expect(r.hint).toMatch(/Agent Reach/);
+    expect(r.ok).toBe(true);
+    expect(r.paths.find((p) => p.name === 'Exa')?.ok).toBe(false);
+    expect(r.paths.find((p) => p.name === 'GitHub')?.ok).toBe(true);
+    expect(r.detail).toContain('Exa 不可用');
+    expect(r.detail).toContain('GitHub 可用');
+    // 有绿路就不给安装引导；引导挂在红路自己的体检结论上。
+    expect(r.hint).toBeUndefined();
+    expect(r.paths.find((p) => p.name === 'Exa')?.hint).toMatch(/Agent Reach/);
   });
 
   it('spawn 不使用 shell:true', async () => {
@@ -40,7 +68,7 @@ describe('检索适配层', () => {
     expect(seen.options?.shell).not.toBe(true);
   });
 
-  it('search 能解析 JSON 命中', async () => {
+  it('Exa 路解析 mcporter JSON 命中且参数逐字对齐', async () => {
     const seen: { command?: string; args?: string[] } = {};
     const adapter = createReachAdapter(
       fakeSpawn(
@@ -49,15 +77,62 @@ describe('检索适配层', () => {
         seen,
       ),
     );
-    const hits = await adapter.search('验收组织');
+    const hits = (await exaPathOf(adapter)?.search('验收组织')) ?? [];
     expect(hits[0]?.url).toBe('https://a.example');
     expect(seen.command).toBe('mcporter');
     expect(seen.args).toEqual(['call', 'exa.web_search_exa', '验收组织']);
   });
 
-  it('search 不可用时抛错，不吞成成功空结果', async () => {
+  it('Exa 路不可用时抛错，不吞成成功空结果', async () => {
     const adapter = createReachAdapter(fakeSpawn('boom', 1));
-    await expect(adapter.search('验收组织')).rejects.toThrow(/boom|检索适配/);
+    await expect(exaPathOf(adapter)?.search('验收组织')).rejects.toThrow(/boom|检索适配/);
+  });
+
+  it('GitHub 路体检零配置恒绿，不触外网', async () => {
+    const exploding: FetchFn = async () => {
+      throw new Error('体检不该发网络请求');
+    };
+    const adapter = createReachAdapter(fakeSpawn('boom', 1), exploding);
+    const check = await githubPathOf(adapter)?.doctorCheck();
+    expect(check?.ok).toBe(true);
+  });
+
+  it('GitHub 路映射 items 到命中：full_name/html_url/description，缺 URL 的条目丢弃', async () => {
+    const fetchFn: FetchFn = async () =>
+      fakeResponse(200, {
+        items: [
+          { full_name: 'a/b', html_url: 'https://github.com/a/b', description: '仓库简介' },
+          { full_name: 'no-url', html_url: '', description: '编不成命中' },
+          { full_name: 'no-desc', html_url: 'https://github.com/c/d' },
+        ],
+      });
+    const adapter = createReachAdapter(fakeSpawn('boom', 1), fetchFn);
+    const hits = (await githubPathOf(adapter)?.search('验收组织')) ?? [];
+    expect(hits).toEqual([
+      { title: 'a/b', url: 'https://github.com/a/b', snippet: '仓库简介' },
+      { title: 'no-desc', url: 'https://github.com/c/d', snippet: '' },
+    ]);
+  });
+
+  it('GitHub 路 403 限速抛带原因的错误，不编造命中', async () => {
+    const fetchFn: FetchFn = async () => fakeResponse(403, {});
+    const adapter = createReachAdapter(fakeSpawn('boom', 1), fetchFn);
+    await expect(githubPathOf(adapter)?.search('验收组织')).rejects.toThrow(
+      /GitHub 匿名额度用尽（HTTP 403）/,
+    );
+  });
+
+  it('GitHub 路非 200 与网络错误都抛带原因的错误', async () => {
+    const serverError: FetchFn = async () => fakeResponse(500, {});
+    const adapter = createReachAdapter(fakeSpawn('boom', 1), serverError);
+    await expect(githubPathOf(adapter)?.search('验收组织')).rejects.toThrow(
+      /GitHub 搜索失败（HTTP 500）/,
+    );
+    const networkError: FetchFn = async () => {
+      throw new Error('fetch failed');
+    };
+    const offline = createReachAdapter(fakeSpawn('boom', 1), networkError);
+    await expect(githubPathOf(offline)?.search('验收组织')).rejects.toThrow(/fetch failed/);
   });
 
   it('open 的 Jina reader 是真实打开路径', async () => {
