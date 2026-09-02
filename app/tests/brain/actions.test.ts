@@ -631,6 +631,41 @@ describe('账本动作覆盖', () => {
     brain.dispatch({ type: 'CHAT_SEND', objectId: obj.id, text: '删掉这个对象' });
     brain.dispatch({ type: 'MARK_TURN_PLAYED', objectId: obj.id, messageId: 'nope' });
   });
+
+  it('移除记忆的提示按被删记忆的种类出文案（F7）', () => {
+    const { brain, obj } = setup();
+
+    // 偏好：全局「记下来」立即写记忆（0006/0022）。
+    brain.dispatch({ type: 'CHAT_SEND', objectId: obj.id, text: '记下来：沟通走邮件' });
+    const preference = brain.snapshot().memories.find((m) => m.text.includes('沟通走邮件'));
+    if (!preference) throw new Error('无偏好记忆');
+    expect(preference.kind).toBe('偏好');
+    brain.dispatch({ type: 'REMOVE_MEMORY', id: preference.id });
+    expect(brain.snapshot().toast?.text).toBe('已移除这条偏好');
+    expect(brain.snapshot().memories.some((m) => m.id === preference.id)).toBe(false);
+
+    // 禁写：纠正（晋升后关窗）写入，移除时文案点名禁写（0034 的显式回退入口）。
+    const claim = brain.snapshot().claims[0];
+    if (!claim) throw new Error('无主张');
+    brain.dispatch({ type: 'PROMOTE_CLAIM', claimId: claim.id });
+    brain.dispatch({ type: 'OPEN_CORRECT_CARD', claimId: claim.id });
+    const write = brain.snapshot().writeQueue[0];
+    if (!write) throw new Error('无纠正提议');
+    brain.dispatch({
+      type: 'CONFIRM_WRITE',
+      writeId: write.id,
+      closeReason: '从未成立',
+      newText: '主栈其实是 Rust。',
+    });
+    const ban = brain.snapshot().memories.find((m) => m.kind === '禁写');
+    if (!ban) throw new Error('无禁写记忆');
+    brain.dispatch({ type: 'REMOVE_MEMORY', id: ban.id });
+    expect(brain.snapshot().toast?.text).toBe('已移除这条禁写');
+
+    // 删不存在的 id：不炸，文案回落到「记忆」。
+    brain.dispatch({ type: 'REMOVE_MEMORY', id: 'mem-nope' });
+    expect(brain.snapshot().toast?.text).toBe('已移除这条记忆');
+  });
 });
 
 function researchSource(task: DeskTask, workspaceId: string, index: number, body: string): Source {

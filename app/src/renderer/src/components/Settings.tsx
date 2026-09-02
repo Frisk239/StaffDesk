@@ -1,10 +1,12 @@
 import { useEffect, useState } from 'react';
 import {
+  Brain,
   Cpu,
   Cube,
   Eye,
   EyeSlash,
   GearSix,
+  Heartbeat,
   Moon,
   Monitor,
   PencilSimple,
@@ -22,6 +24,7 @@ import type {
   BriefSpecBlock,
   LlmModel,
   LlmProvider,
+  Memory,
   ObjectKind,
   Predicate,
   ScenarioKind,
@@ -68,7 +71,7 @@ function useMiniDialogEscape(onClose: () => void): void {
   }, [onClose]);
 }
 
-export type SettingsSection = '通用' | '谓词表' | '模型' | '场景模板';
+export type SettingsSection = '通用' | '记忆' | '谓词表' | '模型' | '场景模板' | '诊断';
 
 export function SettingsModal({
   open,
@@ -106,6 +109,9 @@ export function SettingsModal({
           <button className={section === '通用' ? 'on' : ''} onClick={() => setSection('通用')}>
             <GearSix size={16} /> 通用
           </button>
+          <button className={section === '记忆' ? 'on' : ''} onClick={() => setSection('记忆')}>
+            <Brain size={16} /> 记忆
+          </button>
           <button className={section === '谓词表' ? 'on' : ''} onClick={() => setSection('谓词表')}>
             <Cube size={16} /> 谓词表
           </button>
@@ -118,13 +124,18 @@ export function SettingsModal({
           >
             <SquaresFour size={16} /> 场景模板
           </button>
+          <button className={section === '诊断' ? 'on' : ''} onClick={() => setSection('诊断')}>
+            <Heartbeat size={16} /> 诊断
+          </button>
         </nav>
         <div className="settings-content">
           <div className="settings-content-head">
             {section === '通用' && <h2 className="settings-h">通用设置</h2>}
+            {section === '记忆' && <h2 className="settings-h">记忆</h2>}
             {section === '模型' && <h2 className="settings-h">模型设置</h2>}
             {section === '谓词表' && <h2 className="settings-h">受控谓词表</h2>}
             {section === '场景模板' && <h2 className="settings-h">场景模板</h2>}
+            {section === '诊断' && <h2 className="settings-h">诊断</h2>}
             <button className="settings-close" type="button" onClick={onClose} aria-label="关闭">
               <X size={14} />
             </button>
@@ -146,6 +157,8 @@ export function SettingsModal({
           {section === '谓词表' && <SlotTable />}
           {section === '模型' && <ModelsWorkbench />}
           {section === '场景模板' && <ScenarioTemplates />}
+          {section === '记忆' && <MemoryBrowser />}
+          {section === '诊断' && <DiagnosticsPanel />}
         </div>
       </div>
     </div>
@@ -276,6 +289,120 @@ function DeletedSourceRecoveryPanel() {
           ))}
         </div>
       )}
+    </div>
+  );
+}
+
+/** F7（审计 2026-09-02）：记忆管理面——按范围分区浏览，对象区按对象分组显示对象名；
+ *  禁写行展示结构化匹配三元组（0054）。删除走既有 REMOVE_MEMORY，纯 UI 不新增守卫语义。 */
+function MemoryBrowser() {
+  const { state, dispatch } = useStore();
+  const objectName = (objectId: string | undefined): string =>
+    objectId ? (state.objects.find((o) => o.id === objectId)?.name ?? '已删除对象') : '未指定对象';
+
+  const objectGroups = new Map<string, Memory[]>();
+  for (const memory of state.memories) {
+    if (memory.scope !== '对象') continue;
+    const key = memory.objectId ?? '';
+    const bucket = objectGroups.get(key);
+    if (bucket) bucket.push(memory);
+    else objectGroups.set(key, [memory]);
+  }
+
+  const groups: { key: string; title: string; memories: Memory[] }[] = [
+    { key: '全局', title: '全局记忆', memories: state.memories.filter((m) => m.scope === '全局') },
+    ...[...objectGroups.entries()].map(([objectId, memories]) => ({
+      key: `对象:${objectId}`,
+      title: `对象记忆 · ${objectName(objectId || undefined)}`,
+      memories,
+    })),
+    { key: '会话', title: '会话记忆', memories: state.memories.filter((m) => m.scope === '会话') },
+  ].filter((group) => group.memories.length > 0);
+
+  return (
+    <div className="settings-body">
+      {groups.length === 0 ? (
+        <div className="settings-block">
+          <p className="dim">还没有记忆。纠正与「记下来：…」会立刻写入。</p>
+        </div>
+      ) : (
+        groups.map((group) => (
+          <div className="settings-block" key={group.key}>
+            <div className="settings-label">
+              {group.title}
+              <span className="dim"> · {group.memories.length} 条</span>
+            </div>
+            {group.memories.map((m) => (
+              <div className="memory-row" key={m.id}>
+                <span className={`tag ${m.kind === '禁写' ? 'red' : 'grey'}`}>{m.kind}</span>
+                <span>{m.text}</span>
+                {m.kind === '禁写' && (m.bannedObjectId || m.bannedPredicate || m.bannedValue) && (
+                  <span className="dim">
+                    禁写匹配：{objectName(m.bannedObjectId)} · {m.bannedPredicate ?? '任意谓词'} ·{' '}
+                    {m.bannedValue ?? '任意取值'}
+                  </span>
+                )}
+                <button
+                  type="button"
+                  className="ghost small"
+                  title={`移除这条${m.kind}`}
+                  onClick={() => dispatch({ type: 'REMOVE_MEMORY', id: m.id })}
+                >
+                  移除
+                </button>
+              </div>
+            ))}
+          </div>
+        ))
+      )}
+    </div>
+  );
+}
+
+/** F3（审计 2026-09-02）：诊断节——展示日志目录、合并导出诊断日志；内容在写入口已掩码（0040）。 */
+function DiagnosticsPanel() {
+  const [dir, setDir] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [status, setStatus] = useState<string | null>(null);
+
+  useEffect(() => {
+    void window.staffdesk.logsDir().then(setDir);
+  }, []);
+
+  const exportLogs = async () => {
+    setBusy(true);
+    try {
+      const result = await window.staffdesk.exportLogs();
+      setStatus(result ? `已导出诊断日志：${result.filePath}` : '已取消导出');
+    } catch (error) {
+      setStatus(`导出失败：${errorMessage(error)}`);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="settings-body">
+      <div className="settings-block brain-file-card">
+        <div>
+          <div className="settings-label">诊断日志</div>
+          <p className="dim">
+            运行日志按天落在本机日志目录，只包含掩码后的信息：不含 API Key，也不含发出去的请求原文。
+          </p>
+        </div>
+        <p className="dim mono">{dir === null ? '正在读取日志目录…' : dir || '日志未启用'}</p>
+        <div className="brain-file-actions">
+          <button
+            type="button"
+            className="primary small"
+            disabled={busy || !dir}
+            onClick={() => void exportLogs()}
+          >
+            {busy ? '导出中…' : '导出诊断日志'}
+          </button>
+        </div>
+        {status && <p className="backup-status">{status}</p>}
+      </div>
     </div>
   );
 }

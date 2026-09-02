@@ -2725,14 +2725,18 @@ export function reducer(state: State, action: Action): State {
       }
     }
 
-    case 'REMOVE_MEMORY':
+    case 'REMOVE_MEMORY': {
       // 0034：禁写的显式回退（待确认页记忆区）。移除本身可再补偿（重新纠正会再写）。
+      // F7（审计 2026-09-02）：文案按被删记忆的种类出——设置页记忆节也能删偏好/习惯，
+      // 不再硬编码「禁写」；删不存在的 id 时回落到「记忆」。
+      const kind = state.memories.find((m) => m.id === action.id)?.kind ?? '记忆';
       return {
         ...state,
         memories: state.memories.filter((m) => m.id !== action.id),
-        toast: { text: '已移除这条禁写', id: state.seq },
+        toast: { text: `已移除这条${kind}`, id: state.seq },
         seq: state.seq + 1,
       };
+    }
 
     case 'SET_ONBOARDING':
       return { ...state, onboardingDone: action.done };

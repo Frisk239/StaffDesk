@@ -1,6 +1,6 @@
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { IpcMainInvokeEvent } from 'electron';
 import type { Action } from '../../src/shared/actions';
@@ -8,6 +8,7 @@ import type { State } from '../../src/shared/types';
 import type { ModelCompletion } from '../../src/main/llm/runtime';
 import { openBrain, type Brain } from '../../src/main/brain';
 import { registerIpc, researchOptionsFor, unregisterIpc } from '../../src/main/ipc';
+import { initLogging, resetLogging } from '../../src/main/logging';
 
 type IpcHandler = (event: IpcMainInvokeEvent, ...args: unknown[]) => unknown;
 
@@ -129,6 +130,20 @@ describe('主进程 IPC 契约', () => {
     expect(source?.body).toContain('后端实习');
     expect(source?.title).toBe('JD 片段');
     expect(next.ingestJobs.at(-1)).toMatchObject({ status: '完成' });
+  });
+
+  it('logs:dir 返回初始化的日志目录；logs:export 未选路径时返回 null（F3）', async () => {
+    setupBrain();
+    const logsDir = mkdtempSync(join(tmpdir(), 'sd-ipc-logs-'));
+    dirs.push(dirname(logsDir));
+    initLogging(logsDir);
+    try {
+      await expect(invoke<unknown>('logs:dir')).resolves.toBe(logsDir);
+      // dialog mock 默认取消：导出静默返回 null，不炸不写盘。
+      await expect(invoke<unknown>('logs:export')).resolves.toBeNull();
+    } finally {
+      resetLogging();
+    }
   });
 
   it('chat:send 写意图走脚本路径，不触模型', async () => {

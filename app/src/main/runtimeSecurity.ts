@@ -7,6 +7,7 @@ import {
   type WindowOpenHandlerResponse,
 } from 'electron';
 import { maskTruncated, safeDetail } from './redact';
+import { logWarn } from './logging';
 
 export type RuntimeSecurityPolicy = {
   rendererFilePath: string;
@@ -84,7 +85,8 @@ export function installRuntimeSecurity(
   });
   win.webContents.on('will-attach-webview', (event) => {
     event.preventDefault();
-    console.warn('webview blocked by runtime policy');
+    // F3（审计 2026-09-02）：拦截事件落持久日志，不再只进 console。
+    logWarn('security', 'webview blocked by runtime policy');
   });
   win.webContents.session.setPermissionRequestHandler((_webContents, _permission, callback) => {
     callback(false);
@@ -112,10 +114,10 @@ function openExternalIfAllowed(
   const normalized = normalizeAllowedExternalOpenUrl(rawUrl);
   if (normalized) {
     void openExternal(normalized).catch((error) => {
-      console.warn('external open denied by system', safeDetail(error, 200));
+      logWarn('security', `external open denied by system: ${safeDetail(error, 200)}`);
     });
   } else {
-    console.warn('external open blocked by runtime policy', maskTruncated(rawUrl, 200));
+    logWarn('security', `external open blocked by runtime policy: ${maskTruncated(rawUrl, 200)}`);
   }
 }
 
