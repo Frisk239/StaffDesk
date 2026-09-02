@@ -44,6 +44,8 @@ const api: StaffdeskApi = {
     >,
   copyBrief: (markdown) =>
     ipcRenderer.invoke('brief:copy', { markdown }) as ReturnType<StaffdeskApi['copyBrief']>,
+  logsDir: () => ipcRenderer.invoke('logs:dir') as Promise<string>,
+  exportLogs: () => ipcRenderer.invoke('logs:export') as ReturnType<StaffdeskApi['exportLogs']>,
   onStateChanged: (cb) => {
     const listener = (_event: unknown, state: State) => {
       cb(state);

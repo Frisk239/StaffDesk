@@ -6,6 +6,8 @@ import {
   nativeImage,
   type MenuItemConstructorOptions,
 } from 'electron';
+import { safeDetail } from './redact';
+import { logWarn } from './logging';
 
 let tray: Tray | null = null;
 let quitting = false;
@@ -72,7 +74,8 @@ export function installTray(getWindow: () => BrowserWindow | null, onFirstHide: 
     tray = new Tray(icon.isEmpty() ? nativeImage.createEmpty() : icon);
   } catch (error) {
     getWindowRef = null;
-    console.warn('tray unavailable, running without tray', error);
+    // F3（审计 2026-09-02）：降级原因落持久日志（脱敏），不再只进 console。
+    logWarn('tray', `tray unavailable, running without tray: ${safeDetail(error, 200)}`);
     return;
   }
   tray.setToolTip('StaffDesk');

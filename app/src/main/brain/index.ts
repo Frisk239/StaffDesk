@@ -65,7 +65,8 @@ export class Brain {
   readonly modelSettings: ModelSettingsStore;
   readonly qualificationStore: QualificationStore;
   readonly persistMode: PersistMode;
-  private ui: ReturnType<typeof emptyUiFields>;
+  // hydrateFromLedger（构造内调用）负责赋值；拆出去是为了失败路径先关句柄（F2）。
+  private ui!: ReturnType<typeof emptyUiFields>;
   private runningQualification: { fingerprint: string; startedAt: string } | null = null;
   /** operations 扫描结果缓存：snapshot 构造不再扫 DELETE_SOURCE 日志（0051）。 */
   private cachedRecoveries: DeletedSourceRecovery[] = [];
@@ -83,6 +84,17 @@ export class Brain {
     this.qualificationStore = qualificationStore;
     this.persistMode = options.persistMode ?? 'diff';
     this.db = openDatabase(filePath);
+    try {
+      this.hydrateFromLedger(modelSettings, secrets);
+    } catch (error) {
+      // F2（审计 2026-09-02）：构造半途失败先关句柄再抛——损坏库旁置的 rename
+      // 在 Windows 上会被打开的 SQLite 句柄拦住，泄漏句柄会让恢复路径整体失效。
+      this.db.close();
+      throw error;
+    }
+  }
+
+  private hydrateFromLedger(modelSettings: ModelSettingsStore, secrets: SecretStore): void {
     const legacy = loadLedger(this.db);
     this.cachedRecoveries = listDeletedSourceRecoveries(this.db, legacy.sources);
     const stored = modelSettings.load();

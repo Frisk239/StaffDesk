@@ -1,6 +1,6 @@
 import { clipboard, dialog, ipcMain, type IpcMainInvokeEvent } from 'electron';
 import { writeFile } from 'node:fs/promises';
-import type { BrainBackupExportResult, BrainRestoreResult } from '@shared/api';
+import type { BrainBackupExportResult, BrainRestoreResult, LogsExportResult } from '@shared/api';
 import type { Action } from '@shared/actions';
 import { attachTurn } from '@shared/turn';
 import type { Brain } from './brain';
@@ -17,6 +17,7 @@ import { defaultQuery, type BudgetGear, type ResearchRunOptions } from './tasks/
 import { applyResearchRun } from './tasks/applyResearchRun';
 import { planRadarRun } from './tasks/radar';
 import { safeDetail } from './redact';
+import { logWarn, loggingDir, mergeLogFiles } from './logging';
 import { broadcastState as broadcast } from './windowBroadcast';
 import { createBrainBackupArchive, writeBrainBackupFile } from './brainBackup';
 import { GOLD_PACKS } from './eval/goldPacks';
@@ -55,6 +56,8 @@ const HANDLED_CHANNELS = [
   { channel: 'brief:export', trusted: true },
   { channel: 'brain:export', trusted: true },
   { channel: 'brain:restore', trusted: true },
+  { channel: 'logs:dir', trusted: true },
+  { channel: 'logs:export', trusted: true },
   { channel: 'task:startResearch', trusted: true },
   { channel: 'task:stop', trusted: true },
   { channel: 'task:createRadar', trusted: true },
@@ -505,6 +508,25 @@ export function registerIpc(
     const result = await lifecycle.restoreBrainBackup(picked.filePaths[0]!);
     broadcast(result.state);
     return result;
+  });
+
+  // F3（审计 2026-09-02）：诊断节只读两个出口——目录展示与合并导出；文件内容在写入口
+  // 已掩码（0040），导出不二次加工原文。
+  handleTrusted('logs:dir', (): string => loggingDir() ?? '');
+
+  handleTrusted('logs:export', async (): Promise<LogsExportResult | null> => {
+    const dir = loggingDir();
+    if (!dir) return null;
+    const picked = await dialog.showSaveDialog({
+      title: '导出诊断日志',
+      defaultPath: 'staffdesk-logs.txt',
+      filters: [{ name: '文本文件', extensions: ['txt', 'log'] }],
+    });
+    if (picked.canceled || !picked.filePath) return null;
+    // 导出本身记一笔（无敏感字段），让导出文件至少含一行可核对的痕迹。
+    logWarn('logs', '诊断日志导出');
+    await writeFile(picked.filePath, mergeLogFiles(dir), 'utf8');
+    return { filePath: picked.filePath };
   });
 
   handleTrusted('task:startResearch', async (_event, payload: StartResearchPayload) => {

@@ -130,6 +130,23 @@ export function replaceBrainDatabaseFile(targetPath: string, database: Buffer): 
   }
 }
 
+/**
+ * F2（审计 2026-09-02）：启动时打不开的大脑文件旁置为 `.corrupt-<ts>`，让下次启动能在原位
+ * 新建空大脑；原文件只挪不动（secrets/备份目录更不碰，0048 恢复边界）。WAL sidecar 必须一并
+ * 清掉——旧 -wal/-shm 挂到新库上会造成跨库恢复，这是 replaceBrainDatabaseFile 的同款纪律。
+ */
+export function quarantineBrainFile(
+  filePath: string,
+  now: () => Date = () => new Date(),
+): string | null {
+  if (!existsSync(filePath)) return null;
+  const stamp = now().toISOString().replace(/[:.]/g, '-');
+  const quarantinedPath = `${filePath}.corrupt-${stamp}`;
+  removeSqliteSidecars(filePath);
+  renameSync(filePath, quarantinedPath);
+  return quarantinedPath;
+}
+
 export function zipStoredEntries(entries: { name: string; data: Buffer }[]): Buffer {
   const locals: Buffer[] = [];
   const centrals: Buffer[] = [];

@@ -18,6 +18,11 @@ export interface BriefExportResult {
   filePath: string;
 }
 
+// F3（审计 2026-09-02）：诊断日志合并导出的落点；null = 用户取消或日志未启用。
+export interface LogsExportResult {
+  filePath: string;
+}
+
 export interface BrainRestoreResult {
   filePath: string;
   safetyCopyPath: string;
@@ -50,4 +55,6 @@ export interface StaffdeskApi {
   restoreBrain: () => Promise<BrainRestoreResult | null>;
   exportBrief: (markdown: string, objectName?: string) => Promise<BriefExportResult | null>;
   copyBrief: (markdown: string) => Promise<void>;
+  logsDir: () => Promise<string>;
+  exportLogs: () => Promise<LogsExportResult | null>;
 }

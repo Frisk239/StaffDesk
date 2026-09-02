@@ -1,6 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 import type { LlmModel, LlmProvider, ThinkingEffort } from '@shared/types';
+import { logWarn } from '../logging';
 
 export interface ModelSettings {
   version: 1;
@@ -100,8 +101,13 @@ export function createJsonModelSettingsStore(filePath: string): ModelSettingsSto
       try {
         parsed = JSON.parse(readFileSync(filePath, 'utf8'));
       } catch (error) {
-        const detail = error instanceof Error ? error.message : String(error);
-        throw new Error(`模型配置文件无法读取：${detail}`);
+        // F2（评审 M33）：机器级产品设置损坏只回落默认，不炸启动——否则会把完好的
+        // brain.db 误旁置（0048：模型配置本就不属大脑数据）。原文留在盘上供人工排查。
+        logWarn(
+          'model-settings',
+          `配置损坏回落默认：${error instanceof Error ? error.message : String(error)}`,
+        );
+        return null;
       }
       return normalizeModelSettings(isRecord(parsed) ? (parsed as Partial<ModelSettings>) : {});
     },
