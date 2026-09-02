@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { emptyFeeSpend, type TaskFeeSpend } from '@shared/taskFee';
 import type { BudgetGear, DeskTask, Source, State, TaskKind, TaskStopReason } from '@shared/types';
-import type { OpenResult, ReachAdapter, SearchHit } from '../adapters/reach';
+import type { OpenResult, ReachAdapter, ReachPath, SearchHit } from '../adapters/reach';
 
 export type { BudgetGear };
 
@@ -272,36 +272,67 @@ export async function runResearchTask(
       hint: doctor.hint,
     });
   }
+  // 0061：只扇出体检通过的路；红路静默跳过（体检行已逐路标注）。
+  const greenNames = new Set(doctor.paths.filter((p) => p.ok).map((p) => p.name));
+  const activePaths: ReachPath[] = deps.reach.paths.filter((p) => greenNames.has(p.name));
+  if (activePaths.length === 0) {
+    // 体检结论与路清单对不上属适配缺陷：宁可失败收口，不静默空跑（0008：不编造）。
+    return finish('失败', '已停止', { detail: '没有体检通过的检索路' });
+  }
 
   steps += 1;
-  searches += 1;
-  log('搜索', { query, platform: 'Agent Reach' });
+  // 0061：searches 按路计，失败路也计——防坏路反复重试烧墙钟；费用触顶口径不变（0059）。
+  searches += activePaths.length;
+  log('搜索', { query, paths: activePaths.map((p) => ({ name: p.name })) });
   const stoppedBeforeSearch = finishIfManuallyStopped();
   if (stoppedBeforeSearch) return stoppedBeforeSearch;
-  let hits: SearchHit[] = [];
-  try {
-    hits = await deps.reach.search(query);
-    log('搜索结果', {
-      query,
-      count: hits.length,
-      hits: hits.slice(0, 8).map((hit) => ({
-        title: hit.title,
-        url: hit.url,
-        snippet: hit.snippet.slice(0, 240),
-      })),
-    });
-    if (hits.length === 0) log('空结果', { query, note: '没有写入来源，也不写负事实' });
-  } catch (err) {
+
+  // 0061：并行扇出（async 包装把同步抛错也折成 rejected）；单路失败只记审计、不挡其余路。
+  const settled = await Promise.allSettled(activePaths.map(async (path) => path.search(query)));
+  const perPath: PathHits[] = [];
+  const pathOutcomes: Array<{ name: string; ok: boolean; count: number; error?: string }> = [];
+  const failedPaths: Array<{ name: string; error: string; hint?: string | undefined }> = [];
+  activePaths.forEach((path, index) => {
+    const result = settled[index];
+    if (result?.status === 'fulfilled') {
+      perPath.push({ name: path.name, hits: result.value });
+      pathOutcomes.push({ name: path.name, ok: true, count: result.value.length });
+      return;
+    }
+    const reason: unknown = result?.status === 'rejected' ? result.reason : undefined;
+    const error = reason instanceof Error ? reason.message : String(reason ?? '未知失败');
+    const hint =
+      typeof reason === 'object' && reason && 'hint' in reason
+        ? (reason as { hint?: string }).hint
+        : undefined;
+    failedPaths.push({ name: path.name, error, hint });
+    pathOutcomes.push({ name: path.name, ok: false, count: 0, error });
+  });
+  for (const failure of failedPaths) {
     log('搜索失败', {
+      path: failure.name,
       query,
-      error: err instanceof Error ? err.message : String(err),
-      hint:
-        typeof err === 'object' && err && 'hint' in err
-          ? (err as { hint?: string }).hint
-          : undefined,
+      error: failure.error,
+      hint: failure.hint,
     });
-    stopReason = '失败';
   }
+  const { hits, duplicates } = mergeSearchHits(perPath);
+  log('搜索结果', {
+    query,
+    count: hits.length,
+    duplicates,
+    paths: pathOutcomes,
+    hits: hits.slice(0, 8).map((hit) => ({
+      title: hit.title,
+      url: hit.url,
+      snippet: hit.snippet.slice(0, 240),
+    })),
+  });
+  if (perPath.length > 0 && hits.length === 0) {
+    log('空结果', { query, note: '没有写入来源，也不写负事实' });
+  }
+  // 0008：全路失败才按失败收口（失败表现为未知）；有路活着就照常打开入库。
+  if (failedPaths.length === activePaths.length) stopReason = '失败';
 
   const stoppedAfterSearch = finishIfManuallyStopped();
   if (stoppedAfterSearch) return stoppedAfterSearch;
@@ -367,6 +398,35 @@ async function safeOpen(reach: ReachAdapter, url: string): Promise<OpenResult> {
       error: err instanceof Error ? err.message : String(err),
     };
   }
+}
+
+export interface PathHits {
+  name: string;
+  hits: SearchHit[];
+}
+
+/**
+ * ADR 0061：多路命中按 URL 去重合并——同 URL 留先到（路序即优先序，扇出顺序稳定）。
+ * 纯函数供单测；检索命中不等于来源（0008），合并条数与写入条数无关。
+ */
+export function mergeSearchHits(perPath: readonly PathHits[]): {
+  hits: SearchHit[];
+  duplicates: number;
+} {
+  const seen = new Set<string>();
+  const hits: SearchHit[] = [];
+  let duplicates = 0;
+  for (const { hits: pathHits } of perPath) {
+    for (const hit of pathHits) {
+      if (seen.has(hit.url)) {
+        duplicates += 1;
+        continue;
+      }
+      seen.add(hit.url);
+      hits.push(hit);
+    }
+  }
+  return { hits, duplicates };
 }
 
 function sourceFromPage(

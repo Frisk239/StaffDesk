@@ -12,6 +12,59 @@ function payloadText(payload: unknown): string {
   return typeof payload === 'string' ? payload : JSON.stringify(payload, null, 2);
 }
 
+/**
+ * 0061：多路审计行（体检/搜索/搜索结果）payload 带 paths 数组时拼成人读摘要，
+ * 如「Exa ✓ 2 条 · GitHub × 限速」；其余字段维持 JSON 回放。解析不了就退回整包 JSON。
+ */
+function pathsSummary(payload: unknown): string[] | null {
+  if (typeof payload !== 'object' || payload === null || !('paths' in payload)) return null;
+  const { paths } = payload as { paths?: unknown };
+  if (!Array.isArray(paths) || paths.length === 0) return null;
+  const parts: string[] = [];
+  for (const entry of paths) {
+    if (typeof entry !== 'object' || entry === null || !('name' in entry)) return null;
+    const record = entry as {
+      name?: unknown;
+      ok?: unknown;
+      count?: unknown;
+      error?: unknown;
+      detail?: unknown;
+    };
+    if (typeof record.name !== 'string' || record.name === '') return null;
+    if (record.ok === true) {
+      parts.push(
+        typeof record.count === 'number'
+          ? `${record.name} ✓ ${record.count} 条`
+          : `${record.name} ✓`,
+      );
+    } else if (record.ok === false) {
+      const reason =
+        typeof record.error === 'string' && record.error !== ''
+          ? record.error
+          : typeof record.detail === 'string'
+            ? record.detail
+            : '';
+      parts.push(reason !== '' ? `${record.name} × ${reason.slice(0, 80)}` : `${record.name} ×`);
+    } else {
+      parts.push(record.name);
+    }
+  }
+  return parts;
+}
+
+function AuditPayloadBody({ payload }: { payload: unknown }) {
+  const parts = pathsSummary(payload);
+  if (!parts) return <pre className="replay-payload">{payloadText(payload)}</pre>;
+  const rest = { ...(payload as Record<string, unknown>) };
+  delete rest.paths;
+  return (
+    <div className="replay-fee">
+      <p>{parts.join(' · ')}</p>
+      {Object.keys(rest).length > 0 && <pre className="replay-payload">{payloadText(rest)}</pre>}
+    </div>
+  );
+}
+
 function FeeAuditBody({ payload }: { payload: unknown }) {
   const fee = parseFeePayload(payload);
   if (!fee) return <pre className="replay-payload">{payloadText(payload)}</pre>;
@@ -123,7 +176,7 @@ export function ReplayView({ taskId }: { taskId: string }) {
             {row.kind === FEE_AUDIT_KIND ? (
               <FeeAuditBody payload={row.payload} />
             ) : (
-              <pre className="replay-payload">{payloadText(row.payload)}</pre>
+              <AuditPayloadBody payload={row.payload} />
             )}
           </li>
         ))}
