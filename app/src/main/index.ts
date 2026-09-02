@@ -53,7 +53,11 @@ app.on('render-process-gone', (_event, _webContents, details) => {
  *  出路文案同时落日志（F3），「重启原位新建空大脑 / 备份 zip 恢复」是可自助走通的主路径。 */
 function fatalStartupError(title: string, message: string): void {
   logError('startup', new Error(`${title}: ${message}`));
-  dialog.showErrorBox(title, message);
+  // CI 判别（PR #29）：无人的 runner 会话上 showErrorBox 可能阻塞主线程等人点框，测试里用
+  // 环境变量抑制原生框（日志与盘上旁置文件仍是完整证据链），真实用户不受影响。
+  if (process.env.STAFFDESK_E2E_SUPPRESS_ERROR_BOX !== '1') {
+    dialog.showErrorBox(title, message);
+  }
   // Spec 评审（M33）：showErrorBox 在部分平台上不等用户关框——exit 前给一小段渲染窗口，
   // 否则原生框随进程销毁，用户看不到出路文案（日志与盘上旁置文件是第二道兜底）。
   const delayedExit = setTimeout(() => app.exit(1), 3_000);

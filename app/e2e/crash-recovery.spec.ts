@@ -39,12 +39,12 @@ async function quitApp(app: ElectronApp): Promise<void> {
   await app.close();
 }
 
-function launch(brainFile: string, userDataDir: string) {
+function launch(brainFile: string, userDataDir: string, extraEnv: Record<string, string> = {}) {
   return electron.launch({
     // user-data-dir 指到临时目录：机器级产品设置（含日志目录）不落真实用户 profile。
     args: ['.', `--user-data-dir=${userDataDir}`],
     cwd: appDir,
-    env: { ...process.env, STAFFDESK_BRAIN: brainFile },
+    env: { ...process.env, STAFFDESK_BRAIN: brainFile, ...extraEnv },
   });
 }
 
@@ -140,9 +140,12 @@ test('损坏的大脑文件被旁置，重启后在原位新建空大脑', async
   writeFileSync(`${brainFile}-wal`, 'stale wal');
   writeFileSync(`${brainFile}-shm`, 'stale shm');
 
-  const app = await launch(brainFile, join(dir, 'userData'));
   // 启动失败路径：不建窗口、走原生错误框 + app.exit(1)。旁置与退出都是可观察的——
-  // 盘上出现 .corrupt- 文件、进程以 1 退出；原生错误框自动化点不了，不在断言范围。
+  // 盘上出现 .corrupt- 文件、进程以 1 退出。CI 无人会话上 showErrorBox 会阻塞主线程
+  // 等人点框（PR #29 双 60s 超时的根因），e2e 里抑制原生框走日志证据链。
+  const app = await launch(brainFile, join(dir, 'userData'), {
+    STAFFDESK_E2E_SUPPRESS_ERROR_BOX: '1',
+  });
   const proc = app.process();
   const exited = new Promise<number | null>((resolve) => {
     if (proc.exitCode !== null) resolve(proc.exitCode);
