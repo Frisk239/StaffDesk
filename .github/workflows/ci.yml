@@ -108,3 +108,28 @@ jobs:
           path: app/dist/*.exe
           retention-days: 7
           if-no-files-found: error
+      # F1（审计 2026-09-02）：交付链路从「能打包」变「装得上、起得来」——
+      # NSIS oneClick per-user 静默装 /S 到 %LOCALAPPDATA%\Programs\StaffDesk，再启动断言进程存活。
+      # StaffDesk 是托盘常驻应用（close 只收进托盘不退进程），验证完必须强制收尾，否则 job 挂到超时。
+      - name: Silent install + launch smoke test
+        shell: powershell
+        run: |
+          $installer = Get-ChildItem -Path app/dist -Filter *.exe | Select-Object -First 1
+          if (-not $installer) { throw "no installer exe found under app/dist" }
+          Write-Host "Silent-installing $($installer.FullName)"
+          $installProc = Start-Process -FilePath $installer.FullName -ArgumentList '/S' -Wait -PassThru
+          if ($installProc.ExitCode -ne 0) { throw "installer exited with code $($installProc.ExitCode)" }
+          $installedExe = Join-Path $env:LOCALAPPDATA 'Programs\StaffDesk\StaffDesk.exe'
+          if (-not (Test-Path $installedExe)) { throw "installed exe not found: $installedExe" }
+          Write-Host "Launching installed app"
+          Start-Process -FilePath $installedExe
+          Start-Sleep -Seconds 15
+          $running = Get-Process -Name StaffDesk -ErrorAction SilentlyContinue
+          if (-not $running) { throw "StaffDesk process is not running after launch" }
+          # F1（Spec 评审 M33）：「起得来」还要断言「大脑建得出来」——首启在 userData 创建 brain.db。
+          if (-not (Test-Path (Join-Path $env:APPDATA 'StaffDesk\brain.db'))) {
+            throw "installed app did not create brain.db under APPDATA"
+          }
+          Write-Host "Install + launch + brain.db verified; cleaning up"
+          Stop-Process -Name StaffDesk -Force -ErrorAction SilentlyContinue
+          Wait-Process -Name StaffDesk -Timeout 30 -ErrorAction SilentlyContinue
