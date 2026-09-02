@@ -33,7 +33,8 @@
 - M28 paid the read-path debt and landed the fee dimension (ADR 0059): dispatch now does a single ledger read per operation with the deleted-source recovery scan cached out of snapshot; syncTable reads full rows only by the in-memory key set (surplus detection keeps a PK-column scan); task_audits gained PK (task_id, seq), an index, and a 500-row-per-task retention with cap/failure audit rows exempt (schema v10 also rebuilt tasks to admit 费用触顶); claims FTS is now maintained by INSERT/UPDATE/DELETE triggers with the full rebuild kept as the 0056 repair channel. Research budgets track per-task usage tokens (快搜 120k / 深挖 400k plus missing-usage call caps; the dead hops dimension is deleted), fee-cap stops write what already opened and leave the rest unknown, task rows and replay show token spend, endpoints that omit usage degrade to call-count approximation with an audit note, and radar cycles each carry their own sub-task budget while user chat stays outside task budgets.
 - M29 landed the primary-source marking closure (ADR 0062): source roles live per binding as a sparse map (explicit 主键 only, 转述 is the absence), schema v11 rebuilt source_bindings (role CHECK with old source-level roles migrated), claims (close_reason admits 被主键新版取代), and write_queue (设角色 kind + role column); SET_SOURCE_ROLE guards existence/binding/idempotence with operations traces and compensating undo, dirty-table persistence updates only the binding row's role. A conservative hostname-equality heuristic (origin URL or URL-title vs object name/note/live-claim links, no substring domain hits) proposes the 标为主键 suggestion card, and same-system supersession — both sides primary-backed, source times distinguishable — proposes the 旧版过时 tidy card that only human confirmation closes (reason 被主键新版取代, conflicts not auto-resolved); a test-level invariant guards that no automatic path may retire a primary-backed live claim. Dispatch mode changed from this knife: the Owner hands self-contained subagent prompts to the user to launch in another session, and the report returns for Owner gates and closeout.
 - M30 landed multi-path research (ADR 0061, with an implementation postscript): the reach adapter became a path list — Exa unchanged through mcporter and GitHub as a direct anonymous api.github.com REST call (mcporter's github server rejected after probing: broken credentials plus 17.6s enumeration; gh auth is a machine bonus outside the product path) — with an aggregate doctor that reports per-path health without letting a red path block green ones; the engine fans healthy paths out with Promise.allSettled, merges hits by global URL dedup (first-wins, duplicates counted, exported pure function), and counts searches per participating path including failed ones; audit rows record the fan-out on 搜索, per-path {name, ok, count, error} on 搜索结果, one 搜索失败 row per failed path, and replay renders a human-readable path summary — all-fail stays unknown per 0008. The e2e canned adapter serves both paths with symmetric fault injection. This closes the audit's six-condition functional-parity definition; M31 starts the consolidation phase with the audit knife due.
-- Current working branch for this cut: `codex/m30-multi-path-research`. Previous merged branch: `codex/m29-primary-source-mark`.
+- M32 paid the fourth audit's head cars: the 快搜 and 检索 entries lost the dead-hop wording (跳数/跟踪链接, aligning with 0059), and briefs now mark primary-source backing per object view — BriefSentence carries an independent primarySourceIds field filled by a shared pure function in both the assembler and the LLM regeneration path (kept out of the flag union the outbound gate rewrites). Both reach fetch calls gained AbortSignal.timeout (25s/20s) with an engine wall-clock race so a hung search or open folds to a timeout instead of wedging the task in 进行中 forever; briefs can finally leave the app (one shared Markdown assembly with claim footnotes feeds copy — via a trusted clipboard IPC after 0047's permission denials proved navigator.clipboard dead — and .md export through a save dialog); and legacy unparsed placeholders gained re-fetch with URL pre-extraction plus an always-available delete (review restored the unconditional exit). Found on the way: the markdown.tsx CodeBlock copy button is broken under the same permission denials (booked for M33).
+- Current working branch for this cut: `codex/m32-hardening-closeout`. Previous merged branch: `codex/m31-audit-round-4`.
 
 ## Language
 
@@ -90,7 +91,7 @@ _Avoid_: 主键（进料路径与材料角色不是同一轴）
 _Avoid_: 搜索引擎, 通用爬虫, 按搜索路数凑写入
 
 **检索**:
-任务里向外搜、打开、跟踪链接的动作。多路并行，路径由体检通过的零配置检索工具决定（0061）；需登录态的平台不在 v1。检索命中不等于来源。
+任务里向外搜与打开的动作。多路并行，路径由体检通过的零配置检索工具决定（0061）；需登录态的平台不在 v1。检索命中不等于来源。
 _Avoid_: 入库, 主张, 召回
 
 **召回**:
@@ -182,7 +183,7 @@ _Avoid_: 主张状态（不是账本字段的值）, 空状态, 生成失败, �
 _Avoid_: 来源, 检索命中列表（若直接当入库）
 
 **快搜**:
-调研任务的默认档。过程有硬顶（搜索次数、打开次数、跳数、步数、墙钟、费用）。不是「必须写入 N 条」。
+调研任务的默认档。过程有硬顶（搜索次数、打开次数、步数、墙钟、费用）。不是「必须写入 N 条」。
 _Avoid_: 浅检索（若当成不入库）
 
 **深挖**:
