@@ -20,7 +20,7 @@ export default tseslint.config(
   js.configs.recommended,
   ...tseslint.configs.recommended,
   {
-    files: ['src/**/*.{ts,tsx}', 'tests/**/*.ts', 'e2e/**/*.ts'],
+    files: ['src/**/*.{ts,tsx}', 'tests/**/*.{ts,tsx}', 'e2e/**/*.ts'],
     languageOptions: {
       parserOptions: {
         projectService: true,
@@ -29,7 +29,9 @@ export default tseslint.config(
     },
   },
   {
-    files: ['src/renderer/**/*.{ts,tsx}'],
+    // tests/renderer 组件测试与 renderer 同规（F5/D3，M34）：browser globals + react/hooks 规则，
+    // 同样禁止 import main 内部模块。
+    files: ['src/renderer/**/*.{ts,tsx}', 'tests/renderer/**/*.tsx'],
     plugins: { react, 'react-hooks': reactHooks },
     languageOptions: {
       globals: globals.browser,

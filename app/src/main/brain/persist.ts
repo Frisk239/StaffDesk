@@ -20,6 +20,11 @@ import type {
   Workspace,
 } from '@shared/types';
 import { bindingRole } from '@shared/primarySource';
+import {
+  OPERATIONS_RETENTION_LIMIT,
+  pruneOperations as pruneOperationsRows,
+  type OperationRow,
+} from './operationsRetention';
 
 /** app_meta 读写工具：机器级/库级标记的收口（0056：app_meta 在 persist 写射程外，只经此处显式动）。 */
 export function metaSet(db: Database.Database, key: string, value: string): void {
@@ -784,6 +789,22 @@ export function listOperations(
     action: string;
     undo_of: string | null;
   }[];
+}
+
+/**
+ * 0063：operations 全局行数上限裁旧。先 COUNT 探底——未超限零额外查询返回（常态 dispatch 免费）；
+ * 超限才 SELECT 轻量行（不含 payload）交给纯函数选出非豁免中最旧的超出量，事务内一次 DELETE。
+ */
+export function pruneOperations(db: Database.Database): void {
+  const count = db.prepare('SELECT COUNT(*) AS n FROM operations').get() as { n: number };
+  if (count.n <= OPERATIONS_RETENTION_LIMIT) return;
+  const rows = db.prepare('SELECT id, action, created_at FROM operations').all() as OperationRow[];
+  const doomed = pruneOperationsRows(rows);
+  if (doomed.length === 0) return;
+  const ids = JSON.stringify(doomed.map((row) => row.id));
+  db.transaction(() => {
+    db.prepare('DELETE FROM operations WHERE id IN (SELECT value FROM json_each(?))').run(ids);
+  })();
 }
 
 export function listDeletedSourceRecoveries(
