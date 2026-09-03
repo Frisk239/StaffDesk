@@ -117,6 +117,13 @@ export function objectChatActions(state: State, action: Action): State | undefin
     case 'GENERATE_BRIEF_DONE': {
       if (!state.briefDraftingFor) return state;
       const objectId = state.briefDraftingFor;
+      if (
+        action.brief &&
+        (state.briefs.some((item) => item.id === action.brief?.id) ||
+          state.tasks.some((item) => item.id === action.brief?.taskId && item.kind === '出简报'))
+      ) {
+        return { ...state, briefDraftingFor: null };
+      }
       const [taskId, seq1] = nextId(state, 'task');
       const [briefId, seq2] = nextId({ ...state, seq: seq1 }, 'brief');
       const createdAt = utcIso();

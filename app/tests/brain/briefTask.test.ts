@@ -74,4 +74,17 @@ describe('出简报任务审计（0018/0049）', () => {
     expect(state.toast?.text).toContain('简报生成失败');
     expect(state.briefDraftingFor).toBeNull();
   });
+
+  it('GENERATE_BRIEF_DONE 在未起草时是 no-op，同一 brief id 不再追加', () => {
+    const { brain, objectId } = seed();
+    brain.dispatch({ type: 'GENERATE_BRIEF_DONE' });
+    expect(brain.snapshot().briefs).toHaveLength(0);
+    brain.dispatch({ type: 'GENERATE_BRIEF_START', objectId });
+    brain.dispatch({ type: 'GENERATE_BRIEF_DONE' });
+    const first = brain.snapshot().briefs[0];
+    if (!first) throw new Error('无简报');
+    brain.dispatch({ type: 'GENERATE_BRIEF_START', objectId });
+    brain.dispatch({ type: 'GENERATE_BRIEF_DONE', brief: first });
+    expect(brain.snapshot().briefs).toHaveLength(1);
+  });
 });

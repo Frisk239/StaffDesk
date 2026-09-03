@@ -439,33 +439,40 @@ export function registerIpc(
     },
   );
 
+  const briefInflight = new Set<string>();
   handleTrusted('brief:generate', async (_event, objectId: string) => {
     const brain = getBrain();
-    let state = brain.snapshot();
-    if (!state.briefDraftingFor) {
-      state = brain.dispatch({ type: 'GENERATE_BRIEF_START', objectId });
-      broadcast(state);
-    }
-    const complete = activeModelCompletion(state);
-    const [taskId, briefId] = [`task-${state.seq + 1}`, `brief-${state.seq + 2}`];
+    if (briefInflight.has(objectId)) return brain.snapshot();
+    briefInflight.add(objectId);
     try {
-      const brief = await generateBrief({
-        state,
-        objectId,
-        briefId,
-        taskId,
-        complete,
-      });
-      const next = brain.dispatch({ type: 'GENERATE_BRIEF_DONE', brief });
-      broadcast(next);
-      return next;
-    } catch (error) {
-      const next = brain.dispatch({
-        type: 'GENERATE_BRIEF_DONE',
-        error: safeDetail(error, 120),
-      });
-      broadcast(next);
-      return next;
+      let state = brain.snapshot();
+      if (!state.briefDraftingFor) {
+        // 不广播 START：避免 renderer 效应把这一次生成再打一遍。
+        state = brain.dispatch({ type: 'GENERATE_BRIEF_START', objectId });
+      }
+      const complete = activeModelCompletion(state);
+      const [taskId, briefId] = [`task-${state.seq + 1}`, `brief-${state.seq + 2}`];
+      try {
+        const brief = await generateBrief({
+          state,
+          objectId,
+          briefId,
+          taskId,
+          complete,
+        });
+        const next = brain.dispatch({ type: 'GENERATE_BRIEF_DONE', brief });
+        broadcast(next);
+        return next;
+      } catch (error) {
+        const next = brain.dispatch({
+          type: 'GENERATE_BRIEF_DONE',
+          error: safeDetail(error, 120),
+        });
+        broadcast(next);
+        return next;
+      }
+    } finally {
+      briefInflight.delete(objectId);
     }
   });
 

@@ -87,11 +87,7 @@ test('简报可复制与导出 Markdown（引用转脚注），主键主张带�
           },
         ],
       });
-      // 鬼魅根因（四连查后锁定）：App 的 briefDraftingFor 效应会在首份生成期间再触发一次
-      // generateBrief（IPC 守卫只跳过 START、仍完整生成第二份），而渲染器是否观察到那个瞬态
-      // 取决于广播时序——第二份简报的出现是纯竞态，chips 条（history>1）随之漂移。
-      // 种子阶段显式生成两次，把「至少两份」变成断言前的确定事实。
-      await api.generateBrief(object.id);
+      // 一次用户生成 = 一份简报。历史条只在 ≥2 份时出现，不得再靠双生成种子去稳定 chip。
       await api.generateBrief(object.id);
       await api.dispatch({ type: 'SET_VIEW', view: { kind: 'object', objectId: object.id } });
       await api.dispatch({ type: 'OPEN_RIGHT_TAB', objectId: object.id, kind: '简报' });
@@ -99,11 +95,7 @@ test('简报可复制与导出 Markdown（引用转脚注），主键主张带�
 
     // 0062：主键绑定来源的主张句在简报里带「主键来源」标注。
     await expect(win.getByText('主键来源').first()).toBeVisible({ timeout: 15_000 });
-    // 打开简报标签会异步再生成一份简报（新历史 chip 落位、布局随之位移）——慢速 CI 上
-    // 直接点按钮会追着移动的布局拦截 30s（PR #29 CI）；再生成本身偶发超默认 5s（PR #32
-    // 合并首跑目击）。两处都放宽到 15s：环境余量，非掩盖失败（后续断言仍抓真错）。
-    await expect(win.locator('.brief-history .chip.on')).toBeVisible({ timeout: 15_000 });
-    // 出简报重新可点 = briefDraftingFor 已清，历史条不再长高。
+    await expect(win.locator('.brief-history')).toHaveCount(0);
     await expect(win.getByRole('button', { name: '出简报', exact: true })).toBeEnabled({
       timeout: 15_000,
     });

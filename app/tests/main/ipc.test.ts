@@ -257,6 +257,35 @@ describe('主进程 IPC 契约', () => {
     expect(messages.some((message) => message.role === 'user')).toBe(true);
     expect(messages.some((message) => message.role === 'desk')).toBe(false);
   });
+
+  it('重叠的 brief:generate 只落一份简报与一条出简报任务', async () => {
+    const brain = setupBrain();
+    const obj = brain.snapshot().objects[0]!;
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    llm.completion = async () => {
+      await gate;
+      return { content: JSON.stringify({ blocks: [] }), toolCalls: [] };
+    };
+    const first = invoke<State>('brief:generate', obj.id);
+    const second = invoke<State>('brief:generate', obj.id);
+    release();
+    await Promise.all([first, second]);
+    const state = brain.snapshot();
+    expect(state.briefs).toHaveLength(1);
+    expect(state.tasks.filter((task) => task.kind === '出简报')).toHaveLength(1);
+    expect(state.briefDraftingFor).toBeNull();
+  });
+
+  it('两次顺序 generateBrief 是两次用户生成，各落一份', async () => {
+    const brain = setupBrain();
+    const obj = brain.snapshot().objects[0]!;
+    await invoke<State>('brief:generate', obj.id);
+    await invoke<State>('brief:generate', obj.id);
+    expect(brain.snapshot().briefs).toHaveLength(2);
+  });
 });
 
 describe('researchOptionsFor 纯函数', () => {

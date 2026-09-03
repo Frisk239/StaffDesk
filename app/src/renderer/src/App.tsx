@@ -54,10 +54,17 @@ function Effects() {
     }
   }, [state.extractJobs, dispatch]);
 
+  const briefScheduled = useRef<string | null>(null);
   useEffect(() => {
-    if (!state.briefDraftingFor) return;
-    void window.staffdesk.generateBrief(state.briefDraftingFor);
-  }, [state.briefDraftingFor, dispatch]);
+    const objectId = state.briefDraftingFor;
+    if (!objectId) {
+      briefScheduled.current = null;
+      return;
+    }
+    if (briefScheduled.current === objectId) return;
+    briefScheduled.current = objectId;
+    void window.staffdesk.generateBrief(objectId);
+  }, [state.briefDraftingFor]);
 
   useEffect(() => {
     if (!state.toast) return;
