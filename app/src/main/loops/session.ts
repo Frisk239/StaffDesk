@@ -22,7 +22,18 @@ export interface SessionDeps {
   complete?: ModelCompletion | undefined;
 }
 
-const REF_RE = /\[ref:([^\]]+)\]/g;
+const REF_RE = /\[ref:([^\]]*)\]/g;
+
+/** 正文剥离内部引用协议；合法/非法/空标记一律不进用户可见文本。 */
+export function stripClaimRefs(text: string): string {
+  return text
+    .replace(/\[ref:[^\]]*\]/g, '')
+    .replace(/[ \t]+([。，、；：！？,.!?;:])/g, '$1')
+    .replace(/([。，、；：！？])[ \t]+/g, '$1')
+    .replace(/[ \t]{2,}/g, ' ')
+    .replace(/[ \t]*\n[ \t]*/g, '\n')
+    .trim();
+}
 
 /** 主会话：说明书开场 + 召回 + 只读工具 + 带引用回复。不写主张。 */
 export async function runSessionTurn(
@@ -109,7 +120,7 @@ export async function runSessionTurn(
     .filter((id): id is string => Boolean(id && allowed.has(id)));
 
   return {
-    replyText: result.content.trim() || '未知：模型没有给出可核对的回答。',
+    replyText: stripClaimRefs(result.content) || '未知：模型没有给出可核对的回答。',
     claimRefs,
   };
 }

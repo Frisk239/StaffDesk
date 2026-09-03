@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { openBrain, type Brain } from '../../src/main/brain';
-import { runSessionTurn } from '../../src/main/loops/session';
+import { runSessionTurn, stripClaimRefs } from '../../src/main/loops/session';
 import { completeExtraction } from '../helpers/extraction';
 
 const brains: Brain[] = [];
@@ -73,6 +73,8 @@ describe('主会话循环', () => {
     });
     expect(reply.claimRefs).toContain(before.claims[0]?.id);
     expect(reply.claimRefs).not.toContain(fakeId);
+    expect(reply.replyText).not.toContain('[ref:');
+    expect(reply.replyText).toContain('按账本，主栈相关见');
     expect(brain.snapshot().claims.length).toBe(n);
     brain.dispatch({ type: 'CHAT_SEND', objectId: obj.id, text: '随便聊聊天气' });
     expect(brain.snapshot().claims.length).toBe(n);
@@ -100,5 +102,52 @@ describe('主会话循环', () => {
       },
     });
     expect(sawUnbound).toBe(false);
+  });
+});
+
+describe('会话正文剥离引用标记', () => {
+  it('合法引用从正文剥离，引用卡仍能解析', async () => {
+    const { brain, obj } = setup();
+    const state = brain.snapshot();
+    const claimId = state.claims[0]?.id;
+    if (!claimId) throw new Error('无主张');
+    const reply = await runSessionTurn(state, obj.id, '办公地点在哪？', {
+      complete: async () => ({
+        content: `走查样例的办公地点在杭州。[ref:${claimId}]`,
+        toolCalls: [],
+      }),
+    });
+    expect(reply.replyText).toBe('走查样例的办公地点在杭州。');
+    expect(reply.replyText).not.toContain('[ref:');
+    expect(reply.claimRefs).toEqual([claimId]);
+  });
+
+  it('非法引用不能原样泄漏', () => {
+    expect(stripClaimRefs('地点在杭州。[ref:cl-forged]')).toBe('地点在杭州。');
+    expect(stripClaimRefs('地点在杭州。[ref:]')).toBe('地点在杭州。');
+    expect(stripClaimRefs('地点在杭州。[ref:not an id!]')).toBe('地点在杭州。');
+  });
+
+  it('重复引用全部剥离，白名单仍只收合法 ID', async () => {
+    const { brain, obj } = setup();
+    const state = brain.snapshot();
+    const claimId = state.claims[0]?.id;
+    if (!claimId) throw new Error('无主张');
+    const reply = await runSessionTurn(state, obj.id, '主栈？', {
+      complete: async () => ({
+        content: `主栈是 Go。[ref:${claimId}] 详见 [ref:${claimId}][ref:cl-forged]`,
+        toolCalls: [],
+      }),
+    });
+    expect(reply.replyText).toBe('主栈是 Go。详见');
+    expect(reply.replyText).not.toContain('[ref:');
+    expect(reply.claimRefs).toEqual([claimId, claimId]);
+  });
+
+  it('紧邻标点的引用剥离后标点仍在', () => {
+    expect(stripClaimRefs('杭州[ref:cl-1]。')).toBe('杭州。');
+    expect(stripClaimRefs('杭州。[ref:cl-1]')).toBe('杭州。');
+    expect(stripClaimRefs('杭州 [ref:cl-1]。')).toBe('杭州。');
+    expect(stripClaimRefs('杭州，[ref:cl-a]上海。[ref:cl-b]')).toBe('杭州，上海。');
   });
 });
