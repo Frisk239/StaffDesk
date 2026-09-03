@@ -1,0 +1,26 @@
+version: 2
+updates:
+  # 运行时与开发依赖（app/）：AI 应用栈依赖漂移快，周检小步升级。
+  - package-ecosystem: npm
+    directory: /app
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      # 补丁与次版本合并一车，主版本单独过审（React/Electron 大版本须人看）。
+      minor-and-patch:
+        update-types:
+          - minor
+          - patch
+  # 根目录聚合 package（只有脚本依赖，低频）。
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 3
+  # GitHub Actions（actions/checkout 等）：安全修复随官方节奏。
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 3
