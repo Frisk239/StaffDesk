@@ -59,6 +59,9 @@ export function migrate(db: Database.Database): void {
   if (current < 11) {
     migrateToV11(db);
   }
+  if (current < 12) {
+    migrateToV12(db);
+  }
   if (current < SCHEMA_VERSION) {
     db.prepare('INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)').run(
       SCHEMA_VERSION,
@@ -349,6 +352,51 @@ function migrateToV11(db: Database.Database): void {
     `);
     db.exec('DROP TABLE write_queue');
     db.exec('ALTER TABLE write_queue_v11 RENAME TO write_queue');
+  });
+  tx();
+}
+
+/**
+ * v12（M38，0027 UX-007）：write_queue 重建 kind CHECK 收「解绑」「删除来源」「重试抽取」。
+ * SQLite 不能 ALTER CHECK，一律 new→copy→drop→rename。
+ */
+function migrateToV12(db: Database.Database): void {
+  const tx = db.transaction(() => {
+    db.exec(`
+      CREATE TABLE write_queue_v12 (
+        id TEXT PRIMARY KEY,
+        object_id TEXT NOT NULL,
+        kind TEXT NOT NULL CHECK (
+          kind IN ('晋升', '纠正', '整理', '绑定', '批量晋升', '批量回退', '场景', '设角色', '解绑', '删除来源', '重试抽取')
+        ),
+        task_id TEXT,
+        headline TEXT NOT NULL,
+        evidence TEXT NOT NULL,
+        claim_id TEXT,
+        claim_ids TEXT,
+        source_id TEXT,
+        object_ids TEXT,
+        target_predicate TEXT,
+        outbound INTEGER,
+        template_json TEXT,
+        role TEXT CHECK (role IN ('主键', '转述')),
+        position INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL
+      );
+    `);
+    db.exec(`
+      INSERT INTO write_queue_v12 (
+        id, object_id, kind, task_id, headline, evidence, claim_id, claim_ids,
+        source_id, object_ids, target_predicate, outbound, template_json, role,
+        position, created_at
+      )
+      SELECT id, object_id, kind, task_id, headline, evidence, claim_id, claim_ids,
+             source_id, object_ids, target_predicate, outbound, template_json, role,
+             position, created_at
+      FROM write_queue
+    `);
+    db.exec('DROP TABLE write_queue');
+    db.exec('ALTER TABLE write_queue_v12 RENAME TO write_queue');
   });
   tx();
 }

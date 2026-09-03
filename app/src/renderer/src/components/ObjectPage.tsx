@@ -4,7 +4,6 @@ import { closedClaims, conflictsOf, isExtracting, projectionClaims, useStore } f
 import { scenarioOfWorkspace, slotsForScene } from '@shared/scenario';
 import type { Claim, DeskObject, Predicate, SourceRole } from '@shared/types';
 import { bindingRole } from '@shared/primarySource';
-import { SourceDeleteDialog } from './SourceDeleteDialog';
 
 // 0033：谓词槽表是数据（state.slotDefs），按对象种类分区，再按对象所在工作区的场景过滤；通用槽恒显示。
 
@@ -330,7 +329,6 @@ function ClaimCard({ claim, onClick }: { claim: Claim; onClick: (id: string) => 
 export function SourcesPane({ objectId }: { objectId: string }) {
   const { state, dispatch } = useStore();
   const [openIds, setOpenIds] = useState<Set<string>>(new Set());
-  const [deleteSourceId, setDeleteSourceId] = useState<string | null>(null);
   const cardRefs = useRef<Record<string, HTMLDivElement | null>>({});
   const sources = state.sources.filter((s) => !s.virtual && s.boundObjectIds.includes(objectId));
 
@@ -420,7 +418,18 @@ export function SourcesPane({ objectId }: { objectId: string }) {
                 <button
                   type="button"
                   className="source-retry"
-                  onClick={() => dispatch({ type: 'RETRY_EXTRACTION', sourceId: s.id })}
+                  onClick={() =>
+                    dispatch({
+                      type: 'ENQUEUE_WRITE',
+                      draft: {
+                        objectId,
+                        kind: '重试抽取',
+                        sourceId: s.id,
+                        headline: '重试抽取？',
+                        evidence: `确认后将再次开始抽取「${s.title}」。`,
+                      },
+                    })
+                  }
                 >
                   重试
                 </button>
@@ -436,6 +445,7 @@ export function SourcesPane({ objectId }: { objectId: string }) {
               </div>
             )}
             {isOpen && (
+              // 0027：右栏只留入口，解绑/删除/设角色都进主栏确认卡，不在此落账。
               <div className="source-actions">
                 <button
                   type="button"
@@ -461,14 +471,49 @@ export function SourcesPane({ objectId }: { objectId: string }) {
                 <button
                   type="button"
                   className="btn outline sm"
-                  onClick={() => dispatch({ type: 'UNBIND_SOURCE', sourceId: s.id, objectId })}
+                  onClick={() => {
+                    const objectClaimCount = state.claims.filter(
+                      (claim) => claim.sourceId === s.id && claim.objectId === objectId,
+                    ).length;
+                    const lastBinding = s.boundObjectIds.length === 1;
+                    dispatch({
+                      type: 'ENQUEUE_WRITE',
+                      draft: {
+                        objectId,
+                        kind: '解绑',
+                        sourceId: s.id,
+                        headline: '解绑当前对象？',
+                        evidence: [
+                          `经此来源挂在当前对象上的 ${objectClaimCount} 条主张会离开该对象。`,
+                          lastBinding
+                            ? '这是最后一个绑定，解绑后回来源 Inbox。'
+                            : '来源仍可留在其他对象上。',
+                        ].join(''),
+                      },
+                    });
+                  }}
                 >
                   解绑当前对象
                 </button>
                 <button
                   type="button"
                   className="btn outline sm danger-hover"
-                  onClick={() => setDeleteSourceId(s.id)}
+                  onClick={() => {
+                    const claimCount = state.claims.filter(
+                      (claim) => claim.sourceId === s.id && claim.status === '成立',
+                    ).length;
+                    const bindingCount = s.boundObjectIds.length;
+                    dispatch({
+                      type: 'ENQUEUE_WRITE',
+                      draft: {
+                        objectId,
+                        kind: '删除来源',
+                        sourceId: s.id,
+                        headline: '删除来源？',
+                        evidence: `删除「${s.title}」将移除 ${bindingCount} 个绑定，并把 ${claimCount} 条相关主张关窗为「来源删除」。历史简报保持不变，此操作不提供一键撤销。`,
+                      },
+                    });
+                  }}
                 >
                   删除来源
                 </button>
@@ -484,9 +529,6 @@ export function SourcesPane({ objectId }: { objectId: string }) {
         >
           Inbox
         </button>
-      )}
-      {deleteSourceId && (
-        <SourceDeleteDialog sourceId={deleteSourceId} onClose={() => setDeleteSourceId(null)} />
       )}
     </aside>
   );

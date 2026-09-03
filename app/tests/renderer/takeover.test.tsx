@@ -133,3 +133,76 @@ describe('待确认卡计数口径', () => {
     expect(screen.queryByText(/其他对象还有 1 条/)).toBeNull();
   });
 });
+
+describe('来源生命周期确认卡 0027', () => {
+  it('解绑卡显示确认解绑/保持绑定，证据写离开对象，不用条数队列', async () => {
+    await renderTakeover(
+      makeState({
+        objects: [{ id: OBJECT_A, kind: '组织', name: '甲', relationIds: [], workspaceId: 'ws-1' }],
+        writeQueue: [
+          write({
+            id: 'wr-unbind',
+            objectId: OBJECT_A,
+            kind: '解绑',
+            sourceId: 'src-1',
+            headline: '解绑当前对象？',
+            evidence: '经此来源挂在当前对象上的 2 条主张会离开该对象。',
+          }),
+        ],
+      }),
+    );
+    expect(screen.getByRole('button', { name: '确认解绑' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: '保持绑定' })).toBeTruthy();
+    expect(document.querySelector('.takeover-evidence')?.textContent).toMatch(/会离开该对象/);
+    expect(screen.getByText(/还有 0 个待确认操作/)).toBeTruthy();
+    expect(screen.queryByText(/还有 0 条/)).toBeNull();
+    expect(screen.queryByText(/本操作含/)).toBeNull();
+  });
+
+  it('删除来源卡写清影响范围且无一键撤销，确认/取消删除', async () => {
+    await renderTakeover(
+      makeState({
+        objects: [{ id: OBJECT_A, kind: '组织', name: '甲', relationIds: [], workspaceId: 'ws-1' }],
+        writeQueue: [
+          write({
+            id: 'wr-del',
+            objectId: OBJECT_A,
+            kind: '删除来源',
+            sourceId: 'src-1',
+            headline: '删除来源？',
+            evidence:
+              '删除「材料」将移除 2 个绑定，并把 3 条相关主张关窗为「来源删除」。历史简报保持不变，此操作不提供一键撤销。',
+          }),
+        ],
+      }),
+    );
+    expect(screen.getByRole('button', { name: '确认删除' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: '取消删除' })).toBeTruthy();
+    expect(document.querySelector('.takeover-evidence')?.textContent).toMatch(/不提供一键撤销/);
+    expect(screen.getByText(/还有 0 个待确认操作/)).toBeTruthy();
+    expect(screen.queryByText(/还有 0 条/)).toBeNull();
+  });
+
+  it('重试抽取卡确认再次开始抽取', async () => {
+    await renderTakeover(
+      makeState({
+        objects: [{ id: OBJECT_A, kind: '组织', name: '甲', relationIds: [], workspaceId: 'ws-1' }],
+        writeQueue: [
+          write({
+            id: 'wr-retry',
+            objectId: OBJECT_A,
+            kind: '重试抽取',
+            sourceId: 'src-1',
+            headline: '重试抽取？',
+            evidence: '确认后将再次开始抽取「材料」。',
+          }),
+        ],
+      }),
+    );
+    expect(screen.getByRole('button', { name: '确认重试' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: '暂不重试' })).toBeTruthy();
+    expect(document.querySelector('.takeover-evidence')?.textContent).toMatch(/再次开始抽取/);
+    expect(screen.getByText(/还有 0 个待确认操作/)).toBeTruthy();
+    expect(screen.queryByText(/还有 0 条/)).toBeNull();
+  });
+});

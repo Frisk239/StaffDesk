@@ -132,6 +132,17 @@ export function enqueueWrite(state: State, draft: Omit<WriteProposal, 'id'>): St
       seq: state.seq + 1,
     };
   }
+  // 0027：对象页来源生命周期写必须带 sourceId，确认卡才许落账。
+  if (
+    (draft.kind === '解绑' || draft.kind === '删除来源' || draft.kind === '重试抽取') &&
+    !draft.sourceId
+  ) {
+    return {
+      ...state,
+      toast: { text: '无出处的写提议不许生成', id: state.seq },
+      seq: state.seq + 1,
+    };
+  }
   const claim = draft.claimId ? state.claims.find((c) => c.id === draft.claimId) : undefined;
   if (
     claim &&

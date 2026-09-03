@@ -323,6 +323,177 @@ describe('来源生命周期 0031/0034', () => {
   });
 });
 
+describe('对象页来源生命周期写入走确认卡 0027', () => {
+  it('解绑入队不落账，确认才解绑，拒绝保持绑定', () => {
+    const file = tmpBrain();
+    let brain = track(openBrain(file));
+    const { a, b, source } = seedTwoObjects(brain);
+    extractForBoth(brain, source.id);
+    const before = brain.snapshot();
+    const claimCount = before.claims.length;
+    const bindings = before.sources.find((item) => item.id === source.id)?.boundObjectIds;
+
+    brain.dispatch({
+      type: 'ENQUEUE_WRITE',
+      draft: {
+        objectId: a.id,
+        kind: '解绑',
+        sourceId: source.id,
+        headline: '解绑当前对象？',
+        evidence: '经此来源挂在当前对象上的主张会离开该对象。',
+      },
+    });
+    let state = brain.snapshot();
+    const queued = state.writeQueue.find((write) => write.kind === '解绑');
+    expect(queued?.sourceId).toBe(source.id);
+    expect(state.sources.find((item) => item.id === source.id)?.boundObjectIds).toEqual(bindings);
+    expect(state.claims).toHaveLength(claimCount);
+
+    brain.close();
+    brain = track(openBrain(file));
+    const persisted = brain.snapshot().writeQueue.find((write) => write.kind === '解绑');
+    if (!persisted) throw new Error('解绑确认卡未持久化');
+
+    brain.dispatch({ type: 'REJECT_WRITE', writeId: persisted.id });
+    state = brain.snapshot();
+    expect(state.writeQueue.some((write) => write.kind === '解绑')).toBe(false);
+    expect(state.sources.find((item) => item.id === source.id)?.boundObjectIds).toEqual(bindings);
+    expect(state.claims).toHaveLength(claimCount);
+
+    brain.dispatch({
+      type: 'ENQUEUE_WRITE',
+      draft: {
+        objectId: a.id,
+        kind: '解绑',
+        sourceId: source.id,
+        headline: '解绑当前对象？',
+        evidence: '经此来源挂在当前对象上的主张会离开该对象。',
+      },
+    });
+    const again = brain.snapshot().writeQueue.find((write) => write.kind === '解绑');
+    if (!again) throw new Error('解绑确认卡未入队');
+    brain.dispatch({ type: 'CONFIRM_WRITE', writeId: again.id });
+    state = brain.snapshot();
+    expect(state.sources.find((item) => item.id === source.id)?.boundObjectIds).toEqual([b.id]);
+    expect(
+      state.claims.some((claim) => claim.sourceId === source.id && claim.objectId === a.id),
+    ).toBe(false);
+    expect(
+      state.claims.some((claim) => claim.sourceId === source.id && claim.objectId === b.id),
+    ).toBe(true);
+    expect(state.writeQueue.some((write) => write.kind === '解绑')).toBe(false);
+  });
+
+  it('删除来源入队不落账，确认才删除，拒绝留下来源', () => {
+    const brain = track(openBrain(tmpBrain()));
+    const { a, source } = seedTwoObjects(brain);
+    extractForBoth(brain, source.id);
+    const before = brain.snapshot();
+    const claimCount = before.claims.filter((claim) => claim.sourceId === source.id).length;
+
+    brain.dispatch({
+      type: 'ENQUEUE_WRITE',
+      draft: {
+        objectId: a.id,
+        kind: '删除来源',
+        sourceId: source.id,
+        headline: '删除来源？',
+        evidence: '删除将关窗相关主张，不提供一键撤销。',
+      },
+    });
+    let state = brain.snapshot();
+    const queued = state.writeQueue.find((write) => write.kind === '删除来源');
+    if (!queued) throw new Error('删除来源确认卡未入队');
+    expect(queued.sourceId).toBe(source.id);
+    expect(state.sources.some((item) => item.id === source.id)).toBe(true);
+    expect(state.claims.filter((claim) => claim.sourceId === source.id)).toHaveLength(claimCount);
+
+    brain.dispatch({ type: 'REJECT_WRITE', writeId: queued.id });
+    state = brain.snapshot();
+    expect(state.sources.some((item) => item.id === source.id)).toBe(true);
+    expect(
+      state.claims.filter((claim) => claim.sourceId === source.id && claim.status === '成立'),
+    ).toHaveLength(claimCount);
+
+    brain.dispatch({
+      type: 'ENQUEUE_WRITE',
+      draft: {
+        objectId: a.id,
+        kind: '删除来源',
+        sourceId: source.id,
+        headline: '删除来源？',
+        evidence: '删除将关窗相关主张，不提供一键撤销。',
+      },
+    });
+    const again = brain.snapshot().writeQueue.find((write) => write.kind === '删除来源');
+    if (!again) throw new Error('删除来源确认卡未入队');
+    brain.dispatch({ type: 'CONFIRM_WRITE', writeId: again.id });
+    state = brain.snapshot();
+    expect(state.sources.some((item) => item.id === source.id)).toBe(false);
+    expect(
+      state.claims.filter((claim) => claim.sourceId === source.id && claim.status === '成立'),
+    ).toHaveLength(0);
+    expect(
+      state.claims
+        .filter((claim) => claim.sourceId === source.id)
+        .every((claim) => claim.closeReason === '来源删除'),
+    ).toBe(true);
+  });
+
+  it('重试抽取入队不改 extractJobs，确认才进入抽取中', () => {
+    const brain = track(openBrain(tmpBrain()));
+    const { a, source } = seedTwoObjects(brain);
+    brain.dispatch({
+      type: 'EXTRACT_DONE',
+      sourceId: source.id,
+      outcome: 'failed',
+      detail: '模型没有返回可解析的 JSON',
+    });
+    const failed = brain.snapshot().extractJobs.find((job) => job.sourceId === source.id);
+    expect(failed?.status).toBe('失败');
+
+    brain.dispatch({
+      type: 'ENQUEUE_WRITE',
+      draft: {
+        objectId: a.id,
+        kind: '重试抽取',
+        sourceId: source.id,
+        headline: '重试抽取？',
+        evidence: '确认后将再次开始抽取。',
+      },
+    });
+    let state = brain.snapshot();
+    const queued = state.writeQueue.find((write) => write.kind === '重试抽取');
+    expect(queued?.sourceId).toBe(source.id);
+    expect(state.extractJobs.find((job) => job.sourceId === source.id)?.status).toBe('失败');
+
+    if (!queued) throw new Error('重试抽取确认卡未入队');
+    brain.dispatch({ type: 'CONFIRM_WRITE', writeId: queued.id });
+    state = brain.snapshot();
+    expect(state.extractJobs.find((job) => job.sourceId === source.id)?.status).toBe('抽取中');
+    expect(state.writeQueue.some((write) => write.kind === '重试抽取')).toBe(false);
+  });
+
+  it('缺 sourceId 的来源写提议不许入队', () => {
+    const brain = track(openBrain(tmpBrain()));
+    const { a } = seedTwoObjects(brain);
+    for (const kind of ['解绑', '删除来源', '重试抽取'] as const) {
+      brain.dispatch({
+        type: 'ENQUEUE_WRITE',
+        draft: {
+          objectId: a.id,
+          kind,
+          headline: kind,
+          evidence: '无出处',
+        },
+      });
+    }
+    const state = brain.snapshot();
+    expect(state.writeQueue).toHaveLength(0);
+    expect(state.toast?.text).toBe('无出处的写提议不许生成');
+  });
+});
+
 describe('批量整理补偿 0034', () => {
   it('一次丢弃多条未核，重启后撤销会原子恢复整批', () => {
     const file = tmpBrain();

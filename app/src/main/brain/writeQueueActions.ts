@@ -5,8 +5,9 @@ import { applyScenarioTemplateUpsert } from './slotTemplateActions';
 import { claimBelongsToSlotKind, enqueueWrite, pushCard, type ReducerFn } from './actionHelpers';
 
 // write_queue 域 reducer 分支：写卡入队、确认落账与撤销补偿；确认/撤销里的递归
-// dispatch（PROMOTE_CLAIM/CORRECT_CLAIM/PROPOSAL_DECIDE/BIND_CONFIRMED/SET_SOURCE_ROLE）
-// 经注入的 reducer 参数回调分发壳入口，本文件不得 import 壳。
+// dispatch（PROMOTE_CLAIM/CORRECT_CLAIM/PROPOSAL_DECIDE/BIND_CONFIRMED/SET_SOURCE_ROLE
+// /UNBIND_SOURCE/DELETE_SOURCE/RETRY_EXTRACTION）经注入的 reducer 参数回调分发壳入口，
+// 本文件不得 import 壳。
 
 function claimStillHasSource(state: State, claim: Claim): boolean {
   if (claim.sourceId === 'user-stmt') return true;
@@ -154,6 +155,19 @@ export function writeQueueActions(
           objectId: head.objectId,
           role: head.role,
         });
+      } else if (head.kind === '解绑' && head.sourceId) {
+        // 0027：确认卡成交，不在此复写解绑规则。
+        st = reducer(st, {
+          type: 'UNBIND_SOURCE',
+          sourceId: head.sourceId,
+          objectId: head.objectId,
+        });
+      } else if (head.kind === '删除来源' && head.sourceId) {
+        // 0027：确认卡成交；删除规则仍在 DELETE_SOURCE（0035 无一键撤销）。
+        st = reducer(st, { type: 'DELETE_SOURCE', sourceId: head.sourceId });
+      } else if (head.kind === '重试抽取' && head.sourceId) {
+        // 0027：确认卡成交，抽取重试仍走 RETRY_EXTRACTION。
+        st = reducer(st, { type: 'RETRY_EXTRACTION', sourceId: head.sourceId });
       }
       return st;
     }

@@ -1,5 +1,5 @@
-/** M1 schema。新版本走 schema_migrations，禁止裸改历史。v11（M29，0062）：source_bindings 加绑定级 role（默认转述）；claims.close_reason 收「被主键新版取代」；write_queue kind 收「设角色」并加 role 列。v10（M28）：task_audit 加主键 (task_id, seq) 与 task_id 索引；tasks.stop_reason CHECK 收「费用触顶」（0059）；claims FTS 三触发器接线。v9（M27，0051/0058）：write_queue 放开 kind CHECK 收「场景」并加 template_json 草稿列（重建走门次）。v8（0058）：workspaces 去 scenario 枚举 CHECK、scenario_brief_specs 死表退役、scenario_templates 建表（建表走本文件 CREATE TABLE IF NOT EXISTS，门次只做重建与退役）。v7 是 operations(action) 索引——只进迁移门次，不进 SCHEMA_SQL。 */
-export const SCHEMA_VERSION = 11;
+/** M1 schema。新版本走 schema_migrations，禁止裸改历史。v12（M38，0027 UX-007）：write_queue kind CHECK 收「解绑」「删除来源」「重试抽取」。v11（M29，0062）：source_bindings 加绑定级 role（默认转述）；claims.close_reason 收「被主键新版取代」；write_queue kind 收「设角色」并加 role 列。v10（M28）：task_audit 加主键 (task_id, seq) 与 task_id 索引；tasks.stop_reason CHECK 收「费用触顶」（0059）；claims FTS 三触发器接线。v9（M27，0051/0058）：write_queue 放开 kind CHECK 收「场景」并加 template_json 草稿列（重建走门次）。v8（0058）：workspaces 去 scenario 枚举 CHECK、scenario_brief_specs 死表退役、scenario_templates 建表（建表走本文件 CREATE TABLE IF NOT EXISTS，门次只做重建与退役）。v7 是 operations(action) 索引——只进迁移门次，不进 SCHEMA_SQL。 */
+export const SCHEMA_VERSION = 12;
 
 export const SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -122,7 +122,7 @@ CREATE TABLE IF NOT EXISTS proposals (
 CREATE TABLE IF NOT EXISTS write_queue (
   id TEXT PRIMARY KEY,
   object_id TEXT NOT NULL,
-  kind TEXT NOT NULL CHECK (kind IN ('晋升', '纠正', '整理', '绑定', '批量晋升', '批量回退', '场景', '设角色')),
+  kind TEXT NOT NULL CHECK (kind IN ('晋升', '纠正', '整理', '绑定', '批量晋升', '批量回退', '场景', '设角色', '解绑', '删除来源', '重试抽取')),
   task_id TEXT,
   headline TEXT NOT NULL,
   evidence TEXT NOT NULL,

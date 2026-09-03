@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { useStore } from '../store';
-import type { BriefBlockKind, CloseReason } from '@shared/types';
+import type { BriefBlockKind, CloseReason, SourceRole, WriteKind } from '@shared/types';
 
 // M27：场景草稿卡的块类型短标签（设置页编辑器用长标签，这里只做预览提示）。
 const BLOCK_KIND_LABELS: Record<BriefBlockKind, string> = {
@@ -15,6 +15,27 @@ function playbookExcerpt(playbook: string): string {
   if (!playbook) return '（空）';
   const head = playbook.split('\n').slice(0, 2).join('；').slice(0, 60);
   return playbook.length > 60 ? `${head}…` : head;
+}
+
+function rejectLabelFor(kind: WriteKind): string {
+  if (kind === '批量晋升') return '全部保持';
+  if (kind === '场景') return '放弃草稿';
+  if (kind === '设角色') return '保持原样';
+  if (kind === '解绑') return '保持绑定';
+  if (kind === '删除来源') return '取消删除';
+  if (kind === '重试抽取') return '暂不重试';
+  return '拒绝';
+}
+
+function confirmLabelFor(kind: WriteKind, role: SourceRole | undefined): string {
+  if (kind === '批量晋升') return '全部晋升';
+  if (kind === '批量回退') return '确认回退';
+  if (kind === '场景') return '创建场景模板';
+  if (kind === '设角色') return role === '转述' ? '改为转述' : '标为主键';
+  if (kind === '解绑') return '确认解绑';
+  if (kind === '删除来源') return '确认删除';
+  if (kind === '重试抽取') return '确认重试';
+  return '确认';
 }
 
 export function Takeover({ objectId }: { objectId: string }) {
@@ -99,26 +120,8 @@ export function Takeover({ objectId }: { objectId: string }) {
     dispatch({ type: 'CONFIRM_WRITE', writeId: head.id });
   };
 
-  const rejectLabel =
-    head.kind === '批量晋升'
-      ? '全部保持'
-      : head.kind === '场景'
-        ? '放弃草稿'
-        : head.kind === '设角色'
-          ? '保持原样'
-          : '拒绝';
-  const confirmLabel =
-    head.kind === '批量晋升'
-      ? '全部晋升'
-      : head.kind === '批量回退'
-        ? '确认回退'
-        : head.kind === '场景'
-          ? '创建场景模板'
-          : head.kind === '设角色'
-            ? head.role === '转述'
-              ? '改为转述'
-              : '标为主键'
-            : '确认';
+  const rejectLabel = rejectLabelFor(head.kind);
+  const confirmLabel = confirmLabelFor(head.kind, head.role);
 
   return (
     // 只拦裸 Enter（提交语义）；Shift+Enter 在 textarea 里保留换行，与 composer 行为一致。
@@ -200,6 +203,15 @@ export function Takeover({ objectId }: { objectId: string }) {
           {head.kind === '设角色' && (
             <div className="takeover-warn">只改当前对象上的角色；系统不会自动定主键。</div>
           )}
+          {head.kind === '解绑' && (
+            <div className="takeover-warn">经此来源挂在当前对象上的主张会离开该对象。</div>
+          )}
+          {head.kind === '删除来源' && (
+            <div className="takeover-warn">
+              主张关窗为「来源删除」，历史简报不变；此操作不提供一键撤销。
+            </div>
+          )}
+          {head.kind === '重试抽取' && <div className="takeover-warn">确认后将再次开始抽取。</div>}
           {head.kind === '纠正' &&
             (() => {
               const target = head.claimId
