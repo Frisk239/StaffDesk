@@ -471,6 +471,13 @@ export function registerIpc(
     async (_event, payload: { markdown: string; objectName?: string }) => {
       // 审计 F4：简报出站出口——照 brain:export 的保存对话框模式写 .md；正文由 renderer 的
       // 同一份 Markdown 组装函数提供，主进程不重排格式。
+      // e2e 注入路径：无交互会话上原生保存框会悬挂（PR #46 / brief-export 鬼魅），
+      // 测试经 STAFFDESK_E2E_BRIEF_EXPORT_PATH 跳过对话框，只覆盖写盘与 toast。
+      const e2ePath = process.env.STAFFDESK_E2E_BRIEF_EXPORT_PATH;
+      if (e2ePath) {
+        await writeFile(e2ePath, payload.markdown, 'utf8');
+        return { filePath: e2ePath };
+      }
       const picked = await dialog.showSaveDialog({
         title: '导出简报',
         defaultPath: `${briefFileName(payload.objectName)}.md`,

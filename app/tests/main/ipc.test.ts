@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -130,6 +130,36 @@ describe('主进程 IPC 契约', () => {
     expect(source?.body).toContain('后端实习');
     expect(source?.title).toBe('JD 片段');
     expect(next.ingestJobs.at(-1)).toMatchObject({ status: '完成' });
+  });
+
+  it('brief:export 用户取消保存框返回 null', async () => {
+    setupBrain();
+    await expect(
+      invoke<unknown>('brief:export', { markdown: '# 简报\n', objectName: '甲组织' }),
+    ).resolves.toBeNull();
+  });
+
+  it('brief:export 在 e2e 注入路径时跳过保存框并写盘', async () => {
+    setupBrain();
+    const dir = mkdtempSync(join(tmpdir(), 'sd-ipc-brief-export-'));
+    dirs.push(dir);
+    const filePath = join(dir, 'brief.md');
+    const prev = process.env.STAFFDESK_E2E_BRIEF_EXPORT_PATH;
+    process.env.STAFFDESK_E2E_BRIEF_EXPORT_PATH = filePath;
+    try {
+      const result = await invoke<{ filePath: string } | null>('brief:export', {
+        markdown: '# 简报\n',
+        objectName: '甲组织',
+      });
+      expect(result?.filePath).toBe(filePath);
+      expect(readFileSync(filePath, 'utf8')).toBe('# 简报\n');
+    } finally {
+      if (prev === undefined) {
+        delete process.env.STAFFDESK_E2E_BRIEF_EXPORT_PATH;
+      } else {
+        process.env.STAFFDESK_E2E_BRIEF_EXPORT_PATH = prev;
+      }
+    }
   });
 
   it('logs:dir 返回初始化的日志目录；logs:export 未选路径时返回 null（F3）', async () => {
