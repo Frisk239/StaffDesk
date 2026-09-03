@@ -1,4 +1,5 @@
 import type { Brief, BriefBlock, BriefSentence, Claim, State } from './types';
+import { utcIso } from './time';
 import { deriveConflicts, normalizeValue, scenarioOfWorkspace } from './scenario';
 import { isPrimaryBacked } from './primarySource';
 
@@ -230,7 +231,7 @@ export function buildBrief(
     id: briefId ?? `brief-${state.seq}`,
     objectId,
     taskId: taskId ?? `task-brief-${state.seq}`,
-    createdAt: new Date().toISOString().replace('T', ' ').slice(0, 16),
+    createdAt: utcIso(),
     blocks,
   };
 }

@@ -1,6 +1,7 @@
 import { useState } from 'react';
-import { useStore } from '../store';
 import { briefToMarkdown } from '@shared/briefMarkdown';
+import { formatLocalDateTime } from '@shared/time';
+import { useStore } from '../store';
 
 export function BriefView({ objectId }: { objectId: string }) {
   const { state, dispatch } = useStore();
@@ -27,8 +28,8 @@ export function BriefView({ objectId }: { objectId: string }) {
       brief,
       objectName: obj.name,
       headLine: task
-        ? `${task.kind} · ${task.id} · ${brief.createdAt}`
-        : `${brief.taskId} · ${brief.createdAt}`,
+        ? `${task.kind} · ${task.id} · ${formatLocalDateTime(brief.createdAt)}`
+        : `${brief.taskId} · ${formatLocalDateTime(brief.createdAt)}`,
       claims: state.claims,
       sources: state.sources,
     });
@@ -71,7 +72,7 @@ export function BriefView({ objectId }: { objectId: string }) {
                 className={`chip${b.id === brief.id ? ' on' : ''}`}
                 onClick={() => setPicked(b.id)}
               >
-                {t?.kind ?? '出简报'} · {b.createdAt}
+                {t?.kind ?? '出简报'} · {formatLocalDateTime(b.createdAt)}
               </button>
             );
           })}
@@ -82,7 +83,8 @@ export function BriefView({ objectId }: { objectId: string }) {
         <header className="brief-head">
           <h1>{obj.name}</h1>
           <div className="dim mono">
-            {task ? `${task.kind} · ${task.id}` : brief.taskId} · {brief.createdAt}
+            {task ? `${task.kind} · ${task.id}` : brief.taskId} ·{' '}
+            {formatLocalDateTime(brief.createdAt)}
           </div>
           <div className="brief-actions">
             <button type="button" className="btn outline sm" onClick={() => void copyMarkdown()}>

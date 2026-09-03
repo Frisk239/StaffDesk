@@ -283,7 +283,7 @@ describe('调研任务引擎', () => {
     );
     expect(result.task.kind).toBe('再搜一轮');
     expect(result.task.parentTaskId).toBe('radar-1');
-    expect(result.task.dueAt).toBe('2026-08-30 00:00');
+    expect(result.task.dueAt).toBe('2026-08-30T00:00:00.000Z');
     expect(result.task.query).toBe('验收组织 官方');
     expect(result.audits[0]?.kind).toBe('开始');
     expect(result.audits[1]?.kind).toBe('未跑');

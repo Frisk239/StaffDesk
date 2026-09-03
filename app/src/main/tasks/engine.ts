@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import { emptyFeeSpend, type TaskFeeSpend } from '@shared/taskFee';
+import { utcIso } from '@shared/time';
 import type { BudgetGear, DeskTask, Source, State, TaskKind, TaskStopReason } from '@shared/types';
 import type { OpenResult, ReachAdapter, ReachPath, SearchHit } from '../adapters/reach';
 
@@ -139,7 +140,7 @@ export function createResearchTask(
 ): DeskTask {
   const obj = state.objects.find((o) => o.id === objectId);
   const started = deps.now?.() ?? Date.now();
-  const createdAt = new Date(started).toISOString().replace('T', ' ').slice(0, 16);
+  const createdAt = utcIso(started);
   const task: DeskTask = {
     id: `task-${state.seq}-${started}`,
     objectId,

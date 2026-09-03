@@ -3,6 +3,7 @@ import type { Brief, CandidatePayload, ChatMessage, State, TaskAudit } from '@sh
 import { scriptReply } from '@shared/chat';
 import { attachTurn } from '@shared/turn';
 import { normalizeValue } from '@shared/scenario';
+import { utcIso } from '@shared/time';
 import { outboundBrief, verifyBrief } from './briefOut';
 import { dreamMemoryProposals } from '../loops/memoryDream';
 import {
@@ -118,8 +119,8 @@ export function objectChatActions(state: State, action: Action): State | undefin
       const objectId = state.briefDraftingFor;
       const [taskId, seq1] = nextId(state, 'task');
       const [briefId, seq2] = nextId({ ...state, seq: seq1 }, 'brief');
-      const createdAt = new Date().toISOString().replace('T', ' ').slice(0, 16);
-      const ts = new Date().toISOString();
+      const createdAt = utcIso();
+      const ts = createdAt;
       if (action.error) {
         const audits = briefTaskAudits({
           taskId,

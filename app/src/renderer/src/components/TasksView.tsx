@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { formatTokenCount, latestTaskTokenTotal } from '@shared/taskFee';
+import { compareStamp, formatLocalDateTime, isStampOverdue } from '@shared/time';
 import type { DeskTask, TaskKind, TaskStatus } from '@shared/types';
 import { useStore } from '../store';
 
@@ -37,13 +38,6 @@ function rerunnable(task: DeskTask): boolean {
   return task.status === '已停止' || (task.status === '已完成' && task.stopReason === '失败');
 }
 
-// nextDueAt 与 createdAt 一样是 'YYYY-MM-DD HH:mm' 本地戳，字典序即时间序（与主进程雷达口径一致）。
-function nowStamp(): string {
-  const now = new Date();
-  const pad = (n: number) => String(n).padStart(2, '0');
-  return `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())} ${pad(now.getHours())}:${pad(now.getMinutes())}`;
-}
-
 function FilterChips<T extends string>({
   label,
   options,
@@ -79,9 +73,7 @@ export function TasksView() {
   const { state, dispatch } = useStore();
   const [kindFilter, setKindFilter] = useState<KindFilter>('全部');
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('全部');
-  const now = nowStamp();
-
-  // 进行中置顶（正在办事的先看见），其余按 createdAt 倒序。
+  // 进行中置顶（正在办事的先看见），其余按真实时间倒序，不用格式化串。
   const tasks = state.tasks
     .filter(
       (task) =>
@@ -91,7 +83,7 @@ export function TasksView() {
     .sort((a, b) => {
       const aRunning = a.status === '进行中' ? 0 : 1;
       const bRunning = b.status === '进行中' ? 0 : 1;
-      return aRunning - bRunning || b.createdAt.localeCompare(a.createdAt);
+      return aRunning - bRunning || compareStamp(b.createdAt, a.createdAt);
     });
 
   return (
@@ -122,13 +114,13 @@ export function TasksView() {
       )}
       {tasks.map((task) => {
         const object = state.objects.find((item) => item.id === task.objectId);
-        const overdue = Boolean(task.nextDueAt && task.nextDueAt <= now);
+        const overdue = Boolean(task.nextDueAt && isStampOverdue(task.nextDueAt));
         const tokenTotal = latestTaskTokenTotal(state.taskAudits, task.id);
         return (
           <div key={task.id} className="all-object-row">
             <span className="session-meta">
               <span className="session-name">{object?.name ?? '未知对象'}</span>
-              <span className="session-sub">{task.createdAt}</span>
+              <span className="session-sub">{formatLocalDateTime(task.createdAt)}</span>
             </span>
             <span className="tag grey">{task.kind}</span>
             <span className={`tag ${statusClass(task.status)}`}>
@@ -142,7 +134,7 @@ export function TasksView() {
             {task.kind === '周期性雷达' && task.nextDueAt && (
               // 雷达行显示下次到点；到期如实标注（词条「回放」：雷达错过的周期如实记，不假装）。
               <span className={`tag ${overdue ? 'red' : 'grey'}`}>
-                {overdue ? '已到期' : '下次'} · {task.nextDueAt.slice(5)}
+                {overdue ? '已到期' : '下次'} · {formatLocalDateTime(task.nextDueAt).slice(5)}
               </span>
             )}
             {task.query && (

@@ -1,28 +1,13 @@
 import type { DeskTask } from '@shared/types';
+import { parseStampMs, utcIso } from '@shared/time';
 import type { ResearchRunOptions } from './engine';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
 function parseDue(task: DeskTask): number {
   const raw = task.nextDueAt ?? task.createdAt;
-  const parsed = parseStamp(raw);
+  const parsed = parseStampMs(raw);
   return Number.isNaN(parsed) ? 0 : parsed;
-}
-
-function parseStamp(stamp: string): number {
-  const match = stamp.match(/^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2})/);
-  if (!match) return Date.parse(stamp.replace(' ', 'T'));
-  const [, y, m, d, h, min] = match;
-  return new Date(Number(y), Number(m) - 1, Number(d), Number(h), Number(min)).getTime();
-}
-
-function formatStamp(ms: number): string {
-  const d = new Date(ms);
-  const pad = (value: number) => String(value).padStart(2, '0');
-  return [
-    `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`,
-    `${pad(d.getHours())}:${pad(d.getMinutes())}`,
-  ].join(' ');
 }
 
 function intervalMs(task: DeskTask): number {
@@ -38,7 +23,7 @@ function latestDueWindow(task: DeskTask, now: number): { dueAt: string; missedRu
     dueMs += step;
     missedRuns += 1;
   }
-  return { dueAt: formatStamp(dueMs), missedRuns };
+  return { dueAt: utcIso(dueMs), missedRuns };
 }
 
 export interface RadarRunPlan {

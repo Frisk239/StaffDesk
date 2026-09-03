@@ -6,6 +6,7 @@ import {
   parseFeePayload,
 } from '@shared/taskFee';
 import { pendingTaskClaimReview, unverifiedClaimIdsForTask } from '@shared/taskClaims';
+import { formatLocalDateTime, formatLocalTime } from '@shared/time';
 import { useStore } from '../store';
 
 function payloadText(payload: unknown): string {
@@ -138,8 +139,10 @@ export function ReplayView({ taskId }: { taskId: string }) {
           )}
           {task.query && <span className="replay-query">{task.query}</span>}
           {task.parentTaskId && <span className="tag grey">父雷达 {task.parentTaskId}</span>}
-          {task.dueAt && <span className="tag grey">应跑 {task.dueAt}</span>}
-          {task.nextDueAt && <span className="tag grey">下次 {task.nextDueAt}</span>}
+          {task.dueAt && <span className="tag grey">应跑 {formatLocalDateTime(task.dueAt)}</span>}
+          {task.nextDueAt && (
+            <span className="tag grey">下次 {formatLocalDateTime(task.nextDueAt)}</span>
+          )}
         </div>
       )}
       {task && pendingReview && (
@@ -171,7 +174,7 @@ export function ReplayView({ taskId }: { taskId: string }) {
               <strong>
                 {row.seq}. {row.kind}
               </strong>
-              <time>{row.ts.slice(11, 19)}</time>
+              <time>{formatLocalTime(row.ts)}</time>
             </div>
             {row.kind === FEE_AUDIT_KIND ? (
               <FeeAuditBody payload={row.payload} />

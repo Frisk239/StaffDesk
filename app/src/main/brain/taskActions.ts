@@ -1,30 +1,9 @@
 import type { Action } from '@shared/actions';
 import type { State, TaskAudit } from '@shared/types';
+import { addDaysUtc, formatLocalDateTime, parseStampMs, utcIso } from '@shared/time';
 import { maybeEnqueuePrimarySuggestions, nextId } from './actionHelpers';
 
-// 任务与雷达域 reducer 分支：调研任务状态与审计去重追加、周期雷达排程（时间族 helper 域内自足）。
-
-function addDaysIso(iso: string, days: number): string {
-  const parsed = parseStamp(iso);
-  const base = Number.isNaN(parsed) ? Date.now() : parsed;
-  return formatStamp(base + days * 24 * 60 * 60 * 1000);
-}
-
-function parseStamp(stamp: string): number {
-  const match = stamp.match(/^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2})/);
-  if (!match) return Date.parse(stamp.replace(' ', 'T'));
-  const [, y, m, d, h, min] = match;
-  return new Date(Number(y), Number(m) - 1, Number(d), Number(h), Number(min)).getTime();
-}
-
-function formatStamp(ms: number): string {
-  const d = new Date(ms);
-  const pad = (value: number) => String(value).padStart(2, '0');
-  return [
-    `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`,
-    `${pad(d.getHours())}:${pad(d.getMinutes())}`,
-  ].join(' ');
-}
+// 任务与雷达域 reducer 分支：调研任务状态与审计去重追加、周期雷达排程（时间族走 shared/time）。
 
 function nextRadarDueAfter(
   task: { nextDueAt?: string | undefined; intervalDays?: number | undefined },
@@ -33,8 +12,8 @@ function nextRadarDueAfter(
   const interval = Math.max(1, task.intervalDays ?? 1);
   let due = task.nextDueAt ?? afterIso;
   let guard = 0;
-  while (parseStamp(due) <= parseStamp(afterIso) && guard < 370) {
-    due = addDaysIso(due, interval);
+  while (parseStampMs(due) <= parseStampMs(afterIso) && guard < 370) {
+    due = addDaysUtc(due, interval);
     guard += 1;
   }
   return due;
@@ -129,10 +108,9 @@ export function taskActions(state: State, action: Action): State | undefined {
         };
       }
       const [taskId, seq] = nextId(state, 'task');
-      const now = new Date();
-      const createdAt = now.toISOString().replace('T', ' ').slice(0, 16);
+      const createdAt = utcIso();
       const intervalDays = Math.max(1, action.intervalDays ?? 1);
-      const nextDueAt = addDaysIso(createdAt, intervalDays);
+      const nextDueAt = addDaysUtc(createdAt, intervalDays);
       const task = {
         id: taskId,
         objectId: action.objectId,
@@ -158,7 +136,7 @@ export function taskActions(state: State, action: Action): State | undefined {
             ts: new Date().toISOString(),
           },
         ],
-        toast: { text: `已创建每日雷达，下次 ${nextDueAt}`, id: seq },
+        toast: { text: `已创建每日雷达，下次 ${formatLocalDateTime(nextDueAt)}`, id: seq },
       };
     }
 
