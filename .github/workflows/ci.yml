@@ -3,6 +3,9 @@ name: ci
 on:
   push:
     branches: ['**']
+    # branches 过滤会排除 tag 推送——须显式加 tags，否则 package job 的
+    # tag 条件永远等不到触发（v0.2.0 首推验证时发现，Release 步骤从未跑到）。
+    tags: ['v*']
   pull_request:
   workflow_dispatch:
 

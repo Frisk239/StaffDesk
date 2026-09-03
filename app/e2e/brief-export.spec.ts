@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { expect, test, _electron as electron } from '@playwright/test';
@@ -44,6 +44,7 @@ test('简报可复制与导出 Markdown（引用转脚注），主键主张带�
     env: {
       ...process.env,
       STAFFDESK_BRAIN: join(dir, 'brain.db'),
+      STAFFDESK_E2E_BRIEF_EXPORT_PATH: exportedPath,
     },
   });
 
@@ -136,20 +137,19 @@ test('简报可复制与导出 Markdown（引用转脚注），主键主张带�
       '〔后端主栈〕简报导出组织主栈是 Go —— 来源：https://primary.example/about，片段「主栈是 Go」',
     );
 
-    // 导出 .md：保存对话框照 brain-backup spec 的 stub 姿势注入路径。
+    // 导出 .md：路径由 STAFFDESK_E2E_BRIEF_EXPORT_PATH 注入，避开无交互会话上
+    // 原生保存框悬挂（PR #46：同一 SHA push 绿、pull_request 红）。仍 stub 对话框
+    // 作兜底——环境变量未进主进程时写盘路径不变。
     await app.evaluate(({ dialog }, filePath) => {
       dialog.showSaveDialog = async () => ({ canceled: false, filePath });
     }, exportedPath);
     await win.getByRole('button', { name: '导出 .md' }).click();
-    // 双出口断言（鬼魅四连查）：先等任一结局（成功或失败 toast——M36 起导出异常必弹
-    // 「导出失败：detail」），再把实际文本打进断言信息——下次闪挂能直接看到根因而非
-    // 干等的 element not found。两分支都不可见=IPC 悬挂（另案）。
-    await expect(win.getByText(/简报已导出|导出失败/)).toBeVisible({ timeout: 15_000 });
-    const outcome = await win
-      .getByText(/简报已导出|导出失败/)
-      .first()
-      .textContent();
-    expect(outcome, '导出结果 toast').toMatch(/简报已导出/);
+    // 写盘是导出契约；toast 会被晚到的「简报已生成」盖掉，不能当唯一门禁。
+    await expect.poll(() => existsSync(exportedPath), { timeout: 15_000 }).toBe(true);
+    const toast = win.getByText(/简报已导出|导出失败/).first();
+    if (await toast.isVisible()) {
+      expect(await toast.textContent(), '导出结果 toast').toMatch(/简报已导出/);
+    }
     const exported = readFileSync(exportedPath, 'utf8');
     expect(exported).toContain('# 简报导出组织');
     expect(exported).toContain('（主键来源）[^1]');
