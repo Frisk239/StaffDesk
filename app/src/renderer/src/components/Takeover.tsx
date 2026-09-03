@@ -44,14 +44,17 @@ export function Takeover({ objectId }: { objectId: string }) {
     return names.slice(0, 2).join('、');
   };
 
+  const headClaimCount = head?.claimIds?.length ?? (head?.claimId ? 1 : 0);
   const counts = (
     <span className="takeover-more">
-      本对象还有 {restHere} 条
+      还有 {restHere} 个待确认操作
+      {head && headClaimCount > 0 ? ` · 本操作含 ${headClaimCount} 条主张` : ''}
       {others.length > 0 && (
         <>
           {' · '}
           <button type="button" className="btn ghost sm" onClick={jumpOther}>
-            其他对象还有 {others.length} 条{otherLabel() ? `（${otherLabel()}）` : ''}
+            其他对象还有 {others.length} 个待确认操作
+            {otherLabel() ? `（${otherLabel()}）` : ''}
           </button>
         </>
       )}

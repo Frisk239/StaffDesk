@@ -192,7 +192,7 @@ export function objectChatActions(state: State, action: Action): State | undefin
           taskId,
           kind: '批量晋升',
           claimIds: unverifiedClaims.map((c) => c.id),
-          headline: `本任务未核 ${unverifiedClaims.length} 条：全部晋升，还是全部保持？`,
+          headline: `本任务未核 ${unverifiedClaims.length} 条主张：全部晋升，还是全部保持？`,
           evidence: unverifiedClaims.map((c) => `· ${c.text}`).join('\n'),
           outbound: true,
         });
