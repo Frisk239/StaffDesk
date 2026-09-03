@@ -96,16 +96,22 @@ test('简报可复制与导出 Markdown（引用转脚注），主键主张带�
           },
         ],
       });
+      // 鬼魅根因（四连查后锁定）：App 的 briefDraftingFor 效应会在首份生成期间再触发一次
+      // generateBrief（IPC 守卫只跳过 START、仍完整生成第二份），而渲染器是否观察到那个瞬态
+      // 取决于广播时序——第二份简报的出现是纯竞态，chips 条（history>1）随之漂移。
+      // 种子阶段显式生成两次，把「至少两份」变成断言前的确定事实。
+      await api.generateBrief(object.id);
       await api.generateBrief(object.id);
       await api.dispatch({ type: 'SET_VIEW', view: { kind: 'object', objectId: object.id } });
       await api.dispatch({ type: 'OPEN_RIGHT_TAB', objectId: object.id, kind: '简报' });
     });
 
     // 0062：主键绑定来源的主张句在简报里带「主键来源」标注。
-    await expect(win.getByText('主键来源').first()).toBeVisible();
+    await expect(win.getByText('主键来源').first()).toBeVisible({ timeout: 15_000 });
     // 打开简报标签会异步再生成一份简报（新历史 chip 落位、布局随之位移）——慢速 CI 上
-    // 直接点按钮会追着移动的布局拦截 30s（PR #29 CI）。等最新 chip 落稳再点。
-    await expect(win.locator('.brief-history .chip.on')).toBeVisible();
+    // 直接点按钮会追着移动的布局拦截 30s（PR #29 CI）；再生成本身偶发超默认 5s（PR #32
+    // 合并首跑目击）。两处都放宽到 15s：环境余量，非掩盖失败（后续断言仍抓真错）。
+    await expect(win.locator('.brief-history .chip.on')).toBeVisible({ timeout: 15_000 });
 
     // 剪贴板是全局系统资源：CI 会话的剪贴板锁被占时 writeText/readText 会阻塞主进程
     // （PR #28 首次 CI 挂：60s 测试超时 + 60s teardown 超时的双卡死）。测试里 stub 成
@@ -135,9 +141,15 @@ test('简报可复制与导出 Markdown（引用转脚注），主键主张带�
       dialog.showSaveDialog = async () => ({ canceled: false, filePath });
     }, exportedPath);
     await win.getByRole('button', { name: '导出 .md' }).click();
-    // 导出链 = IPC + 保存对话框 stub + 文件写盘：慢盘 CI 上偶发超默认 5s（PR #31 两连挂、
-    // 同树 main 运行过）——放宽到 15s，属环境余量非掩盖失败（后续断言仍会抓真错）。
-    await expect(win.getByText(/简报已导出/)).toBeVisible({ timeout: 15_000 });
+    // 双出口断言（鬼魅四连查）：先等任一结局（成功或失败 toast——M36 起导出异常必弹
+    // 「导出失败：detail」），再把实际文本打进断言信息——下次闪挂能直接看到根因而非
+    // 干等的 element not found。两分支都不可见=IPC 悬挂（另案）。
+    await expect(win.getByText(/简报已导出|导出失败/)).toBeVisible({ timeout: 15_000 });
+    const outcome = await win
+      .getByText(/简报已导出|导出失败/)
+      .first()
+      .textContent();
+    expect(outcome, '导出结果 toast').toMatch(/简报已导出/);
     const exported = readFileSync(exportedPath, 'utf8');
     expect(exported).toContain('# 简报导出组织');
     expect(exported).toContain('（主键来源）[^1]');

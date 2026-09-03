@@ -382,10 +382,8 @@ export function sourceActions(state: State, action: Action): State | undefined {
       const body = action.body.trim();
       if (!body) return state;
       const [id, seq] = nextId(state, 'src');
-      const title =
-        action.title.trim() ||
-        (action.fromUrl ? (body.split('\n')[0] ?? body.slice(0, 24)) : body.slice(0, 24)) ||
-        '粘贴文本';
+      // 审计五轮 E2：fromUrl 在 case 顶部已早退，标题回退不留死分支。
+      const title = action.title.trim() || body.slice(0, 24) || '粘贴文本';
       return {
         ...state,
         seq,

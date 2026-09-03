@@ -795,11 +795,18 @@ export function listOperations(
  * 0063：operations 全局行数上限裁旧。先 COUNT 探底——未超限零额外查询返回（常态 dispatch 免费）；
  * 超限才 SELECT 轻量行（不含 payload）交给纯函数选出非豁免中最旧的超出量，事务内一次 DELETE。
  */
-export function pruneOperations(db: Database.Database): void {
+export function pruneOperations(
+  db: Database.Database,
+  limit: number = OPERATIONS_RETENTION_LIMIT,
+): void {
   const count = db.prepare('SELECT COUNT(*) AS n FROM operations').get() as { n: number };
-  if (count.n <= OPERATIONS_RETENTION_LIMIT) return;
-  const rows = db.prepare('SELECT id, action, created_at FROM operations').all() as OperationRow[];
-  const doomed = pruneOperationsRows(rows);
+  if (count.n <= limit) return;
+  // 审计五轮 P2-1：列名必须别名成接口的驼峰——as 不做运行时映射，此前 createdAt 恒
+  // undefined 让排序退化成纯 id 字典序（生产近似等价因 id 含时间戳，备份恢复/时钟回拨偏离 0063 承诺键）。
+  const rows = db
+    .prepare('SELECT id, action, created_at AS createdAt FROM operations')
+    .all() as OperationRow[];
+  const doomed = pruneOperationsRows(rows, limit);
   if (doomed.length === 0) return;
   const ids = JSON.stringify(doomed.map((row) => row.id));
   db.transaction(() => {

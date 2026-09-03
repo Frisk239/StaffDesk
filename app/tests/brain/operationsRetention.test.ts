@@ -173,3 +173,31 @@ describe('operations 保留策略（dispatch 接线）', () => {
     expect(ids.has('keep-delete')).toBe(true);
   });
 });
+describe('operations 保留策略（审计五轮 P2-1 排序键盲区）', () => {
+  it('真实库路径按 created_at 裁旧——id 字典序与时间序分歧时以时间序为准', () => {
+    const brain = openBrain(tmpBrain());
+    brains.push(brain);
+    const db = brain.db;
+    const insert = db.prepare(
+      'INSERT INTO operations (id, action, payload, undo_of, chat_ref, created_at) VALUES (?, ?, ?, NULL, NULL, ?)',
+    );
+    // 盲区构造：id 字典序最旧的行时间最新、id 序最新的行时间最旧——别名修复前
+    // createdAt 恒 undefined，排序退化成 id 序会裁错行；修复后必须裁时间最旧者。
+    db.transaction(() => {
+      insert.run('op-a', 'SET_VIEW', '{}', '2026-08-30T00:00:10.000Z');
+      insert.run('op-b', 'SET_VIEW', '{}', '2026-08-30T00:00:09.000Z');
+      insert.run('op-c', 'SET_VIEW', '{}', '2026-08-30T00:00:08.000Z');
+      insert.run('keep-role', 'SET_SOURCE_ROLE', '{}', '2026-08-30T00:00:01.000Z');
+    })();
+
+    pruneOperationsInDb(db, 3);
+
+    const surviving = db.prepare('SELECT id FROM operations').all() as { id: string }[];
+    const ids = new Set(surviving.map((row) => row.id));
+    // 时间最旧的 op-c 被裁；id 字典序同样不占优的豁免行 keep-role 留存。
+    expect(ids.has('op-c')).toBe(false);
+    expect(ids.has('op-a')).toBe(true);
+    expect(ids.has('op-b')).toBe(true);
+    expect(ids.has('keep-role')).toBe(true);
+  });
+});

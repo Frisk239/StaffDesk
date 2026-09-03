@@ -47,11 +47,9 @@ function normalizeMemoryCandidateKey(payload: CandidatePayload): string {
 export function objectChatActions(state: State, action: Action): State | undefined {
   switch (action.type) {
     case 'SET_VIEW': {
+      // 审计五轮 E2：selectedClaimId 自赋值是无操作噪音，已删。
       if (action.view.kind === 'object') {
-        return openObject(
-          { ...state, selectedClaimId: state.selectedClaimId },
-          action.view.objectId,
-        );
+        return openObject(state, action.view.objectId);
       }
       return { ...state, view: action.view };
     }
