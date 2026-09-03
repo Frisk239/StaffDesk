@@ -136,9 +136,15 @@ test('简报可复制与导出 Markdown（引用转脚注），主键主张带�
       dialog.showSaveDialog = async () => ({ canceled: false, filePath });
     }, exportedPath);
     await win.getByRole('button', { name: '导出 .md' }).click();
-    // 导出链 = IPC + 保存对话框 stub + 文件写盘：慢盘 CI 上偶发超默认 5s（PR #31 两连挂、
-    // 同树 main 运行过）——放宽到 15s，属环境余量非掩盖失败（后续断言仍会抓真错）。
-    await expect(win.getByText(/简报已导出/)).toBeVisible({ timeout: 15_000 });
+    // 双出口断言（鬼魅四连查）：先等任一结局（成功或失败 toast——M36 起导出异常必弹
+    // 「导出失败：detail」），再把实际文本打进断言信息——下次闪挂能直接看到根因而非
+    // 干等的 element not found。两分支都不可见=IPC 悬挂（另案）。
+    await expect(win.getByText(/简报已导出|导出失败/)).toBeVisible({ timeout: 15_000 });
+    const outcome = await win
+      .getByText(/简报已导出|导出失败/)
+      .first()
+      .textContent();
+    expect(outcome, '导出结果 toast').toMatch(/简报已导出/);
     const exported = readFileSync(exportedPath, 'utf8');
     expect(exported).toContain('# 简报导出组织');
     expect(exported).toContain('（主键来源）[^1]');
