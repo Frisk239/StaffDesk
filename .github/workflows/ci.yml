@@ -93,6 +93,9 @@ jobs:
     if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/')
     runs-on: windows-latest
     timeout-minutes: 30
+    # G2：tag 推送时用 GITHUB_TOKEN 创建 Release（默认 token 无写权，须显式授予）。
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -145,10 +148,27 @@ jobs:
           Start-Sleep -Seconds 15
           $running = Get-Process -Name StaffDesk -ErrorAction SilentlyContinue
           if (-not $running) { throw "StaffDesk process is not running after launch" }
-          # F1（Spec 评审 M33）：「起得来」还要断言「大脑建得出来」——首启在 userData 创建 brain.db。
-          if (-not (Test-Path (Join-Path $env:APPDATA 'StaffDesk\brain.db'))) {
-            throw "installed app did not create brain.db under APPDATA"
+          # F1（Spec 评审 M33 + #31 合并首跑诊断）：「起得来」还要断言「大脑建得出来」。
+          # userData 真实落点是 %APPDATA%\staffdesk-app（Electron 取 package name，与
+          # productName 错位——产品侧改名会迁移用户数据，暂不动，双候选探测）。
+          $brainPaths = @(
+            (Join-Path $env:APPDATA 'staffdesk-app\brain.db'),
+            (Join-Path $env:APPDATA 'StaffDesk\brain.db')
+          )
+          if (-not ($brainPaths | Where-Object { Test-Path $_ })) {
+            throw "installed app did not create brain.db under APPDATA (probed: $($brainPaths -join ', '))"
           }
           Write-Host "Install + launch + brain.db verified; cleaning up"
           Stop-Process -Name StaffDesk -Force -ErrorAction SilentlyContinue
           Wait-Process -Name StaffDesk -Timeout 30 -ErrorAction SilentlyContinue
+      # G2（审计五轮）：安装包 7 天 artifact 会消失——tag 推送时把通过装机终验的安装包
+      # 发布成 GitHub Release，交付物持久可下载（README 挂 Releases 链接）。
+      - name: Publish release on tags
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${GITHUB_REF##*/}" app/dist/*.exe \
+            --title "StaffDesk ${GITHUB_REF##*/}" \
+            --generate-notes
