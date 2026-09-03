@@ -512,6 +512,8 @@ describe('批量整理补偿 0034', () => {
       { predicate: '后端主栈', text: '甲组织主栈是 Go', span: '甲组织主栈是 Go' },
       { predicate: '在招岗位', text: '甲组织在招后端', span: '甲组织在招后端' },
     ]);
+    brain.db.prepare('UPDATE claims SET created_at = ?').run('2026-08-01');
+    brain.dispatch({ type: 'SCAN_LINGER_UNVERIFIED', lingerDays: 7, now: '2026-09-05' });
     const proposal = brain
       .snapshot()
       .proposals.find((item) => item.pending && item.payload.kind === '丢弃未核');

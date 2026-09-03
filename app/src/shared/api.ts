@@ -57,4 +57,6 @@ export interface StaffdeskApi {
   copyBrief: (markdown: string) => Promise<void>;
   logsDir: () => Promise<string>;
   exportLogs: () => Promise<LogsExportResult | null>;
+  getLingerDays: () => Promise<number>;
+  setLingerDays: (days: number) => Promise<number>;
 }

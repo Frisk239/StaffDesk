@@ -241,6 +241,8 @@ export type SupersedeByPrimaryPayload = {
 export type DropUnverifiedPayload = {
   kind: '丢弃未核';
   claimIds: string[];
+  // 0064：卡挂靠对象，主张全删后仍能按对象刷新/撤卡。
+  objectId?: string | undefined;
   reason?: string | undefined;
 };
 // 0052：对象只由人确认建立——抽取发现的未建对象名走整理提议；fromObjectId 是抽取语境

@@ -9,6 +9,8 @@ import {
   proposeNewObjects,
   proposeRelations,
   proposeSupersedeByPrimary,
+  refreshPendingDropUnverified,
+  scanLingerUnverified,
   STALE_AFTER_DAYS,
 } from '../../src/main/loops/tidy';
 import type { Claim, DeskObject, Proposal, Source, State } from '@shared/types';
@@ -59,30 +61,229 @@ function stateWith(
   };
 }
 
-describe('整理提议 0037', () => {
-  it('有滞留未核时提议丢弃', () => {
-    const p = proposeDropUnverified(
-      stateWith([
-        {
-          id: 'c1',
-          objectId: 'o1',
-          predicate: '未编目',
-          text: '平台化',
-          status: '成立',
-          unverified: true,
-          sourceId: 's',
-          createdAt: '2026-08-29',
-        },
-      ]),
-      'o1',
-      9,
-    );
-    expect(p?.payload.kind).toBe('丢弃未核');
-    if (p?.payload.kind === '丢弃未核') expect(p.payload.claimIds).toEqual(['c1']);
+function unverifiedClaim(id: string, createdAt: string, extra: Partial<Claim> = {}): Claim {
+  return {
+    id,
+    objectId: 'o1',
+    predicate: '未编目',
+    text: `主张${id}`,
+    status: '成立',
+    unverified: true,
+    sourceId: 's',
+    createdAt,
+    ...extra,
+  };
+}
+
+describe('滞留未核丢弃提议 0064', () => {
+  const now = '2026-09-05';
+
+  it('新抽出的未核不提议丢弃', () => {
+    expect(
+      proposeDropUnverified(stateWith([unverifiedClaim('c1', now)]), 'o1', 9, 7, now),
+    ).toBeNull();
   });
 
-  it('没有未核不提议', () => {
-    expect(proposeDropUnverified(stateWith([]), 'o1', 1)).toBeNull();
+  it('入库满 N 天的成立未核才提议丢弃', () => {
+    const p = proposeDropUnverified(
+      stateWith([unverifiedClaim('c1', '2026-08-29')]),
+      'o1',
+      9,
+      7,
+      now,
+    );
+    expect(p?.payload.kind).toBe('丢弃未核');
+    if (p?.payload.kind === '丢弃未核') {
+      expect(p.payload.claimIds).toEqual(['c1']);
+      expect(p.payload.objectId).toBe('o1');
+    }
+    expect(p?.title).toBe('建议丢弃滞留未核 1 条');
+  });
+
+  it('恰好满 N 天算滞留；差一天不算', () => {
+    expect(
+      proposeDropUnverified(
+        stateWith([unverifiedClaim('c1', '2026-08-29')]),
+        'o1',
+        9,
+        7,
+        '2026-09-05',
+      )?.payload.kind,
+    ).toBe('丢弃未核');
+    expect(
+      proposeDropUnverified(
+        stateWith([unverifiedClaim('c1', '2026-08-30')]),
+        'o1',
+        9,
+        7,
+        '2026-09-05',
+      ),
+    ).toBeNull();
+  });
+
+  it('时钟用入库 createdAt，不用 validFrom；提问或抽新材料不清零', () => {
+    expect(
+      proposeDropUnverified(
+        stateWith([unverifiedClaim('c1', now, { validFrom: '2025-01-01' })]),
+        'o1',
+        9,
+        7,
+        now,
+      ),
+    ).toBeNull();
+  });
+
+  it('过时或已晋升的不滞留', () => {
+    expect(
+      proposeDropUnverified(
+        stateWith([
+          unverifiedClaim('c1', '2026-08-01', { status: '过时' }),
+          unverifiedClaim('c2', '2026-08-01', { unverified: false }),
+        ]),
+        'o1',
+        9,
+        7,
+        now,
+      ),
+    ).toBeNull();
+  });
+
+  it('没有滞留未核不提议', () => {
+    expect(proposeDropUnverified(stateWith([]), 'o1', 1, 7, now)).toBeNull();
+  });
+
+  it('N 小于 1 不出卡（禁止 0 天回流 P1）', () => {
+    expect(
+      proposeDropUnverified(stateWith([unverifiedClaim('c1', '2026-08-01')]), 'o1', 9, 0, now),
+    ).toBeNull();
+  });
+
+  it('pending 同集合不去重出第二张', () => {
+    const proposals: Proposal[] = [
+      {
+        id: 'prop-drop-o1-1',
+        type: '整理',
+        title: '旧',
+        detail: '',
+        payload: { kind: '丢弃未核', claimIds: ['c1'], objectId: 'o1' },
+        pending: true,
+      },
+    ];
+    expect(
+      proposeDropUnverified(
+        stateWith([unverifiedClaim('c1', '2026-08-01')], proposals),
+        'o1',
+        9,
+        7,
+        now,
+      ),
+    ).toBeNull();
+  });
+
+  it('驳回后滞留集合不变不再出卡；集合变了才出新卡', () => {
+    const rejected: Proposal[] = [
+      {
+        id: 'prop-drop-o1-1',
+        type: '整理',
+        title: '旧',
+        detail: '',
+        payload: { kind: '丢弃未核', claimIds: ['c1'], objectId: 'o1' },
+        pending: false,
+        decision: 'reject',
+      },
+    ];
+    expect(
+      proposeDropUnverified(
+        stateWith([unverifiedClaim('c1', '2026-08-01')], rejected),
+        'o1',
+        9,
+        7,
+        now,
+      ),
+    ).toBeNull();
+    const again = proposeDropUnverified(
+      stateWith(
+        [unverifiedClaim('c1', '2026-08-01'), unverifiedClaim('c2', '2026-08-01')],
+        rejected,
+      ),
+      'o1',
+      9,
+      7,
+      now,
+    );
+    expect(again?.payload.kind).toBe('丢弃未核');
+    if (again?.payload.kind === '丢弃未核') {
+      expect(again.payload.claimIds).toEqual(['c1', 'c2']);
+    }
+  });
+});
+
+describe('滞留未核卡刷新 0064', () => {
+  const now = '2026-09-05';
+
+  function dropCard(claimIds: string[]): Proposal {
+    return {
+      id: 'prop-drop-o1-1',
+      type: '整理',
+      title: `建议丢弃滞留未核 ${claimIds.length} 条`,
+      detail: '',
+      payload: { kind: '丢弃未核', claimIds, objectId: 'o1' },
+      pending: true,
+    };
+  }
+
+  it('晋升其中一条后挂起卡不再列出它', () => {
+    const next = refreshPendingDropUnverified(
+      stateWith(
+        [
+          unverifiedClaim('c1', '2026-08-01', { unverified: false }),
+          unverifiedClaim('c2', '2026-08-01'),
+        ],
+        [dropCard(['c1', 'c2'])],
+      ),
+      'o1',
+      7,
+      now,
+    );
+    const card = next.proposals.find((p) => p.id === 'prop-drop-o1-1');
+    expect(card?.pending).toBe(true);
+    expect(card?.payload).toEqual({ kind: '丢弃未核', claimIds: ['c2'], objectId: 'o1' });
+    expect(card?.title).toBe('建议丢弃滞留未核 1 条');
+  });
+
+  it('一个不剩则撤卡', () => {
+    const next = refreshPendingDropUnverified(
+      stateWith([unverifiedClaim('c1', '2026-08-01', { unverified: false })], [dropCard(['c1'])]),
+      'o1',
+      7,
+      now,
+    );
+    const card = next.proposals.find((p) => p.id === 'prop-drop-o1-1');
+    expect(card?.pending).toBe(false);
+    expect(card?.decision).toBeUndefined();
+    expect(card?.payload).toEqual({ kind: '丢弃未核', claimIds: [], objectId: 'o1' });
+  });
+});
+
+describe('滞留扫描 0064', () => {
+  const now = '2026-09-05';
+
+  it('只扫当前工作区对象；别的区有滞留也不出卡', () => {
+    const state = stateWith(
+      [
+        unverifiedClaim('c1', '2026-08-01'),
+        unverifiedClaim('c2', '2026-08-01', { objectId: 'o2' }),
+      ],
+      [],
+      [
+        objectOf({ id: 'o1', kind: '组织', name: '甲' }),
+        objectOf({ id: 'o2', kind: '组织', name: '乙', workspaceId: 'ws-other' }),
+      ],
+    );
+    const next = scanLingerUnverified(state, 7, now);
+    const drops = next.proposals.filter((p) => p.payload.kind === '丢弃未核' && p.pending);
+    expect(drops).toHaveLength(1);
+    expect(drops[0]?.payload).toEqual({ kind: '丢弃未核', claimIds: ['c1'], objectId: 'o1' });
   });
 });
 

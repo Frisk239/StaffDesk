@@ -7,6 +7,7 @@ import type { Action } from '../../src/shared/actions';
 import type { State } from '../../src/shared/types';
 import type { ModelCompletion } from '../../src/main/llm/runtime';
 import { openBrain, type Brain } from '../../src/main/brain';
+import { createMemoryLingerDaysStore } from '../../src/main/lingerDays';
 import { registerIpc, researchOptionsFor, unregisterIpc } from '../../src/main/ipc';
 import { initLogging, resetLogging } from '../../src/main/logging';
 
@@ -109,6 +110,19 @@ describe('主进程 IPC 契约', () => {
     expect(state.view).toBeTruthy();
     expect(state.tasks).toEqual([]);
     expect(state).toEqual(brain.snapshot());
+  });
+
+  it('settings:getLingerDays / setLingerDays 读写机器级滞留天数，0 拒绝 91 钳制', async () => {
+    const store = createMemoryLingerDaysStore();
+    const brain = openBrain(tmpBrainPath());
+    brains.push(brain);
+    registerIpc(brain, { assertTrustedSender: () => undefined }, undefined, store);
+    await expect(invoke<number>('settings:getLingerDays')).resolves.toBe(7);
+    await expect(invoke<number>('settings:setLingerDays', 0)).resolves.toBe(7);
+    await expect(invoke<number>('settings:setLingerDays', 1)).resolves.toBe(1);
+    await expect(invoke<number>('settings:setLingerDays', 90)).resolves.toBe(90);
+    await expect(invoke<number>('settings:setLingerDays', 91)).resolves.toBe(90);
+    await expect(invoke<number>('settings:getLingerDays')).resolves.toBe(90);
   });
 
   it('brain:dispatch 走 TOAST 往返，快照可见', async () => {

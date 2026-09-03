@@ -100,6 +100,8 @@ export function installStaffdeskStub(initial: State): StaffdeskStub {
     copyBrief: () => Promise.resolve(),
     logsDir: () => Promise.resolve(''),
     exportLogs: () => Promise.resolve(null),
+    getLingerDays: () => Promise.resolve(7),
+    setLingerDays: (days) => Promise.resolve(days),
   };
   window.staffdesk = api;
   return stub;

@@ -67,6 +67,13 @@ export type Action =
       newText?: string | undefined;
     }
   | { type: 'PROMOTE_CLAIM'; claimId: string }
+  // 0064：打开待确认扫描滞留未核；lingerDays / now 由调用方注入，reducer 不读设置文件。
+  | {
+      type: 'SCAN_LINGER_UNVERIFIED';
+      lingerDays: number;
+      now: string;
+      objectIds?: string[] | undefined;
+    }
   | { type: 'GENERATE_BRIEF_START'; objectId: string }
   | { type: 'GENERATE_BRIEF_DONE'; brief?: Brief | undefined; error?: string | undefined }
   | { type: 'CHAT_SEND'; objectId: string; text: string }

@@ -1,7 +1,8 @@
 import type { Action } from '@shared/actions';
 import type { ChatCard, ChatMessage, IngestJob, State } from '@shared/types';
 import { bindingRole, dropBindingRole, withBindingRole } from '@shared/primarySource';
-import { proposeSupersedeByPrimary } from '../loops/tidy';
+import { readLingerDays } from '../lingerDays';
+import { proposeSupersedeByPrimary, refreshPendingDropUnverified } from '../loops/tidy';
 import {
   ensureTab,
   maybeEnqueuePrimarySuggestions,
@@ -49,6 +50,20 @@ function appendSupersedeProposals(state: State, objectIds: string[]): State {
   const fresh = ids.flatMap((objectId) => proposeSupersedeByPrimary(state, objectId, state.seq));
   if (fresh.length === 0) return state;
   return { ...state, proposals: [...state.proposals, ...fresh] };
+}
+
+function refreshDropCards(
+  state: State,
+  objectId: string,
+  goneClaimIds?: ReadonlySet<string>,
+): State {
+  return refreshPendingDropUnverified(
+    state,
+    objectId,
+    readLingerDays(),
+    new Date().toISOString(),
+    goneClaimIds,
+  );
 }
 
 function ingestStatusText(job: IngestJob): string {
@@ -130,9 +145,11 @@ export function sourceActions(state: State, action: Action): State | undefined {
         pendingClaims: state.pendingClaims.filter(
           (claim) => !(claim.sourceId === action.sourceId && claim.objectId === action.objectId),
         ),
-        proposals: state.proposals.filter(
-          (proposal) => !proposalTouchesClaims(state, proposal.id, droppedIds),
-        ),
+        proposals: state.proposals.filter((proposal) => {
+          // 0064：丢弃未核卡按 live 滞留刷新，不解绑就整张撤掉。
+          if (proposal.payload.kind === '丢弃未核') return true;
+          return !proposalTouchesClaims(state, proposal.id, droppedIds);
+        }),
         writeQueue: state.writeQueue.filter(
           (write) =>
             !(write.claimId && droppedIds.has(write.claimId)) &&
@@ -159,24 +176,28 @@ export function sourceActions(state: State, action: Action): State | undefined {
         },
         seq: state.seq + 1,
       };
-      return pushCard(
-        next,
-        action.objectId,
-        {
-          kind: '结果',
-          claimIds: droppedClaims.map((claim) => claim.id),
-          result: '解绑',
-          undo: {
-            kind: '解绑',
-            sourceId: action.sourceId,
-            objectId: action.objectId,
-            claims: droppedClaims.map((claim) => ({ ...claim })),
-            role: previousRole,
+      return refreshDropCards(
+        pushCard(
+          next,
+          action.objectId,
+          {
+            kind: '结果',
+            claimIds: droppedClaims.map((claim) => claim.id),
+            result: '解绑',
+            undo: {
+              kind: '解绑',
+              sourceId: action.sourceId,
+              objectId: action.objectId,
+              claims: droppedClaims.map((claim) => ({ ...claim })),
+              role: previousRole,
+            },
           },
-        },
-        `已解绑「${sourceTitle}」：撤下该对象下 ${droppedClaims.length} 条主张${
-          remainingObjectIds.length === 0 ? '，来源回到 Inbox' : ''
-        }`,
+          `已解绑「${sourceTitle}」：撤下该对象下 ${droppedClaims.length} 条主张${
+            remainingObjectIds.length === 0 ? '，来源回到 Inbox' : ''
+          }`,
+        ),
+        action.objectId,
+        droppedIds,
       );
     }
 
@@ -259,9 +280,10 @@ export function sourceActions(state: State, action: Action): State | undefined {
             : claim,
         ),
         pendingClaims: state.pendingClaims.filter((claim) => claim.sourceId !== action.sourceId),
-        proposals: state.proposals.filter(
-          (proposal) => !proposalTouchesClaims(state, proposal.id, relatedIds),
-        ),
+        proposals: state.proposals.filter((proposal) => {
+          if (proposal.payload.kind === '丢弃未核') return true;
+          return !proposalTouchesClaims(state, proposal.id, relatedIds);
+        }),
         writeQueue: state.writeQueue.filter(
           (write) =>
             write.sourceId !== action.sourceId &&
@@ -285,6 +307,7 @@ export function sourceActions(state: State, action: Action): State | undefined {
           { kind: '结果', result: '删除来源' },
           `已删除来源「${source.title}」：该对象下 ${count} 条主张已关窗（来源删除），历史简报不改`,
         );
+        next = refreshDropCards(next, objectId, relatedIds);
       }
       return next;
     }

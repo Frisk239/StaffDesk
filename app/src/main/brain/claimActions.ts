@@ -1,7 +1,7 @@
 // M34 D2（纯搬运）：主张与抽取域——EXTRACT_DONE / CORRECT_CLAIM / PROMOTE_CLAIM 与抽取幂等、
 // 任务复核入队等域内 helper；账本规则注释随 case 原样保留。
 import type { Action } from '@shared/actions';
-import type { Claim, ExtractionOutcomeKind, Proposal, State } from '@shared/types';
+import type { Claim, ExtractionOutcomeKind, State } from '@shared/types';
 import {
   pendingTaskClaimReview,
   sourceResearchTaskId,
@@ -12,13 +12,15 @@ import {
 import { idempotencyKey } from '../loops/extract';
 import {
   proposeCatalogUncataloged,
-  proposeDropUnverified,
   proposeMarkStale,
   proposeMergeDuplicates,
   proposeNewObjects,
   proposeRelations,
   proposeSupersedeByPrimary,
+  refreshPendingDropUnverified,
+  scanLingerUnverified,
 } from '../loops/tidy';
+import { readLingerDays } from '../lingerDays';
 import { normalizeValue } from '@shared/scenario';
 import { enqueueWrite, nextId, pushCard } from './actionHelpers';
 
@@ -172,19 +174,20 @@ export function claimActions(state: State, action: Action): State | undefined {
           { kind: '结果', result: '抽取', claimIds: incoming.map((c) => c.id) },
           text,
         );
-        // CONTEXT「整理」：抽取落账后的提议面——丢弃滞留未核（0037）、合并重复（0053）、
+        // CONTEXT「整理」：抽取落账后的提议面——丢弃滞留未核（0037/0064）、合并重复（0053）、
         // 标过时复核、未编目编目、建新对象（0052）与补关系。全部人确认才改账本，
         // 各提议器自带 pending 去重；id 前缀互不相同，天然不撞。
+        // 0064：刚抽出的主张 age 0，进不了丢弃卡；同对象上已滞留的仍会生成或刷新。
+        next = scanLingerUnverified(next, readLingerDays(), new Date().toISOString(), [objectId]);
         const tidySeq = next.seq;
         const fresh = [
-          proposeDropUnverified(next, objectId, tidySeq),
           ...proposeMergeDuplicates(next, objectId, tidySeq),
           ...proposeMarkStale(next, objectId, tidySeq),
           ...proposeCatalogUncataloged(next, objectId, tidySeq),
           ...proposeNewObjects(next, objectId, tidySeq, action.unknownObjectNames),
           ...proposeRelations(next, objectId, tidySeq),
           ...src.boundObjectIds.flatMap((oid) => proposeSupersedeByPrimary(next, oid, tidySeq)),
-        ].filter((p): p is Proposal => p !== null);
+        ];
         if (fresh.length > 0) next = { ...next, proposals: [...next.proposals, ...fresh] };
       }
       return enqueueTaskClaimReviewForSource(next, action.sourceId);
@@ -222,16 +225,20 @@ export function claimActions(state: State, action: Action): State | undefined {
           claims,
           toast: { text: '未核主张已丢弃，未写禁写', id: seq + 1 },
         };
-        return pushCard(
-          next,
+        return refreshDropCards(
+          pushCard(
+            next,
+            old.objectId,
+            {
+              kind: '结果',
+              claimId: old.id,
+              result: '整理',
+              undo: { kind: '整理丢弃', claims: [{ ...old }] },
+            },
+            newId ? '未核旧句已丢弃，你的新句已记入（未写禁写）' : '已丢弃（未核主张，不写禁写）',
+          ),
           old.objectId,
-          {
-            kind: '结果',
-            claimId: old.id,
-            result: '整理',
-            undo: { kind: '整理丢弃', claims: [{ ...old }] },
-          },
-          newId ? '未核旧句已丢弃，你的新句已记入（未写禁写）' : '已丢弃（未核主张，不写禁写）',
+          new Set([old.id]),
         );
       }
       // 已晋升（出过站）：关窗 + 必填关闭原因 + 禁写（0006）。
@@ -288,16 +295,19 @@ export function claimActions(state: State, action: Action): State | undefined {
         toast: { text: '已纠正，禁写已生效', id: seq + 1 },
       };
       // 0034：补偿载荷=重开旧句 + 移除禁写 + 配套新句一并关窗（Q4 原子性）。
-      return pushCard(
-        next,
+      return refreshDropCards(
+        pushCard(
+          next,
+          old.objectId,
+          {
+            kind: '结果',
+            claimId: old.id,
+            result: '关窗',
+            undo: { kind: '关窗', claimId: old.id, memoryId: memId, companionId: newId },
+          },
+          `已关窗 · ${action.closeReason} · 禁写已生效`,
+        ),
         old.objectId,
-        {
-          kind: '结果',
-          claimId: old.id,
-          result: '关窗',
-          undo: { kind: '关窗', claimId: old.id, memoryId: memId, companionId: newId },
-        },
-        `已关窗 · ${action.closeReason} · 禁写已生效`,
       );
     }
 
@@ -312,20 +322,37 @@ export function claimActions(state: State, action: Action): State | undefined {
         toast: { text: '已晋升', id: state.seq },
         seq: state.seq + 1,
       };
-      return pushCard(
-        next,
+      return refreshDropCards(
+        pushCard(
+          next,
+          claim.objectId,
+          {
+            kind: '结果',
+            claimId: claim.id,
+            result: '晋升',
+            undo: { kind: '晋升', claimId: claim.id },
+          },
+          '已晋升，简报不再带未核',
+        ),
         claim.objectId,
-        {
-          kind: '结果',
-          claimId: claim.id,
-          result: '晋升',
-          undo: { kind: '晋升', claimId: claim.id },
-        },
-        '已晋升，简报不再带未核',
       );
     }
 
     default:
       return undefined;
   }
+}
+
+function refreshDropCards(
+  state: State,
+  objectId: string,
+  goneClaimIds?: ReadonlySet<string>,
+): State {
+  return refreshPendingDropUnverified(
+    state,
+    objectId,
+    readLingerDays(),
+    new Date().toISOString(),
+    goneClaimIds,
+  );
 }

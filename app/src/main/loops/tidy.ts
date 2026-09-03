@@ -1,6 +1,7 @@
 import type { Claim, Proposal, Source, State } from '@shared/types';
 import { deriveConflicts, normalizeValue } from '@shared/scenario';
 import { bindingRole } from '@shared/primarySource';
+import { DEFAULT_LINGER_DAYS, MIN_LINGER_DAYS } from '../lingerDays';
 
 /**
  * 复核提示阈值（天）：validFrom 距今天超过该天数才提议「标过时」。
@@ -8,29 +9,187 @@ import { bindingRole } from '@shared/primarySource';
  */
 export const STALE_AFTER_DAYS = 180;
 
-/** 抽取后若有滞留未核，提议丢弃（0037）。人确认才改账本。 */
+/**
+ * 0064：滞留是这条主张的属性——成立且未核，且入库（createdAt）满 N 天。
+ * 不用 validFrom；打开档案 / 提问 / 抽新材料都不清零。N<1 视为不出卡（0 会回流 P1）。
+ */
+export function lingeringUnverifiedClaims(
+  state: State,
+  objectId: string,
+  lingerDays: number,
+  now: string,
+): Claim[] {
+  if (!Number.isInteger(lingerDays) || lingerDays < MIN_LINGER_DAYS) return [];
+  return state.claims.filter(
+    (c) =>
+      c.objectId === objectId &&
+      c.status === '成立' &&
+      c.unverified &&
+      daysSinceCreated(c.createdAt, now) >= lingerDays,
+  );
+}
+
+/** 抽取后若有滞留未核，提议丢弃（0037/0064）。人确认才改账本。now + lingerDays 由调用方注入。 */
 export function proposeDropUnverified(
   state: State,
   objectId: string,
   seq: number,
+  lingerDays: number = DEFAULT_LINGER_DAYS,
+  now: string = new Date().toISOString(),
 ): Proposal | null {
-  const lingering = state.claims.filter(
-    (c) => c.objectId === objectId && c.unverified && c.status === '成立',
-  );
+  const lingering = lingeringUnverifiedClaims(state, objectId, lingerDays, now);
   if (lingering.length === 0) return null;
   const ids = lingering.map((c) => c.id);
-  const already = state.proposals.some(
-    (p) => p.pending && p.payload.kind === '丢弃未核' && sameIds(p.payload.claimIds, ids),
-  );
-  if (already) return null;
+  if (hasDropCardForIds(state, objectId, ids, { pending: true })) return null;
+  // 0064：驳回后滞留集合不变就不再出卡；集合变了（有人新满 N 天或有人离开）才出新卡。
+  if (hasDropCardForIds(state, objectId, ids, { pending: false, decision: 'reject' })) return null;
+  if (pendingDropCardsForObject(state, objectId).length > 0) return null;
+  return makeDropProposal(lingering, objectId, seq);
+}
+
+/**
+ * 0064：挂起的丢弃未核卡按 live 滞留集合刷新；一个不剩才撤（pending:false，不记决策）。
+ * goneClaimIds：解绑/删来源后主张已不在账本，仍靠旧 id 把卡认回该对象。
+ */
+export function refreshPendingDropUnverified(
+  state: State,
+  objectId: string,
+  lingerDays: number,
+  now: string,
+  goneClaimIds: ReadonlySet<string> = new Set(),
+): State {
+  const pending = pendingDropCardsForObject(state, objectId, goneClaimIds);
+  if (pending.length === 0) return state;
+  const lingering = lingeringUnverifiedClaims(state, objectId, lingerDays, now);
+  const liveIds = lingering.map((c) => c.id);
+  const head = pending[0]!;
+  const restIds = new Set(pending.slice(1).map((p) => p.id));
+  if (lingering.length === 0) {
+    return {
+      ...state,
+      proposals: state.proposals.map((p) =>
+        pending.some((card) => card.id === p.id) ? withdrawDropCard(p, objectId) : p,
+      ),
+    };
+  }
+  if (
+    pending.length === 1 &&
+    head.payload.kind === '丢弃未核' &&
+    sameIds(head.payload.claimIds, liveIds)
+  ) {
+    return state;
+  }
+  const fields = dropProposalFields(lingering, objectId);
   return {
-    id: `prop-drop-${seq}`,
+    ...state,
+    proposals: state.proposals.map((p) => {
+      if (p.id === head.id) return { ...p, ...fields, pending: true };
+      if (restIds.has(p.id)) return withdrawDropCard(p, objectId);
+      return p;
+    }),
+  };
+}
+
+/** 打开待确认 / 抽取钩子：先刷新挂起卡，再按 live 滞留集合生成（或缺席）。默认扫当前工作区。 */
+export function scanLingerUnverified(
+  state: State,
+  lingerDays: number,
+  now: string,
+  objectIds?: readonly string[],
+): State {
+  const ids =
+    objectIds ??
+    state.objects
+      .filter((o) => o.workspaceId === state.currentWorkspaceId && !o.archived)
+      .map((o) => o.id);
+  let next = state;
+  let seq = state.seq;
+  for (const objectId of ids) {
+    next = refreshPendingDropUnverified(next, objectId, lingerDays, now);
+    const proposed = proposeDropUnverified(next, objectId, seq, lingerDays, now);
+    if (!proposed) continue;
+    next = { ...next, proposals: [...next.proposals, proposed], seq: seq + 1 };
+    seq += 1;
+  }
+  return next;
+}
+
+function makeDropProposal(lingering: Claim[], objectId: string, seq: number): Proposal {
+  return {
+    id: `prop-drop-${objectId}-${seq}`,
     type: '整理',
+    pending: true,
+    ...dropProposalFields(lingering, objectId),
+  };
+}
+
+function dropProposalFields(lingering: Claim[], objectId: string) {
+  return {
     title: `建议丢弃滞留未核 ${lingering.length} 条`,
     detail: lingering.map((c) => `· ${c.text}`).join('\n'),
-    payload: { kind: '丢弃未核', claimIds: ids },
-    pending: true,
+    payload: {
+      kind: '丢弃未核' as const,
+      claimIds: lingering.map((c) => c.id),
+      objectId,
+    },
   };
+}
+
+function withdrawDropCard(proposal: Proposal, objectId: string): Proposal {
+  return {
+    ...proposal,
+    pending: false,
+    title: '建议丢弃滞留未核 0 条',
+    detail: '',
+    payload: { kind: '丢弃未核', claimIds: [], objectId },
+  };
+}
+
+function pendingDropCardsForObject(
+  state: State,
+  objectId: string,
+  goneClaimIds: ReadonlySet<string> = new Set(),
+): Proposal[] {
+  return state.proposals.filter(
+    (p) =>
+      p.pending &&
+      p.payload.kind === '丢弃未核' &&
+      dropCardBelongsTo(state, p, objectId, goneClaimIds),
+  );
+}
+
+function hasDropCardForIds(
+  state: State,
+  objectId: string,
+  ids: string[],
+  match: { pending: boolean; decision?: Proposal['decision'] },
+): boolean {
+  return state.proposals.some((p) => {
+    if (p.payload.kind !== '丢弃未核') return false;
+    if (p.pending !== match.pending) return false;
+    if (match.decision !== undefined && p.decision !== match.decision) return false;
+    if (!dropCardBelongsTo(state, p, objectId)) return false;
+    return sameIds(p.payload.claimIds, ids);
+  });
+}
+
+function dropCardBelongsTo(
+  state: State,
+  proposal: Proposal,
+  objectId: string,
+  goneClaimIds: ReadonlySet<string> = new Set(),
+): boolean {
+  if (proposal.payload.kind !== '丢弃未核') return false;
+  if (proposal.payload.objectId === objectId) return true;
+  return proposal.payload.claimIds.some((id) => {
+    if (goneClaimIds.has(id)) return true;
+    return state.claims.find((c) => c.id === id)?.objectId === objectId;
+  });
+}
+
+function daysSinceCreated(createdAt: string, now: string): number {
+  const age = dayIndex(now) - dayIndex(createdAt);
+  return Number.isFinite(age) ? age : Number.NaN;
 }
 
 /**

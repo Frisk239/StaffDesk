@@ -127,7 +127,7 @@ describe('整理三提议器决策', () => {
       .snapshot()
       .proposals.filter((p) => p.pending)
       .map((p) => p.payload.kind);
-    expect(kinds).toContain('丢弃未核');
+    expect(kinds).not.toContain('丢弃未核');
     expect(kinds).toContain('合并重复');
     expect(kinds).toContain('整理');
   });
@@ -318,9 +318,10 @@ describe('整理三提议器决策', () => {
       .snapshot()
       .proposals.filter((p) => p.pending)
       .map((p) => p.payload.kind);
-    for (const expected of ['合并重复', '标过时', '整理', '丢弃未核']) {
+    for (const expected of ['合并重复', '标过时', '整理']) {
       expect(kinds).toContain(expected);
     }
+    expect(kinds).not.toContain('丢弃未核');
     brain.dispatch({ type: 'ARCHIVE_OBJECT', id: objectId });
     brain.dispatch({ type: 'DELETE_OBJECT', id: objectId });
     expect(brain.snapshot().proposals.filter((p) => p.pending)).toHaveLength(0);

@@ -3278,6 +3278,13 @@ textarea {
   font-size: 14px;
   line-height: 22px;
 }
+.settings-block .field input[type='number'] {
+  width: 88px;
+  border: 1px solid var(--line-2);
+  border-radius: var(--radius);
+  padding: 6px 9px;
+  background: var(--bg);
+}
 .brain-file-card {
   padding: 14px;
   border: 1px solid var(--line-2);

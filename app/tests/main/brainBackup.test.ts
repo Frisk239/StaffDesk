@@ -66,6 +66,7 @@ describe('大脑备份与恢复', () => {
     expect(archive.buffer.subarray(0, 2).toString()).toBe('PK');
     expect(restored.manifest.excludes).toContain('apiKeys');
     expect(restored.manifest.excludes).toContain('modelSettings');
+    expect(restored.manifest.excludes).toContain('lingerDays');
     expect(restored.database.toString('utf8')).not.toContain('sk-should-not-leak');
     expect(restored.database.toString('utf8')).not.toContain('https://models.example.test/v1');
     expect(brain.snapshot().providers.find((provider) => provider.id === 'p-source')?.apiKey).toBe(

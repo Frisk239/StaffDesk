@@ -29,7 +29,14 @@ export interface BrainBackupManifest {
     sha256: string;
   };
   includes: [typeof BRAIN_BACKUP_DATABASE_ENTRY];
-  excludes: ['apiKeys', 'modelSettings', 'qualityQualification', 'runtimeCaches', 'buildArtifacts'];
+  excludes: [
+    'apiKeys',
+    'modelSettings',
+    'lingerDays',
+    'qualityQualification',
+    'runtimeCaches',
+    'buildArtifacts',
+  ];
 }
 
 export interface BrainBackupArchive {
@@ -309,6 +316,7 @@ function createBrainBackupManifest(database: Buffer, createdAt: string): BrainBa
     excludes: [
       'apiKeys',
       'modelSettings',
+      'lingerDays',
       'qualityQualification',
       'runtimeCaches',
       'buildArtifacts',
@@ -362,6 +370,7 @@ function parseBrainBackupManifest(data: Buffer): BrainBackupManifest {
     excludes: [
       'apiKeys',
       'modelSettings',
+      'lingerDays',
       'qualityQualification',
       'runtimeCaches',
       'buildArtifacts',

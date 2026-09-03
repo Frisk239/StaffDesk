@@ -1,5 +1,11 @@
 import type { Action } from '@shared/actions';
 import type { State } from '@shared/types';
+import { normalizeLingerDays, readLingerDays } from '../lingerDays';
+import {
+  lingeringUnverifiedClaims,
+  refreshPendingDropUnverified,
+  scanLingerUnverified,
+} from '../loops/tidy';
 import { enqueueWrite, nextId, openObject, pushCard, slotIsControlled } from './actionHelpers';
 
 // 提议域 reducer 分支：PROPOSAL_DECIDE 各类提议的接受/驳回，以及审计卡/纠正卡/提议卡打开与撤卡。
@@ -9,6 +15,7 @@ function proposalObjectId(state: State, proposalId: string): string | null {
   if (!p) return null;
   if (p.payload.kind === '候选记忆') return p.payload.fromObjectId ?? null;
   if (p.payload.kind === '丢弃未核') {
+    if (p.payload.objectId) return p.payload.objectId;
     const dropHead = p.payload.claimIds[0];
     return (
       state.claims.find((c) => c.id === dropHead)?.objectId ??
@@ -37,6 +44,14 @@ function proposalObjectId(state: State, proposalId: string): string | null {
 
 export function proposalActions(state: State, action: Action): State | undefined {
   switch (action.type) {
+    case 'SCAN_LINGER_UNVERIFIED':
+      return scanLingerUnverified(
+        state,
+        normalizeLingerDays(action.lingerDays),
+        action.now,
+        action.objectIds,
+      );
+
     case 'OPEN_AUDIT_CARD': {
       const claim = state.claims.find((c) => c.id === action.claimId);
       if (!claim) return state;
@@ -157,33 +172,44 @@ export function proposalActions(state: State, action: Action): State | undefined
           dup ? '候选记忆已在记忆里，未再写入' : `已写入${scope}记忆`,
         );
       }
-      // 0037：「丢弃未核」提议——未核积压的兜底出口，接受即删、可撤销恢复。
+      // 0037/0064：「丢弃未核」——接受按 live 滞留重算，只丢此刻仍滞留的；已晋升/关窗/删除的不动。
       if (prop.payload.kind === '丢弃未核') {
         if (!objectId) return state;
-        const dropIds = prop.payload.claimIds;
         if (action.decision === 'accept-drop') {
+          const liveIds = new Set(
+            lingeringUnverifiedClaims(
+              state,
+              objectId,
+              readLingerDays(),
+              new Date().toISOString(),
+            ).map((c) => c.id),
+          );
+          const dropIds = prop.payload.claimIds.filter((id) => liveIds.has(id));
           const dropped = state.claims.filter((c) => dropIds.includes(c.id));
+          const dropIdSet = new Set(dropIds);
           return pushCard(
             {
               ...state,
-              claims: state.claims.filter((c) => !dropIds.includes(c.id)),
+              claims: state.claims.filter((c) => !dropIdSet.has(c.id)),
               proposals: state.proposals.map((p) =>
                 p.id === prop.id ? { ...p, pending: false, decision: 'accept-drop' } : p,
               ),
-              toast: { text: `已丢弃 ${dropped.length} 条未核主张`, id: state.seq },
+              toast: { text: `已丢弃 ${dropped.length} 条滞留未核`, id: state.seq },
               seq: state.seq + 1,
             },
             objectId,
             {
               kind: '结果',
-              claimIds: prop.payload.claimIds,
+              claimIds: dropIds,
               result: '整理',
               undo:
                 dropped.length > 0
                   ? { kind: '整理丢弃', claims: dropped.map((claim) => ({ ...claim })) }
                   : undefined,
             },
-            `已丢弃 ${dropped.length} 条未核主张（派生冲突随之消失）`,
+            dropped.length > 0
+              ? `已丢弃 ${dropped.length} 条滞留未核：\n${dropped.map((c) => `· ${c.text}`).join('\n')}`
+              : '没有仍滞留的未核可丢弃',
           );
         }
         const decided = action.decision === 'accept-merge' ? 'accept-drop' : 'reject';
@@ -254,41 +280,47 @@ export function proposalActions(state: State, action: Action): State | undefined
           const today = new Date().toISOString().slice(0, 10);
           const target = state.claims.find((c) => c.id === oldClaimId);
           if (!target || target.status === '过时') {
-            return {
-              ...state,
-              proposals: state.proposals.map((p) =>
-                p.id === prop.id ? { ...p, pending: false, decision: 'accept-close' } : p,
-              ),
-            };
+            return refreshDropCards(
+              {
+                ...state,
+                proposals: state.proposals.map((p) =>
+                  p.id === prop.id ? { ...p, pending: false, decision: 'accept-close' } : p,
+                ),
+              },
+              objectId,
+            );
           }
-          return pushCard(
-            {
-              ...state,
-              claims: state.claims.map((c) =>
-                c.id === oldClaimId
-                  ? {
-                      ...c,
-                      status: '过时' as const,
-                      validTo: today,
-                      closeReason: '被主键新版取代' as const,
-                      supersededBy: payload.newClaimId,
-                    }
-                  : c,
-              ),
-              proposals: state.proposals.map((p) =>
-                p.id === prop.id ? { ...p, pending: false, decision: 'accept-close' } : p,
-              ),
-              toast: { text: '已关窗（被主键新版取代）', id: state.seq },
-              seq: state.seq + 1,
-            },
+          return refreshDropCards(
+            pushCard(
+              {
+                ...state,
+                claims: state.claims.map((c) =>
+                  c.id === oldClaimId
+                    ? {
+                        ...c,
+                        status: '过时' as const,
+                        validTo: today,
+                        closeReason: '被主键新版取代' as const,
+                        supersededBy: payload.newClaimId,
+                      }
+                    : c,
+                ),
+                proposals: state.proposals.map((p) =>
+                  p.id === prop.id ? { ...p, pending: false, decision: 'accept-close' } : p,
+                ),
+                toast: { text: '已关窗（被主键新版取代）', id: state.seq },
+                seq: state.seq + 1,
+              },
+              objectId,
+              {
+                kind: '结果',
+                claimId: oldClaimId,
+                result: '关窗',
+                undo: { kind: '关窗', claimId: oldClaimId },
+              },
+              '已确认旧版过时并关窗，关闭原因「被主键新版取代」',
+            ),
             objectId,
-            {
-              kind: '结果',
-              claimId: oldClaimId,
-              result: '关窗',
-              undo: { kind: '关窗', claimId: oldClaimId },
-            },
-            '已确认旧版过时并关窗，关闭原因「被主键新版取代」',
           );
         }
         return pushCard(
@@ -311,33 +343,36 @@ export function proposalActions(state: State, action: Action): State | undefined
         const staleClaimId = prop.payload.claimId;
         if (action.decision === 'accept-close') {
           const today = new Date().toISOString().slice(0, 10);
-          return pushCard(
-            {
-              ...state,
-              claims: state.claims.map((c) =>
-                c.id === staleClaimId
-                  ? {
-                      ...c,
-                      status: '过时' as const,
-                      validTo: today,
-                      closeReason: '世界已变' as const,
-                    }
-                  : c,
-              ),
-              proposals: state.proposals.map((p) =>
-                p.id === prop.id ? { ...p, pending: false, decision: 'accept-close' } : p,
-              ),
-              toast: { text: '已关窗（世界已变）', id: state.seq },
-              seq: state.seq + 1,
-            },
+          return refreshDropCards(
+            pushCard(
+              {
+                ...state,
+                claims: state.claims.map((c) =>
+                  c.id === staleClaimId
+                    ? {
+                        ...c,
+                        status: '过时' as const,
+                        validTo: today,
+                        closeReason: '世界已变' as const,
+                      }
+                    : c,
+                ),
+                proposals: state.proposals.map((p) =>
+                  p.id === prop.id ? { ...p, pending: false, decision: 'accept-close' } : p,
+                ),
+                toast: { text: '已关窗（世界已变）', id: state.seq },
+                seq: state.seq + 1,
+              },
+              objectId,
+              {
+                kind: '结果',
+                claimId: staleClaimId,
+                result: '关窗',
+                undo: { kind: '关窗', claimId: staleClaimId },
+              },
+              '已确认过时并关窗，有效期内仍是历史事实',
+            ),
             objectId,
-            {
-              kind: '结果',
-              claimId: staleClaimId,
-              result: '关窗',
-              undo: { kind: '关窗', claimId: staleClaimId },
-            },
-            '已确认过时并关窗，有效期内仍是历史事实',
           );
         }
         return pushCard(
@@ -564,4 +599,8 @@ export function proposalActions(state: State, action: Action): State | undefined
     default:
       return undefined;
   }
+}
+
+function refreshDropCards(state: State, objectId: string): State {
+  return refreshPendingDropUnverified(state, objectId, readLingerDays(), new Date().toISOString());
 }

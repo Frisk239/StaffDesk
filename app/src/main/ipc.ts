@@ -1,5 +1,6 @@
-import { clipboard, dialog, ipcMain, type IpcMainInvokeEvent } from 'electron';
+import { app, clipboard, dialog, ipcMain, type IpcMainInvokeEvent } from 'electron';
 import { writeFile } from 'node:fs/promises';
+import { join } from 'node:path';
 import type { BrainBackupExportResult, BrainRestoreResult, LogsExportResult } from '@shared/api';
 import type { Action } from '@shared/actions';
 import { attachTurn } from '@shared/turn';
@@ -28,6 +29,15 @@ import {
   QUALITY_SUITE_VERSION,
 } from './eval/fingerprint';
 import type { QualityQualificationRecord, State, TaskKind } from '@shared/types';
+import {
+  createJsonLingerDaysStore,
+  createMemoryLingerDaysStore,
+  readLingerDays,
+  resetLingerDaysStore,
+  setActiveLingerDaysStore,
+  writeLingerDays,
+  type LingerDaysStore,
+} from './lingerDays';
 
 type IpcSecurity = {
   assertTrustedSender: (event: IpcMainInvokeEvent) => void;
@@ -62,6 +72,8 @@ const HANDLED_CHANNELS = [
   { channel: 'task:stop', trusted: true },
   { channel: 'task:createRadar', trusted: true },
   { channel: 'task:runRadar', trusted: true },
+  { channel: 'settings:getLingerDays', trusted: true },
+  { channel: 'settings:setLingerDays', trusted: true },
 ] as const;
 
 type HandledChannel = (typeof HANDLED_CHANNELS)[number]['channel'];
@@ -95,7 +107,9 @@ export function registerIpc(
   brainHandle: BrainHandle,
   security: IpcSecurity,
   lifecycle?: BrainLifecycle,
+  lingerDaysStore?: LingerDaysStore,
 ): void {
+  setActiveLingerDaysStore(lingerDaysStore ?? defaultLingerDaysStore());
   const getBrain = typeof brainHandle === 'function' ? brainHandle : () => brainHandle;
   const assertTrustedSender = security.assertTrustedSender;
   const handleTrusted = <Args extends unknown[], Result>(
@@ -128,6 +142,10 @@ export function registerIpc(
     return next ?? getBrain().snapshot();
   };
 
+  handleTrusted('settings:getLingerDays', () => readLingerDays());
+  handleTrusted('settings:setLingerDays', (_event, days: unknown) =>
+    writeLingerDays(typeof days === 'number' ? days : Number.NaN),
+  );
   handleTrusted('brain:snapshot', () => getBrain().snapshot());
   handleTrusted('brain:dispatch', (_event, action: Action) => {
     const brain = getBrain();
@@ -614,5 +632,14 @@ function finishQualificationAttempt(
 export function unregisterIpc(): void {
   for (const { channel } of HANDLED_CHANNELS) {
     ipcMain.removeHandler(channel);
+  }
+  resetLingerDaysStore();
+}
+
+function defaultLingerDaysStore(): LingerDaysStore {
+  try {
+    return createJsonLingerDaysStore(join(app.getPath('userData'), 'linger-days.json'));
+  } catch {
+    return createMemoryLingerDaysStore();
   }
 }

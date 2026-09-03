@@ -150,6 +150,7 @@ export function SettingsModal({
                   ))}
                 </div>
               </div>
+              <LingerDaysField />
               <BrainFilePanel />
               <DeletedSourceRecoveryPanel />
             </div>
@@ -161,6 +162,54 @@ export function SettingsModal({
           {section === '诊断' && <DiagnosticsPanel />}
         </div>
       </div>
+    </div>
+  );
+}
+
+function LingerDaysField() {
+  const [days, setDays] = useState(7);
+  const [draft, setDraft] = useState('7');
+
+  useEffect(() => {
+    void window.staffdesk.getLingerDays().then((value) => {
+      setDays(value);
+      setDraft(String(value));
+    });
+  }, []);
+
+  const commit = (raw: string) => {
+    const parsed = Number(raw);
+    void window.staffdesk.setLingerDays(parsed).then((next) => {
+      setDays(next);
+      setDraft(String(next));
+    });
+  };
+
+  return (
+    <div className="settings-block">
+      <div className="settings-label">滞留未核</div>
+      <p className="dim">
+        成立且未核的主张，自入库起满多少天，整理可提议丢弃。默认 7 天，范围 1–90。
+      </p>
+      <label className="field">
+        滞留天数
+        <input
+          type="number"
+          min={1}
+          max={90}
+          step={1}
+          value={draft}
+          aria-label="滞留天数"
+          onChange={(e) => setDraft(e.target.value)}
+          onBlur={() => commit(draft)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') commit(draft);
+          }}
+        />
+      </label>
+      <p className="dim">
+        当前 {days} 天。改完后打开待确认会按新天数扫描刷新。跟这台机器走，不进大脑备份。
+      </p>
     </div>
   );
 }
@@ -206,7 +255,7 @@ function BrainFilePanel() {
         <div className="settings-label">大脑文件</div>
         <p className="dim">
           备份只包含对象、来源、主张、记忆、任务、简报与操作账本。不包含模型端点、API
-          Key、资格认证或构建产物。
+          Key、资格认证、滞留天数或构建产物。
         </p>
       </div>
       <div className="brain-file-rules">

@@ -46,6 +46,8 @@ const api: StaffdeskApi = {
     ipcRenderer.invoke('brief:copy', { markdown }) as ReturnType<StaffdeskApi['copyBrief']>,
   logsDir: () => ipcRenderer.invoke('logs:dir') as Promise<string>,
   exportLogs: () => ipcRenderer.invoke('logs:export') as ReturnType<StaffdeskApi['exportLogs']>,
+  getLingerDays: () => ipcRenderer.invoke('settings:getLingerDays') as Promise<number>,
+  setLingerDays: (days) => ipcRenderer.invoke('settings:setLingerDays', days) as Promise<number>,
   onStateChanged: (cb) => {
     const listener = (_event: unknown, state: State) => {
       cb(state);

@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useStore } from '../store';
 import type { MemoryScope, ObjectKind, Predicate, Proposal } from '@shared/types';
 
@@ -13,6 +13,20 @@ function decidedText(p: Proposal): string {
 
 export function PendingView() {
   const { state, dispatch } = useStore();
+  useEffect(() => {
+    let cancelled = false;
+    void window.staffdesk.getLingerDays().then((lingerDays) => {
+      if (cancelled) return;
+      dispatch({
+        type: 'SCAN_LINGER_UNVERIFIED',
+        lingerDays,
+        now: new Date().toISOString(),
+      });
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [dispatch]);
   // 编目卡上人选拖的槽：proposalId → 槽名（undefined = 未选，回落 payload 预选）。
   const [slotChoice, setSlotChoice] = useState<Record<string, Predicate>>({});
   // 建对象卡上人选的种类（0052）：undefined = 未选，select 默认展示「组织」。
@@ -36,6 +50,8 @@ export function PendingView() {
   };
   const tidies = state.proposals.filter((p) => {
     if (p.type !== '整理') return false;
+    // 0064：live 集合空了撤卡（pending:false 且无决策），不进已处理列表。
+    if (p.payload.kind === '丢弃未核' && !p.pending && p.decision === undefined) return false;
     if (p.payload.kind === '整理' || p.payload.kind === '标过时')
       return tidyInWs(p.payload.claimId);
     if (p.payload.kind === '主键新版过时') return tidyInWs(p.payload.oldClaimId);
@@ -140,6 +156,18 @@ export function PendingView() {
         <>
           <button className="btn primary sm" onClick={() => decide(p.id, 'accept-merge')}>
             确认 · 建立关系
+          </button>
+          <button className="btn outline sm danger-hover" onClick={() => decide(p.id, 'reject')}>
+            驳回
+          </button>
+        </>
+      );
+    }
+    if (p.payload.kind === '丢弃未核') {
+      return (
+        <>
+          <button className="btn primary sm" onClick={() => decide(p.id, 'accept-drop')}>
+            丢弃滞留未核 {p.payload.claimIds.length} 条
           </button>
           <button className="btn outline sm danger-hover" onClick={() => decide(p.id, 'reject')}>
             驳回
