@@ -1,6 +1,7 @@
 import type { Action } from '@shared/actions';
 import type { State } from '@shared/types';
-import { normalizeLingerDays, readLingerDays } from '../lingerDays';
+import { normalizeLingerDays } from '@shared/lingerDays';
+import { lingerClock } from './lingerClock';
 import {
   lingeringUnverifiedClaims,
   refreshPendingDropUnverified,
@@ -176,13 +177,11 @@ export function proposalActions(state: State, action: Action): State | undefined
       if (prop.payload.kind === '丢弃未核') {
         if (!objectId) return state;
         if (action.decision === 'accept-drop') {
+          const clock = lingerClock();
           const liveIds = new Set(
-            lingeringUnverifiedClaims(
-              state,
-              objectId,
-              readLingerDays(),
-              new Date().toISOString(),
-            ).map((c) => c.id),
+            lingeringUnverifiedClaims(state, objectId, clock.lingerDays, clock.now).map(
+              (c) => c.id,
+            ),
           );
           const dropIds = prop.payload.claimIds.filter((id) => liveIds.has(id));
           const dropped = state.claims.filter((c) => dropIds.includes(c.id));
@@ -602,5 +601,6 @@ export function proposalActions(state: State, action: Action): State | undefined
 }
 
 function refreshDropCards(state: State, objectId: string): State {
-  return refreshPendingDropUnverified(state, objectId, readLingerDays(), new Date().toISOString());
+  const clock = lingerClock();
+  return refreshPendingDropUnverified(state, objectId, clock.lingerDays, clock.now);
 }

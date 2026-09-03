@@ -20,7 +20,7 @@ import {
   refreshPendingDropUnverified,
   scanLingerUnverified,
 } from '../loops/tidy';
-import { readLingerDays } from '../lingerDays';
+import { lingerClock } from './lingerClock';
 import { normalizeValue } from '@shared/scenario';
 import { enqueueWrite, nextId, pushCard } from './actionHelpers';
 
@@ -178,7 +178,8 @@ export function claimActions(state: State, action: Action): State | undefined {
         // 标过时复核、未编目编目、建新对象（0052）与补关系。全部人确认才改账本，
         // 各提议器自带 pending 去重；id 前缀互不相同，天然不撞。
         // 0064：刚抽出的主张 age 0，进不了丢弃卡；同对象上已滞留的仍会生成或刷新。
-        next = scanLingerUnverified(next, readLingerDays(), new Date().toISOString(), [objectId]);
+        const clock = lingerClock();
+        next = scanLingerUnverified(next, clock.lingerDays, clock.now, [objectId]);
         const tidySeq = next.seq;
         const fresh = [
           ...proposeMergeDuplicates(next, objectId, tidySeq),
@@ -348,11 +349,6 @@ function refreshDropCards(
   objectId: string,
   goneClaimIds?: ReadonlySet<string>,
 ): State {
-  return refreshPendingDropUnverified(
-    state,
-    objectId,
-    readLingerDays(),
-    new Date().toISOString(),
-    goneClaimIds,
-  );
+  const clock = lingerClock();
+  return refreshPendingDropUnverified(state, objectId, clock.lingerDays, clock.now, goneClaimIds);
 }

@@ -17,6 +17,7 @@ import {
   Trash,
   X,
 } from '@phosphor-icons/react';
+import { DEFAULT_LINGER_DAYS, MAX_LINGER_DAYS, MIN_LINGER_DAYS } from '@shared/lingerDays';
 import { useStore } from '../store';
 import { briefSpecPredicates } from '@shared/scenario';
 import type {
@@ -167,8 +168,8 @@ export function SettingsModal({
 }
 
 function LingerDaysField() {
-  const [days, setDays] = useState(7);
-  const [draft, setDraft] = useState('7');
+  const [days, setDays] = useState(DEFAULT_LINGER_DAYS);
+  const [draft, setDraft] = useState(String(DEFAULT_LINGER_DAYS));
 
   useEffect(() => {
     void window.staffdesk.getLingerDays().then((value) => {
@@ -189,14 +190,15 @@ function LingerDaysField() {
     <div className="settings-block">
       <div className="settings-label">滞留未核</div>
       <p className="dim">
-        成立且未核的主张，自入库起满多少天，整理可提议丢弃。默认 7 天，范围 1–90。
+        成立且未核的主张，自入库起满多少天，整理可提议丢弃。默认 {DEFAULT_LINGER_DAYS} 天，范围{' '}
+        {MIN_LINGER_DAYS}–{MAX_LINGER_DAYS}。
       </p>
       <label className="field">
         滞留天数
         <input
           type="number"
-          min={1}
-          max={90}
+          min={MIN_LINGER_DAYS}
+          max={MAX_LINGER_DAYS}
           step={1}
           value={draft}
           aria-label="滞留天数"

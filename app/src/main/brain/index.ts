@@ -9,6 +9,7 @@ import type {
 } from '@shared/types';
 import type { Action } from '@shared/actions';
 import { applyAction } from './applyAction';
+import { bindLingerClock } from './lingerClock';
 import { openDatabase } from './migrate';
 import {
   appendOperation,
@@ -34,6 +35,7 @@ import {
 import { REQUIRED_TABLES } from './schema';
 import { pruneTaskAudits } from './taskAuditRetention';
 import { createMemorySecrets, type SecretStore } from '../keychain';
+import { readLingerDays } from '../lingerDays';
 import {
   createMemoryModelSettingsStore,
   modelSettingsFromState,
@@ -121,6 +123,8 @@ export class Brain {
   }
 
   dispatch(action: Action): State {
+    // 0064：N 与墙钟在 I/O 边界注入，账本 reducer 不读 linger-days.json。
+    bindLingerClock(readLingerDays(), new Date().toISOString());
     const prev = this.stateFromLedger(loadLedger(this.db));
     if (action.type === 'UPSERT_PROVIDER') {
       this.secrets.set(action.provider.id, action.provider.apiKey);

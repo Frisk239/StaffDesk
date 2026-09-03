@@ -1,11 +1,14 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
+import { DEFAULT_LINGER_DAYS, normalizeLingerDays } from '@shared/lingerDays';
 import { logWarn } from './logging';
 
-/** 0064：滞留天数跟机器走，默认 7；0 禁止（否则抽取当下就能清掉刚入库的未核）。 */
-export const DEFAULT_LINGER_DAYS = 7;
-export const MIN_LINGER_DAYS = 1;
-export const MAX_LINGER_DAYS = 90;
+export {
+  DEFAULT_LINGER_DAYS,
+  MAX_LINGER_DAYS,
+  MIN_LINGER_DAYS,
+  normalizeLingerDays,
+} from '@shared/lingerDays';
 
 export interface LingerDaysStore {
   load: () => number;
@@ -15,14 +18,6 @@ export interface LingerDaysStore {
 interface LingerDaysFile {
   version: 1;
   lingerDays: number;
-}
-
-export function normalizeLingerDays(value: unknown): number {
-  if (typeof value !== 'number' || !Number.isFinite(value)) return DEFAULT_LINGER_DAYS;
-  const n = Math.round(value);
-  if (n < MIN_LINGER_DAYS) return DEFAULT_LINGER_DAYS;
-  if (n > MAX_LINGER_DAYS) return MAX_LINGER_DAYS;
-  return n;
 }
 
 export function createJsonLingerDaysStore(filePath: string): LingerDaysStore {

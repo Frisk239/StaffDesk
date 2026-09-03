@@ -1,7 +1,7 @@
 import type { Claim, Proposal, Source, State } from '@shared/types';
 import { deriveConflicts, normalizeValue } from '@shared/scenario';
 import { bindingRole } from '@shared/primarySource';
-import { DEFAULT_LINGER_DAYS, MIN_LINGER_DAYS } from '../lingerDays';
+import { DEFAULT_LINGER_DAYS, MIN_LINGER_DAYS } from '@shared/lingerDays';
 
 /**
  * 复核提示阈值（天）：validFrom 距今天超过该天数才提议「标过时」。

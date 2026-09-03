@@ -1,7 +1,7 @@
 import type { Action } from '@shared/actions';
 import type { ChatCard, ChatMessage, IngestJob, State } from '@shared/types';
 import { bindingRole, dropBindingRole, withBindingRole } from '@shared/primarySource';
-import { readLingerDays } from '../lingerDays';
+import { lingerClock } from './lingerClock';
 import { proposeSupersedeByPrimary, refreshPendingDropUnverified } from '../loops/tidy';
 import {
   ensureTab,
@@ -57,13 +57,8 @@ function refreshDropCards(
   objectId: string,
   goneClaimIds?: ReadonlySet<string>,
 ): State {
-  return refreshPendingDropUnverified(
-    state,
-    objectId,
-    readLingerDays(),
-    new Date().toISOString(),
-    goneClaimIds,
-  );
+  const clock = lingerClock();
+  return refreshPendingDropUnverified(state, objectId, clock.lingerDays, clock.now, goneClaimIds);
 }
 
 function ingestStatusText(job: IngestJob): string {

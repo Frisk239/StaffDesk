@@ -125,6 +125,49 @@ describe('主进程 IPC 契约', () => {
     await expect(invoke<number>('settings:getLingerDays')).resolves.toBe(90);
   });
 
+  it('settings:setLingerDays 当下扫描：N 调大后挂起的丢弃卡撤掉', async () => {
+    const store = createMemoryLingerDaysStore(7);
+    const brain = openBrain(tmpBrainPath());
+    brains.push(brain);
+    brain.dispatch({ type: 'ADD_WORKSPACE', name: '区甲', scenario: '求职面试' });
+    brain.dispatch({ type: 'ADD_OBJECT', kind: '组织', name: '甲组织' });
+    const objectId = brain.snapshot().objects[0]!.id;
+    brain.dispatch({ type: 'ADD_SOURCE', title: '材料', body: '甲组织的材料。' });
+    const sourceId = brain.snapshot().sources.find((item) => !item.virtual)!.id;
+    brain.dispatch({ type: 'BIND_CONFIRMED', sourceId, objectIds: [objectId] });
+    brain.dispatch({
+      type: 'EXTRACT_DONE',
+      sourceId,
+      claims: [
+        {
+          id: 'cl-old',
+          objectId,
+          predicate: '使用技术',
+          text: '甲组织主栈是 Go。',
+          status: '成立',
+          unverified: true,
+          sourceId,
+          span: '甲组织主栈是 Go',
+          createdAt: '2026-08-01',
+        },
+      ],
+    });
+    brain.db.prepare('UPDATE claims SET created_at = ?').run('2026-08-01');
+    brain.dispatch({
+      type: 'SCAN_LINGER_UNVERIFIED',
+      lingerDays: 7,
+      now: '2026-09-05',
+    });
+    expect(brain.snapshot().proposals.some((p) => p.pending && p.payload.kind === '丢弃未核')).toBe(
+      true,
+    );
+    registerIpc(brain, { assertTrustedSender: () => undefined }, undefined, store);
+    await invoke<number>('settings:setLingerDays', 90);
+    expect(brain.snapshot().proposals.some((p) => p.pending && p.payload.kind === '丢弃未核')).toBe(
+      false,
+    );
+  });
+
   it('brain:dispatch 走 TOAST 往返，快照可见', async () => {
     setupBrain();
     const action: Action = { type: 'TOAST', text: '提示已入账' };

@@ -29,6 +29,7 @@ import {
   QUALITY_SUITE_VERSION,
 } from './eval/fingerprint';
 import type { QualityQualificationRecord, State, TaskKind } from '@shared/types';
+import { resetLingerClock } from './brain/lingerClock';
 import {
   createJsonLingerDaysStore,
   createMemoryLingerDaysStore,
@@ -143,9 +144,17 @@ export function registerIpc(
   };
 
   handleTrusted('settings:getLingerDays', () => readLingerDays());
-  handleTrusted('settings:setLingerDays', (_event, days: unknown) =>
-    writeLingerDays(typeof days === 'number' ? days : Number.NaN),
-  );
+  handleTrusted('settings:setLingerDays', (_event, days: unknown) => {
+    const next = writeLingerDays(typeof days === 'number' ? days : Number.NaN);
+    // 0064：改 N 同一套刷新——打开待确认才扫描不够，设置写入当下就扫当前工作区。
+    const scanned = getBrain().dispatch({
+      type: 'SCAN_LINGER_UNVERIFIED',
+      lingerDays: next,
+      now: new Date().toISOString(),
+    });
+    broadcast(scanned);
+    return next;
+  });
   handleTrusted('brain:snapshot', () => getBrain().snapshot());
   handleTrusted('brain:dispatch', (_event, action: Action) => {
     const brain = getBrain();
@@ -634,6 +643,7 @@ export function unregisterIpc(): void {
     ipcMain.removeHandler(channel);
   }
   resetLingerDaysStore();
+  resetLingerClock();
 }
 
 function defaultLingerDaysStore(): LingerDaysStore {
