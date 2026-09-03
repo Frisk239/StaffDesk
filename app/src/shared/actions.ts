@@ -68,7 +68,7 @@ export type Action =
     }
   | { type: 'PROMOTE_CLAIM'; claimId: string }
   | { type: 'GENERATE_BRIEF_START'; objectId: string }
-  | { type: 'GENERATE_BRIEF_DONE'; brief?: Brief | undefined }
+  | { type: 'GENERATE_BRIEF_DONE'; brief?: Brief | undefined; error?: string | undefined }
   | { type: 'CHAT_SEND'; objectId: string; text: string }
   | { type: 'CHAT_USER_ONLY'; objectId: string; text: string }
   | { type: 'CHAT_APPEND_DESK'; objectId: string; text: string; claimRefs?: string[] | undefined }

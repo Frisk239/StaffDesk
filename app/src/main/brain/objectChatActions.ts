@@ -1,5 +1,5 @@
 import type { Action } from '@shared/actions';
-import type { Brief, CandidatePayload, ChatMessage, State } from '@shared/types';
+import type { Brief, CandidatePayload, ChatMessage, State, TaskAudit } from '@shared/types';
 import { scriptReply } from '@shared/chat';
 import { attachTurn } from '@shared/turn';
 import { normalizeValue } from '@shared/scenario';
@@ -34,6 +34,62 @@ function modelSelection(
   };
 }
 
+/** 0018/0049：回放只读 task_audit。出简报至少落开始/组装/出站校验/完成，失败记阶段。 */
+function briefTaskAudits(args: {
+  taskId: string;
+  objectId: string;
+  ts: string;
+  outcome: '完成' | '失败';
+  brief?: Brief | undefined;
+  error?: string | undefined;
+}): TaskAudit[] {
+  const { taskId, objectId, ts } = args;
+  const start: TaskAudit = {
+    taskId,
+    seq: 1,
+    kind: '开始',
+    payload: { objectId, kind: '出简报' },
+    ts,
+  };
+  if (args.outcome === '失败') {
+    return [
+      start,
+      {
+        taskId,
+        seq: 2,
+        kind: '失败',
+        payload: { stage: '组装', detail: args.error ?? '简报生成失败' },
+        ts,
+      },
+    ];
+  }
+  const sentences = args.brief?.blocks.reduce((n, block) => n + block.sentences.length, 0) ?? 0;
+  return [
+    start,
+    {
+      taskId,
+      seq: 2,
+      kind: '组装',
+      payload: { blocks: args.brief?.blocks.length ?? 0 },
+      ts,
+    },
+    {
+      taskId,
+      seq: 3,
+      kind: '出站校验',
+      payload: { sentences },
+      ts,
+    },
+    {
+      taskId,
+      seq: 4,
+      kind: '完成',
+      payload: { briefId: args.brief?.id },
+      ts,
+    },
+  ];
+}
+
 function normalizeMemoryCandidateKey(payload: CandidatePayload): string {
   // 0053：文本归一化收口到 normalizeValue；全半角折叠只影响键值，不改变判重语义（行为超集安全）。
   return [
@@ -63,11 +119,51 @@ export function objectChatActions(state: State, action: Action): State | undefin
       const [taskId, seq1] = nextId(state, 'task');
       const [briefId, seq2] = nextId({ ...state, seq: seq1 }, 'brief');
       const createdAt = new Date().toISOString().replace('T', ' ').slice(0, 16);
+      const ts = new Date().toISOString();
+      if (action.error) {
+        const audits = briefTaskAudits({
+          taskId,
+          objectId,
+          ts,
+          outcome: '失败',
+          error: action.error,
+        });
+        return {
+          ...state,
+          seq: seq1,
+          tasks: [
+            ...state.tasks,
+            {
+              id: taskId,
+              objectId,
+              kind: '出简报',
+              status: '已停止',
+              stopReason: '失败',
+              createdAt,
+            },
+          ],
+          taskAudits: [...state.taskAudits, ...audits],
+          briefDraftingFor: null,
+          toast: { text: `简报生成失败：${action.error}`, id: seq1 },
+        };
+      }
       const assembled = action.brief ?? outboundBrief(state, objectId, briefId, taskId);
-      const brief: Brief = { ...verifyBrief(assembled, state.claims), createdAt };
+      const brief: Brief = {
+        ...verifyBrief(assembled, state.claims),
+        id: briefId,
+        taskId,
+        createdAt,
+      };
       const unverifiedClaims = state.claims.filter(
         (c) => c.objectId === objectId && c.unverified && c.status === '成立',
       );
+      const audits = briefTaskAudits({
+        taskId,
+        objectId,
+        ts,
+        outcome: '完成',
+        brief,
+      });
       let next: State = {
         ...state,
         seq: seq2,
@@ -75,6 +171,7 @@ export function objectChatActions(state: State, action: Action): State | undefin
           ...state.tasks,
           { id: taskId, objectId, kind: '出简报', status: '已完成', createdAt },
         ],
+        taskAudits: [...state.taskAudits, ...audits],
         briefs: [...state.briefs, brief],
         briefDraftingFor: null,
         view: { kind: 'object', objectId },

@@ -448,16 +448,25 @@ export function registerIpc(
     }
     const complete = activeModelCompletion(state);
     const [taskId, briefId] = [`task-${state.seq + 1}`, `brief-${state.seq + 2}`];
-    const brief = await generateBrief({
-      state,
-      objectId,
-      briefId,
-      taskId,
-      complete,
-    });
-    const next = brain.dispatch({ type: 'GENERATE_BRIEF_DONE', brief });
-    broadcast(next);
-    return next;
+    try {
+      const brief = await generateBrief({
+        state,
+        objectId,
+        briefId,
+        taskId,
+        complete,
+      });
+      const next = brain.dispatch({ type: 'GENERATE_BRIEF_DONE', brief });
+      broadcast(next);
+      return next;
+    } catch (error) {
+      const next = brain.dispatch({
+        type: 'GENERATE_BRIEF_DONE',
+        error: safeDetail(error, 120),
+      });
+      broadcast(next);
+      return next;
+    }
   });
 
   // 审计 F4：复制走主进程 clipboard——0047 权限全拒下 renderer 的
