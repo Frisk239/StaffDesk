@@ -2,11 +2,11 @@ import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { expect, test, _electron as electron } from '@playwright/test';
+import { dismissOnboarding } from './helpers';
 import { closeServer, installStubModel, serveStubModel } from './stub-model';
 
 const appDir = join(import.meta.dirname, '..');
 type ElectronApp = Awaited<ReturnType<typeof electron.launch>>;
-type Window = Awaited<ReturnType<ElectronApp['firstWindow']>>;
 
 type FeeCapState = {
   objects: Array<{ id: string; name: string }>;
@@ -20,16 +20,6 @@ type StaffdeskApiForFeeCap = {
   snapshot: () => Promise<FeeCapState>;
   startResearch: (objectId: string, gear?: string) => Promise<FeeCapState>;
 };
-
-async function skipWizardIfAny(win: Window): Promise<void> {
-  const skip = win.getByRole('button', { name: '跳过向导' });
-  try {
-    await skip.waitFor({ state: 'visible', timeout: 8_000 });
-    await skip.click();
-  } catch {
-    // Existing brains do not show onboarding.
-  }
-}
 
 async function quitApp(app: ElectronApp): Promise<void> {
   await app.evaluate(({ app: electronApp }) => electronApp.quit());
@@ -63,7 +53,7 @@ test('小预算深挖费用触顶：已打开照写、审计有费用行、任�
 
   try {
     const win = await app.firstWindow();
-    await skipWizardIfAny(win);
+    await dismissOnboarding(win);
     await installStubModel(win, stub.baseUrl);
 
     const after = await win.evaluate(async () => {

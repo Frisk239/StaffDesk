@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import Database from 'better-sqlite3';
 import { expect, test, _electron as electron } from '@playwright/test';
+import { dismissOnboarding } from './helpers';
 
 // 审计 F8：旧库遗留的 unparsed 占位可「重新获取」原文（预填从占位标题/正文里提 URL），
 // 「删除占位」入口常驻（Spec 评审：URL 已死的占位也必须能删，不与重导成败挂钩），走既有删除确认，不自动删。
@@ -11,7 +12,6 @@ import { expect, test, _electron as electron } from '@playwright/test';
 
 const appDir = join(import.meta.dirname, '..');
 type ElectronApp = Awaited<ReturnType<typeof electron.launch>>;
-type Window = Awaited<ReturnType<ElectronApp['firstWindow']>>;
 
 type InboxState = {
   inbox: string[];
@@ -22,16 +22,6 @@ type StaffdeskApiForInbox = {
   dispatch: (action: unknown) => Promise<InboxState>;
   snapshot: () => Promise<InboxState>;
 };
-
-async function skipWizardIfAny(win: Window): Promise<void> {
-  const skip = win.getByRole('button', { name: '跳过向导' });
-  try {
-    await skip.waitFor({ state: 'visible', timeout: 8_000 });
-    await skip.click();
-  } catch {
-    // Existing brains do not show onboarding.
-  }
-}
 
 async function quitApp(app: ElectronApp): Promise<void> {
   await app.evaluate(({ app: electronApp }) => electronApp.quit());
@@ -67,7 +57,7 @@ test('unparsed 旧占位：预填 URL 重新获取原文，成功后可删除占
   let app = await launch();
   try {
     const win = await app.firstWindow();
-    await skipWizardIfAny(win);
+    await dismissOnboarding(win);
     await win.evaluate(async (url) => {
       const api = (globalThis as unknown as { staffdesk: StaffdeskApiForInbox }).staffdesk;
       await api.dispatch({ type: 'ADD_WORKSPACE', name: '重导验收区', scenario: '求职面试' });
@@ -90,7 +80,7 @@ test('unparsed 旧占位：预填 URL 重新获取原文，成功后可删除占
   app = await launch();
   try {
     const win = await app.firstWindow();
-    await skipWizardIfAny(win);
+    await dismissOnboarding(win);
     await win.evaluate(async () => {
       const api = (globalThis as unknown as { staffdesk: StaffdeskApiForInbox }).staffdesk;
       await api.dispatch({ type: 'SET_VIEW', view: { kind: 'inbox' } });

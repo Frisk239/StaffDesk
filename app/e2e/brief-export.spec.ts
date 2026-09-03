@@ -2,13 +2,13 @@ import { existsSync, mkdtempSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { expect, test, _electron as electron } from '@playwright/test';
+import { dismissOnboarding } from './helpers';
 
 // 审计 F4 + 0062：简报出站出口（复制 Markdown / 导出 .md，引用转脚注）与主键标注。
 // 无模型：brief:generate 走账本组装器；隔离 brain，不触外网。
 
 const appDir = join(import.meta.dirname, '..');
 type ElectronApp = Awaited<ReturnType<typeof electron.launch>>;
-type Window = Awaited<ReturnType<ElectronApp['firstWindow']>>;
 
 type BriefExportState = {
   objects: Array<{ id: string; name: string }>;
@@ -19,16 +19,6 @@ type StaffdeskApiForBrief = {
   dispatch: (action: unknown) => Promise<BriefExportState>;
   generateBrief: (objectId: string) => Promise<BriefExportState>;
 };
-
-async function skipWizardIfAny(win: Window): Promise<void> {
-  const skip = win.getByRole('button', { name: '跳过向导' });
-  try {
-    await skip.waitFor({ state: 'visible', timeout: 8_000 });
-    await skip.click();
-  } catch {
-    // Existing brains do not show onboarding.
-  }
-}
 
 async function quitApp(app: ElectronApp): Promise<void> {
   await app.evaluate(({ app: electronApp }) => electronApp.quit());
@@ -50,7 +40,7 @@ test('简报可复制与导出 Markdown（引用转脚注），主键主张带�
 
   try {
     const win = await app.firstWindow();
-    await skipWizardIfAny(win);
+    await dismissOnboarding(win);
 
     await win.evaluate(async () => {
       const api = (globalThis as unknown as { staffdesk: StaffdeskApiForBrief }).staffdesk;
@@ -132,7 +122,17 @@ test('简报可复制与导出 Markdown（引用转脚注），主键主张带�
     // 复制 Markdown：捕获的内容是脚注化的简报。
     // force：历史 chip 在窄右栏几何下仍可能盖住按钮（PR #38 pull_request e2e）。
     await win.getByRole('button', { name: '复制 Markdown' }).click({ force: true });
-    await expect(win.getByRole('button', { name: '已复制' })).toBeVisible();
+    // 剪贴板是复制契约；「已复制」会被晚到的简报重渲染冲掉（main 68842d4 e2e）。
+    await expect
+      .poll(
+        () =>
+          app.evaluate(
+            () =>
+              (globalThis as { __briefClipboard?: { text: string } }).__briefClipboard?.text ?? '',
+          ),
+        { timeout: 15_000 },
+      )
+      .toContain('# 简报导出组织');
     const clipboardText = await app.evaluate(
       () => (globalThis as { __briefClipboard?: { text: string } }).__briefClipboard?.text ?? '',
     );

@@ -2,10 +2,10 @@ import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { expect, test, _electron as electron } from '@playwright/test';
+import { dismissOnboarding } from './helpers';
 
 const appDir = join(import.meta.dirname, '..');
 type ElectronApp = Awaited<ReturnType<typeof electron.launch>>;
-type Window = Awaited<ReturnType<ElectronApp['firstWindow']>>;
 
 type StaffdeskApiForSeed = {
   snapshot: () => Promise<{
@@ -14,16 +14,6 @@ type StaffdeskApiForSeed = {
   }>;
   dispatch: (action: unknown) => Promise<unknown>;
 };
-
-async function skipWizardIfAny(win: Window): Promise<void> {
-  const skip = win.getByRole('button', { name: '跳过向导' });
-  try {
-    await skip.waitFor({ state: 'visible', timeout: 8_000 });
-    await skip.click();
-  } catch {
-    // Existing brains do not show onboarding.
-  }
-}
 
 async function quitApp(app: ElectronApp): Promise<void> {
   await app.evaluate(({ app: electronApp }) => electronApp.quit());
@@ -43,7 +33,7 @@ test('设置页谓词表：非保护槽可编辑改名、删除须先确认影�
 
   try {
     const win = await app.firstWindow();
-    await skipWizardIfAny(win);
+    await dismissOnboarding(win);
 
     // 造一条「教育背景」（人 · 非保护槽）下的成立主张，给删除确认对话框一个真实影响数。
     await win.evaluate(async () => {

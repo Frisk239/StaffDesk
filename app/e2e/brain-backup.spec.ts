@@ -2,10 +2,10 @@ import { existsSync, mkdtempSync, readdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { expect, test, _electron as electron } from '@playwright/test';
+import { dismissOnboarding } from './helpers';
 
 const appDir = join(import.meta.dirname, '..');
 type ElectronApp = Awaited<ReturnType<typeof electron.launch>>;
-type Window = Awaited<ReturnType<ElectronApp['firstWindow']>>;
 
 type StaffdeskApiForSeed = {
   snapshot: () => Promise<{
@@ -14,16 +14,6 @@ type StaffdeskApiForSeed = {
   }>;
   dispatch: (action: unknown) => Promise<unknown>;
 };
-
-async function skipWizardIfAny(win: Window): Promise<void> {
-  const skip = win.getByRole('button', { name: '跳过向导' });
-  try {
-    await skip.waitFor({ state: 'visible', timeout: 8_000 });
-    await skip.click();
-  } catch {
-    // Existing brains do not show onboarding.
-  }
-}
 
 async function quitApp(app: ElectronApp): Promise<void> {
   await app.evaluate(({ app: electronApp }) => electronApp.quit());
@@ -48,7 +38,7 @@ test('设置页可以导出并恢复大脑备份，模型配置不被备份覆�
       dialog.showSaveDialog = async () => ({ canceled: false, filePath });
     }, backupZip);
     const win = await app.firstWindow();
-    await skipWizardIfAny(win);
+    await dismissOnboarding(win);
     await win.evaluate(async () => {
       const api = (globalThis as unknown as { staffdesk: StaffdeskApiForSeed }).staffdesk;
       await api.dispatch({ type: 'ADD_WORKSPACE', name: '备份验收区', scenario: '求职面试' });

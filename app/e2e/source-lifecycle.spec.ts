@@ -2,11 +2,11 @@ import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { expect, test, _electron as electron } from '@playwright/test';
+import { dismissOnboarding } from './helpers';
 import { closeServer, installStubModel, serveStubModel } from './stub-model';
 
 const appDir = join(import.meta.dirname, '..');
 type ElectronApp = Awaited<ReturnType<typeof electron.launch>>;
-type Window = Awaited<ReturnType<ElectronApp['firstWindow']>>;
 
 type StaffdeskApiForSeed = {
   snapshot: () => Promise<{
@@ -24,16 +24,6 @@ type StaffdeskApiForSeed = {
     sources: Array<{ id: string; title: string }>;
   }>;
 };
-
-async function skipWizardIfAny(win: Window): Promise<void> {
-  const skip = win.getByRole('button', { name: '跳过向导' });
-  try {
-    await skip.waitFor({ state: 'visible', timeout: 8_000 });
-    await skip.click();
-  } catch {
-    // Existing brains do not show onboarding.
-  }
-}
 
 async function quitApp(app: ElectronApp): Promise<void> {
   await app.evaluate(({ app: electronApp }) => electronApp.quit());
@@ -57,7 +47,7 @@ test('删除来源需要确认并说明绑定和主张影响', async () => {
 
   try {
     const win = await app.firstWindow();
-    await skipWizardIfAny(win);
+    await dismissOnboarding(win);
     await installStubModel(win, stub.baseUrl);
     const seeded = await win.evaluate(async () => {
       const api = (globalThis as unknown as { staffdesk: StaffdeskApiForSeed }).staffdesk;

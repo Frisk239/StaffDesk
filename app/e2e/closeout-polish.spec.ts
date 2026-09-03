@@ -2,6 +2,7 @@ import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { expect, test, _electron as electron } from '@playwright/test';
+import { dismissOnboarding } from './helpers';
 import { closeServer, installStubModel, serveStubModel } from './stub-model';
 
 // M27 收口体验验收：任务列表打磨（筛选 / 进行中置顶 / 雷达下次 / 失败重跑入口）、
@@ -19,16 +20,6 @@ type CloseoutState = {
 type StaffdeskApiForCloseout = {
   dispatch: (action: unknown) => Promise<CloseoutState>;
 };
-
-async function skipWizardIfAny(win: Window): Promise<void> {
-  const skip = win.getByRole('button', { name: '跳过向导' });
-  try {
-    await skip.waitFor({ state: 'visible', timeout: 8_000 });
-    await skip.click();
-  } catch {
-    // Existing brains do not show onboarding.
-  }
-}
 
 async function quitApp(app: ElectronApp): Promise<void> {
   await app.evaluate(({ app: electronApp }) => electronApp.quit());
@@ -49,7 +40,7 @@ async function launchApp(
     },
   });
   const win = await app.firstWindow();
-  if (options.skipWizard !== false) await skipWizardIfAny(win);
+  if (options.skipWizard !== false) await dismissOnboarding(win);
   return { app, win };
 }
 

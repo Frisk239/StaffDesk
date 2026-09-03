@@ -2,6 +2,7 @@ import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { expect, test, _electron as electron } from '@playwright/test';
+import { dismissOnboarding } from './helpers';
 import { closeServer, installStubModel, serveStubModel } from './stub-model';
 
 // D3（M34）：chat 失败兜底 e2e——单测只盖了 catch 分支的形状，这里在真实 Electron 窗口走
@@ -12,18 +13,6 @@ import { closeServer, installStubModel, serveStubModel } from './stub-model';
 // + STAFFDESK_BRAIN 临时目录，模型端点只指本地桩（关停后是拒绝连接，零外网）。
 
 const appDir = join(import.meta.dirname, '..');
-type ElectronApp = Awaited<ReturnType<typeof electron.launch>>;
-type Window = Awaited<ReturnType<ElectronApp['firstWindow']>>;
-
-async function skipWizardIfAny(win: Window): Promise<void> {
-  const skip = win.getByRole('button', { name: '跳过向导' });
-  try {
-    await skip.waitFor({ state: 'visible', timeout: 8_000 });
-    await skip.click();
-  } catch {
-    // 非首启库不弹向导
-  }
-}
 
 test('chat 端点连接失败：用户消息不丢、TOAST 如实告知、busy 解除后可再发', async () => {
   const stub = await serveStubModel([]);
@@ -36,7 +25,7 @@ test('chat 端点连接失败：用户消息不丢、TOAST 如实告知、busy �
 
   try {
     const win = await app.firstWindow();
-    await skipWizardIfAny(win);
+    await dismissOnboarding(win);
     await installStubModel(win, stub.baseUrl);
     // 端点配置完成即关停：后续 chat/completions 一律连接被拒（重试 3 次后失败）。
     await closeServer(stub.server);

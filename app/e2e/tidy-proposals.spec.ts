@@ -2,10 +2,10 @@ import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { expect, test, _electron as electron } from '@playwright/test';
+import { dismissOnboarding } from './helpers';
 
 const appDir = join(import.meta.dirname, '..');
 
-type Window = Awaited<ReturnType<Awaited<ReturnType<typeof electron.launch>>['firstWindow']>>;
 type TidyState = {
   objects: Array<{ id: string; name: string; kind?: string }>;
   sources: Array<{ id: string; title: string; virtual?: boolean }>;
@@ -15,17 +15,6 @@ type StaffdeskTidyApi = {
   dispatch: (action: unknown) => Promise<TidyState>;
   snapshot: () => Promise<TidyState>;
 };
-
-/** 首启向导（0041）盖在主界面上：全新库必弹，出现就跳过。 */
-async function skipWizardIfAny(win: Window) {
-  const skip = win.getByRole('button', { name: '跳过向导' });
-  try {
-    await skip.waitFor({ state: 'visible', timeout: 8_000 });
-    await skip.click();
-  } catch {
-    // 非首启库不弹向导
-  }
-}
 
 /** 0038 托盘语义下 close() 只是收进托盘，进程不退；测试必须走 app.quit()。 */
 async function quitApp(app: Awaited<ReturnType<typeof electron.launch>>) {
@@ -46,7 +35,7 @@ test('整理提议卡出现且合并与编目交互全链落地', async () => {
     },
   });
   const win = await app.firstWindow();
-  await skipWizardIfAny(win);
+  await dismissOnboarding(win);
 
   await win.evaluate(async () => {
     const api = (globalThis as unknown as { staffdesk: StaffdeskTidyApi }).staffdesk;
@@ -157,7 +146,7 @@ test('建对象提议：抽取发现的新主体选种类确认后进入对象�
     },
   });
   const win = await app.firstWindow();
-  await skipWizardIfAny(win);
+  await dismissOnboarding(win);
 
   // 零主张 + 未知名：走 EXTRACT_DONE 早退分支，也必须产建对象提议（0052）。
   await win.evaluate(async () => {

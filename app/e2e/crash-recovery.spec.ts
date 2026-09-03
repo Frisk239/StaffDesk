@@ -2,6 +2,7 @@ import { existsSync, mkdtempSync, readdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { expect, test, _electron as electron } from '@playwright/test';
+import { dismissOnboarding } from './helpers';
 
 // F2（审计 2026-09-02）：中断一致性与损坏库恢复引导。
 // WAL + 每 dispatch 单事务是既有纪律；这里补的是「强杀主进程 → 同一 brain 重开一致」
@@ -9,7 +10,6 @@ import { expect, test, _electron as electron } from '@playwright/test';
 
 const appDir = join(import.meta.dirname, '..');
 type ElectronApp = Awaited<ReturnType<typeof electron.launch>>;
-type Window = Awaited<ReturnType<ElectronApp['firstWindow']>>;
 
 type CrashState = {
   objects: Array<{ id: string; name: string }>;
@@ -23,16 +23,6 @@ type StaffdeskApiForCrash = {
   dispatch: (action: unknown) => Promise<CrashState>;
   snapshot: () => Promise<CrashState>;
 };
-
-async function skipWizardIfAny(win: Window): Promise<void> {
-  const skip = win.getByRole('button', { name: '跳过向导' });
-  try {
-    await skip.waitFor({ state: 'visible', timeout: 8_000 });
-    await skip.click();
-  } catch {
-    // 非首启库不弹向导
-  }
-}
 
 async function quitApp(app: ElectronApp): Promise<void> {
   await app.evaluate(({ app: electronApp }) => electronApp.quit());
@@ -54,7 +44,7 @@ test('强杀主进程后重开，账本一致无半写', async () => {
 
   const first = await launch(brainFile, join(dir, 'userData'));
   const win = await first.firstWindow();
-  await skipWizardIfAny(win);
+  await dismissOnboarding(win);
   const before = await win.evaluate(async () => {
     const api = (globalThis as unknown as { staffdesk: StaffdeskApiForCrash }).staffdesk;
     await api.dispatch({ type: 'ADD_WORKSPACE', name: '强杀验收区', scenario: '求职面试' });
@@ -119,7 +109,7 @@ test('强杀主进程后重开，账本一致无半写', async () => {
 
   const second = await launch(brainFile, join(dir, 'userData'));
   const win2 = await second.firstWindow();
-  await skipWizardIfAny(win2);
+  await dismissOnboarding(win2);
   const after = await win2.evaluate(async () => {
     const api = (globalThis as unknown as { staffdesk: StaffdeskApiForCrash }).staffdesk;
     return api.snapshot();
@@ -168,7 +158,7 @@ test('损坏的大脑文件被旁置，重启后在原位新建空大脑', async
   // 同一 STAFFDESK_BRAIN 重启：原位新建空大脑，正常出窗口。
   const second = await launch(brainFile, join(dir, 'userData'));
   const win2 = await second.firstWindow();
-  await skipWizardIfAny(win2);
+  await dismissOnboarding(win2);
   const fresh = await win2.evaluate(async () => {
     const api = (globalThis as unknown as { staffdesk: StaffdeskApiForCrash }).staffdesk;
     return api.snapshot();
