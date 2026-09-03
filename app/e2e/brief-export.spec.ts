@@ -102,10 +102,11 @@ test('简报可复制与导出 Markdown（引用转脚注），主键主张带�
     });
 
     // 0062：主键绑定来源的主张句在简报里带「主键来源」标注。
-    await expect(win.getByText('主键来源').first()).toBeVisible();
+    await expect(win.getByText('主键来源').first()).toBeVisible({ timeout: 15_000 });
     // 打开简报标签会异步再生成一份简报（新历史 chip 落位、布局随之位移）——慢速 CI 上
-    // 直接点按钮会追着移动的布局拦截 30s（PR #29 CI）。等最新 chip 落稳再点。
-    await expect(win.locator('.brief-history .chip.on')).toBeVisible();
+    // 直接点按钮会追着移动的布局拦截 30s（PR #29 CI）；再生成本身偶发超默认 5s（PR #32
+    // 合并首跑目击）。两处都放宽到 15s：环境余量，非掩盖失败（后续断言仍抓真错）。
+    await expect(win.locator('.brief-history .chip.on')).toBeVisible({ timeout: 15_000 });
 
     // 剪贴板是全局系统资源：CI 会话的剪贴板锁被占时 writeText/readText 会阻塞主进程
     // （PR #28 首次 CI 挂：60s 测试超时 + 60s teardown 超时的双卡死）。测试里 stub 成

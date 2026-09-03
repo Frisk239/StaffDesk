@@ -45,9 +45,16 @@ export function BriefView({ objectId }: { objectId: string }) {
   };
 
   const exportMarkdown = async () => {
-    const result = await window.staffdesk.exportBrief(markdown(), obj.name);
-    if (result) {
-      dispatch({ type: 'TOAST', text: `简报已导出：${result.filePath}` });
+    try {
+      const result = await window.staffdesk.exportBrief(markdown(), obj.name);
+      // 用户取消保存对话框返回 null——那是用户主动行为，不弹提示。
+      if (result) {
+        dispatch({ type: 'TOAST', text: `简报已导出：${result.filePath}` });
+      }
+    } catch (error) {
+      // 审计五轮（M35 期间两度目击静默失败）：导出异常必须给用户反馈，不许吞。
+      const detail = error instanceof Error ? error.message : String(error);
+      dispatch({ type: 'TOAST', text: `导出失败：${detail}` });
     }
   };
 
