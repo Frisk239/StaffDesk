@@ -2,6 +2,7 @@ import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { expect, test, _electron as electron } from '@playwright/test';
+import { dismissOnboarding } from './helpers';
 
 const appDir = join(import.meta.dirname, '..');
 type ElectronApp = Awaited<ReturnType<typeof electron.launch>>;
@@ -15,16 +16,6 @@ type StaffdeskApi = {
   dispatch: (action: unknown) => Promise<RelationsState>;
   snapshot: () => Promise<RelationsState>;
 };
-
-async function skipWizardIfAny(win: Window): Promise<void> {
-  const skip = win.getByRole('button', { name: '跳过向导' });
-  try {
-    await skip.waitFor({ state: 'visible', timeout: 8_000 });
-    await skip.click();
-  } catch {
-    // Existing brains do not show onboarding.
-  }
-}
 
 // 0038 托盘语义下 close() 只是收进托盘；测试必须走 app.evaluate quit。
 async function quitApp(app: ElectronApp): Promise<void> {
@@ -43,7 +34,7 @@ async function launchApp(label: string): Promise<{ app: ElectronApp; win: Window
     },
   });
   const win = await app.firstWindow();
-  await skipWizardIfAny(win);
+  await dismissOnboarding(win);
   return { app, win };
 }
 

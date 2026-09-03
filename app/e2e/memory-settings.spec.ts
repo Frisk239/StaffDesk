@@ -2,13 +2,12 @@ import { mkdtempSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { expect, test, _electron as electron } from '@playwright/test';
+import { dismissOnboarding } from './helpers';
 
 // F7/F3（审计 2026-09-02）：设置「记忆」节分区浏览与删除（REMOVE_MEMORY 文案按种类出），
 // 「诊断」节展示日志目录并导出合并诊断日志（内容写入口已掩码）。无模型，不触外网。
 
 const appDir = join(import.meta.dirname, '..');
-type ElectronApp = Awaited<ReturnType<typeof electron.launch>>;
-type Window = Awaited<ReturnType<ElectronApp['firstWindow']>>;
 
 type MemoryState = {
   objects: Array<{ id: string; name: string }>;
@@ -21,16 +20,6 @@ type StaffdeskApiForMemory = {
   snapshot: () => Promise<MemoryState>;
 };
 
-async function skipWizardIfAny(win: Window): Promise<void> {
-  const skip = win.getByRole('button', { name: '跳过向导' });
-  try {
-    await skip.waitFor({ state: 'visible', timeout: 8_000 });
-    await skip.click();
-  } catch {
-    // 非首启库不弹向导
-  }
-}
-
 test('设置-记忆节按范围分区浏览并可删除；诊断节导出合并日志', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'staffdesk-memory-settings-e2e-'));
   const exportedLogsPath = join(dir, '诊断日志导出.txt');
@@ -42,7 +31,7 @@ test('设置-记忆节按范围分区浏览并可删除；诊断节导出合并�
 
   try {
     const win = await app.firstWindow();
-    await skipWizardIfAny(win);
+    await dismissOnboarding(win);
 
     // 种子：全局偏好 + 全局习惯（「简报」触发习惯分类）+ 纠正产生的全局禁写（带 0054 三元组）。
     await win.evaluate(async () => {

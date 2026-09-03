@@ -2,21 +2,11 @@ import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { expect, test, _electron as electron } from '@playwright/test';
+import { dismissOnboarding } from './helpers';
 
 const appDir = join(import.meta.dirname, '..');
 type ElectronApp = Awaited<ReturnType<typeof electron.launch>>;
 type Window = Awaited<ReturnType<ElectronApp['firstWindow']>>;
-
-/** 首启向导（0041）盖在主界面上：全新库必弹，出现就跳过。 */
-async function skipWizardIfAny(win: Window): Promise<void> {
-  const skip = win.getByRole('button', { name: '跳过向导' });
-  try {
-    await skip.waitFor({ state: 'visible', timeout: 8_000 });
-    await skip.click();
-  } catch {
-    // 非首启库不弹向导
-  }
-}
 
 /** 0038 托盘语义下 close() 只是收进托盘，进程不退；测试必须走 app.quit()。 */
 async function quitApp(app: ElectronApp): Promise<void> {
@@ -45,7 +35,7 @@ test('设置页可新建自定义场景模板并在建区时可选', async () =>
 
   try {
     const win = await app.firstWindow();
-    await skipWizardIfAny(win);
+    await dismissOnboarding(win);
 
     // 新建模板：名称 + 建对象引导 + 一块（标题自定），保存后列表出现。
     let settings = await openScenarioSection(win);
@@ -100,7 +90,7 @@ test('建对象 placeholder 按场景引导', async () => {
 
   try {
     const win = await app.firstWindow();
-    await skipWizardIfAny(win);
+    await dismissOnboarding(win);
 
     // 建区选内置「尽调研究」：建对象表单 placeholder = 该模板的建对象引导。
     await win.locator('.ws-switch').click();

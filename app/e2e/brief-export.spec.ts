@@ -2,13 +2,13 @@ import { existsSync, mkdtempSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { expect, test, _electron as electron } from '@playwright/test';
+import { dismissOnboarding } from './helpers';
 
 // 审计 F4 + 0062：简报出站出口（复制 Markdown / 导出 .md，引用转脚注）与主键标注。
 // 无模型：brief:generate 走账本组装器；隔离 brain，不触外网。
 
 const appDir = join(import.meta.dirname, '..');
 type ElectronApp = Awaited<ReturnType<typeof electron.launch>>;
-type Window = Awaited<ReturnType<ElectronApp['firstWindow']>>;
 
 type BriefExportState = {
   objects: Array<{ id: string; name: string }>;
@@ -19,16 +19,6 @@ type StaffdeskApiForBrief = {
   dispatch: (action: unknown) => Promise<BriefExportState>;
   generateBrief: (objectId: string) => Promise<BriefExportState>;
 };
-
-async function skipWizardIfAny(win: Window): Promise<void> {
-  const skip = win.getByRole('button', { name: '跳过向导' });
-  try {
-    await skip.waitFor({ state: 'visible', timeout: 8_000 });
-    await skip.click();
-  } catch {
-    // Existing brains do not show onboarding.
-  }
-}
 
 async function quitApp(app: ElectronApp): Promise<void> {
   await app.evaluate(({ app: electronApp }) => electronApp.quit());
@@ -50,7 +40,7 @@ test('简报可复制与导出 Markdown（引用转脚注），主键主张带�
 
   try {
     const win = await app.firstWindow();
-    await skipWizardIfAny(win);
+    await dismissOnboarding(win);
 
     await win.evaluate(async () => {
       const api = (globalThis as unknown as { staffdesk: StaffdeskApiForBrief }).staffdesk;
@@ -132,7 +122,17 @@ test('简报可复制与导出 Markdown（引用转脚注），主键主张带�
     // 复制 Markdown：捕获的内容是脚注化的简报。
     // force：历史 chip 在窄右栏几何下仍可能盖住按钮（PR #38 pull_request e2e）。
     await win.getByRole('button', { name: '复制 Markdown' }).click({ force: true });
-    await expect(win.getByRole('button', { name: '已复制' })).toBeVisible();
+    // 剪贴板是复制契约；「已复制」会被晚到的简报重渲染冲掉（main 68842d4 e2e）。
+    await expect
+      .poll(
+        () =>
+          app.evaluate(
+            () =>
+              (globalThis as { __briefClipboard?: { text: string } }).__briefClipboard?.text ?? '',
+          ),
+        { timeout: 15_000 },
+      )
+      .toContain('# 简报导出组织');
     const clipboardText = await app.evaluate(
       () => (globalThis as { __briefClipboard?: { text: string } }).__briefClipboard?.text ?? '',
     );
@@ -149,12 +149,10 @@ test('简报可复制与导出 Markdown（引用转脚注），主键主张带�
       dialog.showSaveDialog = async () => ({ canceled: false, filePath });
     }, exportedPath);
     await win.getByRole('button', { name: '导出 .md' }).click({ force: true });
-    // 写盘是导出契约；toast 会被晚到的「简报已生成」盖掉，不能当唯一门禁。
+    // 写盘是导出契约。toast 约 3.2s 被抹掉，也会被「简报已生成」盖掉；
+    // isVisible() 后再 textContent() 会把消失当成 30s 超时（PR #50 push e2e）。
     await expect.poll(() => existsSync(exportedPath), { timeout: 15_000 }).toBe(true);
-    const toast = win.getByText(/简报已导出|导出失败/).first();
-    if (await toast.isVisible()) {
-      expect(await toast.textContent(), '导出结果 toast').toMatch(/简报已导出/);
-    }
+    expect(await win.getByText('导出失败').isVisible(), '导出失败 toast').toBe(false);
     const exported = readFileSync(exportedPath, 'utf8');
     expect(exported).toContain('# 简报导出组织');
     expect(exported).toContain('（主键来源）[^1]');

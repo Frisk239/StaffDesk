@@ -2,6 +2,7 @@ import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { expect, test, _electron as electron } from '@playwright/test';
+import { dismissOnboarding } from './helpers';
 
 // 审计 D1：罐头检索注入永不返回的 search/open（STAFFDESK_E2E_REACH_HANG），
 // 配小墙钟档（STAFFDESK_E2E_WALL_MS）断言任务限时收口、不卡「进行中」。
@@ -9,7 +10,6 @@ import { expect, test, _electron as electron } from '@playwright/test';
 
 const appDir = join(import.meta.dirname, '..');
 type ElectronApp = Awaited<ReturnType<typeof electron.launch>>;
-type Window = Awaited<ReturnType<ElectronApp['firstWindow']>>;
 
 type TimeoutState = {
   objects: Array<{ id: string; name: string }>;
@@ -22,16 +22,6 @@ type StaffdeskApiForTimeout = {
   snapshot: () => Promise<TimeoutState>;
   startResearch: (objectId: string, gear?: string) => Promise<TimeoutState>;
 };
-
-async function skipWizardIfAny(win: Window): Promise<void> {
-  const skip = win.getByRole('button', { name: '跳过向导' });
-  try {
-    await skip.waitFor({ state: 'visible', timeout: 8_000 });
-    await skip.click();
-  } catch {
-    // Existing brains do not show onboarding.
-  }
-}
 
 async function quitApp(app: ElectronApp): Promise<void> {
   await app.evaluate(({ app: electronApp }) => electronApp.quit());
@@ -58,7 +48,7 @@ test('搜索路挂死：墙钟内折搜索超时，任务失败收口不卡「�
 
   try {
     const win = await app.firstWindow();
-    await skipWizardIfAny(win);
+    await dismissOnboarding(win);
     const after = await win.evaluate(async () => {
       const api = (globalThis as unknown as { staffdesk: StaffdeskApiForTimeout }).staffdesk;
       await api.dispatch({ type: 'ADD_WORKSPACE', name: '超时验收区', scenario: '求职面试' });
@@ -92,7 +82,7 @@ test('打开路挂死：墙钟内折打开超时进失败 URL，任务按触顶�
 
   try {
     const win = await app.firstWindow();
-    await skipWizardIfAny(win);
+    await dismissOnboarding(win);
     const after = await win.evaluate(async () => {
       const api = (globalThis as unknown as { staffdesk: StaffdeskApiForTimeout }).staffdesk;
       await api.dispatch({ type: 'ADD_WORKSPACE', name: '超时验收区', scenario: '求职面试' });
