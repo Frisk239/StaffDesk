@@ -76,6 +76,29 @@ function unknownSentence(text: string): BriefSentence {
   return { text, claimIds: [], unverified: false, kind: 'unknown' };
 }
 
+const UNCATALOGED_PREFIX = '材料提到：';
+const UNCATALOGED_SUFFIX = '（未编目，不作定论）';
+
+/** 剥已有降级包装，得到主张原句。可重复调用。 */
+export function unwrapUncataloged(text: string): string {
+  let current = text.trim();
+  for (let i = 0; i < 8; i += 1) {
+    let next = current;
+    if (next.startsWith(UNCATALOGED_PREFIX)) next = next.slice(UNCATALOGED_PREFIX.length);
+    if (next.endsWith(UNCATALOGED_SUFFIX)) next = next.slice(0, -UNCATALOGED_SUFFIX.length);
+    next = next.trim();
+    if (next === current) break;
+    current = next;
+  }
+  return current;
+}
+
+/** 未编目出站降级。已包装的句子再降级是 no-op（0037）。 */
+export function wrapUncataloged(text: string): string {
+  const inner = unwrapUncataloged(text).replace(/。$/, '');
+  return `${UNCATALOGED_PREFIX}${inner}${UNCATALOGED_SUFFIX}`;
+}
+
 export function buildBrief(
   state: State,
   objectId: string,
@@ -176,7 +199,7 @@ export function buildBrief(
     const uncataloged = out.filter((c) => c.predicate === '未编目');
     for (const c of uncataloged) {
       sentences.push({
-        text: `材料提到：${c.text.replace(/。$/, '')}（未编目，不作定论）`,
+        text: wrapUncataloged(c.text),
         claimIds: [c.id],
         unverified: c.unverified,
         kind: 'claim',

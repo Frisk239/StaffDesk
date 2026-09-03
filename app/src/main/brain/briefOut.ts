@@ -1,4 +1,4 @@
-import { buildBrief } from '@shared/brief';
+import { buildBrief, wrapUncataloged } from '@shared/brief';
 import type { Brief, BriefSentence, Claim, State } from '@shared/types';
 
 /** 无 claimId 的句子只能是未知占位，未编目不当单边定论。 */
@@ -53,7 +53,7 @@ function sanitizeSentence(sentence: BriefSentence, live: Map<string, Claim>): Br
   const onlyUncataloged = pointed.every((c) => c.predicate === '未编目');
   if (onlyUncataloged && sentence.kind !== 'unknown') {
     return {
-      text: `材料提到：${sentence.text.replace(/。$/, '')}（未编目，不作定论）`,
+      text: wrapUncataloged(sentence.text),
       claimIds: ids,
       unverified: pointed.some((c) => c.unverified),
       kind: 'claim',

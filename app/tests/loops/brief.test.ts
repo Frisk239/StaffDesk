@@ -53,6 +53,20 @@ describe('简报出站闸', () => {
       [uncat],
     );
     expect(out.blocks[0]?.sentences[0]?.flag).toBe('未编目·不作定论');
+    expect(out.blocks[0]?.sentences[0]?.text).toBe('材料提到：平台化（未编目，不作定论）');
+  });
+
+  it('已降级的未编目句再过出站闸不再套一层', () => {
+    const uncat: Claim = { ...claim, id: 'cl-u', predicate: '未编目', text: '平台化' };
+    const wrapped = '材料提到：平台化（未编目，不作定论）';
+    const once = verifyBrief(
+      baseBrief([{ text: wrapped, claimIds: ['cl-u'], unverified: true, kind: 'claim' }]),
+      [uncat],
+    );
+    const twice = verifyBrief(once, [uncat]);
+    expect(once.blocks[0]?.sentences[0]?.text).toBe(wrapped);
+    expect(twice.blocks[0]?.sentences[0]?.text).toBe(wrapped);
+    expect((twice.blocks[0]?.sentences[0]?.text.match(/材料提到：/g) ?? []).length).toBe(1);
   });
 
   it('LLM 瞎写会被闸门打回未知', async () => {

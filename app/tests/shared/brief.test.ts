@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { Claim, Source, State } from '@shared/types';
-import { buildBrief, primarySourceIdsOf } from '@shared/brief';
+import { buildBrief, primarySourceIdsOf, wrapUncataloged } from '@shared/brief';
+import { briefToMarkdown } from '@shared/briefMarkdown';
 import { verifyBrief } from '../../src/main/brain/briefOut';
 import { generateBrief } from '../../src/main/loops/briefGen';
 import { emptyUiFields } from '@shared/defaults';
@@ -151,5 +152,60 @@ describe('简报主键标注（0062）', () => {
       .find((sentence) => sentence.claimIds.includes('cl-u'));
     expect(degraded?.flag).toBe('未编目·不作定论');
     expect(degraded?.primarySourceIds).toEqual(['s1']);
+  });
+});
+
+function wrapCount(text: string): number {
+  return Math.max(
+    (text.match(/材料提到：/g) ?? []).length,
+    (text.match(/（未编目，不作定论）/g) ?? []).length,
+  );
+}
+
+function uncatalogedTexts(brief: ReturnType<typeof buildBrief>): string[] {
+  return brief.blocks.flatMap((block) =>
+    block.sentences.filter((s) => s.flag === '未编目·不作定论').map((s) => s.text),
+  );
+}
+
+describe('未编目降级幂等（0037）', () => {
+  it('wrapUncataloged 对已包装句子是 no-op，不特判整句', () => {
+    const once = wrapUncataloged('走查样例-0903 是一家测试组织。');
+    expect(wrapCount(once)).toBe(1);
+    expect(wrapUncataloged(once)).toBe(once);
+    expect(wrapUncataloged(`材料提到：${once}（未编目，不作定论）`)).toBe(once);
+  });
+
+  it('buildBrief、一次净化、重复净化输出同一句', () => {
+    const state = stateWith(
+      [sourceOf('s1', ['o1'])],
+      [{ ...claimOf('cl-u', 'o1', 's1', '走查样例-0903 是一家测试组织'), predicate: '未编目' }],
+    );
+    const built = buildBrief(state, 'o1');
+    const once = verifyBrief(built, state.claims);
+    const twice = verifyBrief(once, state.claims);
+    const builtTexts = uncatalogedTexts(built);
+    const onceTexts = uncatalogedTexts(once);
+    const twiceTexts = uncatalogedTexts(twice);
+    expect(builtTexts).toHaveLength(1);
+    expect(onceTexts).toEqual(builtTexts);
+    expect(twiceTexts).toEqual(onceTexts);
+    for (const text of onceTexts) expect(wrapCount(text)).toBe(1);
+  });
+
+  it('Markdown 复制口径也只包装一次', () => {
+    const state = stateWith(
+      [sourceOf('s1', ['o1'])],
+      [{ ...claimOf('cl-u', 'o1', 's1', '走查样例-0903 是一家测试组织'), predicate: '未编目' }],
+    );
+    const brief = verifyBrief(verifyBrief(buildBrief(state, 'o1'), state.claims), state.claims);
+    const markdown = briefToMarkdown({
+      brief,
+      objectName: '走查样例-0903',
+      headLine: '出简报',
+      claims: state.claims,
+      sources: state.sources,
+    });
+    expect(wrapCount(markdown)).toBe(1);
   });
 });
