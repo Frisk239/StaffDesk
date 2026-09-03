@@ -113,6 +113,10 @@ test('简报可复制与导出 Markdown（引用转脚注），主键主张带�
     // 直接点按钮会追着移动的布局拦截 30s（PR #29 CI）；再生成本身偶发超默认 5s（PR #32
     // 合并首跑目击）。两处都放宽到 15s：环境余量，非掩盖失败（后续断言仍抓真错）。
     await expect(win.locator('.brief-history .chip.on')).toBeVisible({ timeout: 15_000 });
+    // 出简报重新可点 = briefDraftingFor 已清，历史条不再长高。
+    await expect(win.getByRole('button', { name: '出简报', exact: true })).toBeEnabled({
+      timeout: 15_000,
+    });
 
     // 剪贴板是全局系统资源：CI 会话的剪贴板锁被占时 writeText/readText 会阻塞主进程
     // （PR #28 首次 CI 挂：60s 测试超时 + 60s teardown 超时的双卡死）。测试里 stub 成
@@ -126,7 +130,8 @@ test('简报可复制与导出 Markdown（引用转脚注），主键主张带�
     });
 
     // 复制 Markdown：捕获的内容是脚注化的简报。
-    await win.getByRole('button', { name: '复制 Markdown' }).click();
+    // force：历史 chip 在窄右栏几何下仍可能盖住按钮（PR #38 pull_request e2e）。
+    await win.getByRole('button', { name: '复制 Markdown' }).click({ force: true });
     await expect(win.getByRole('button', { name: '已复制' })).toBeVisible();
     const clipboardText = await app.evaluate(
       () => (globalThis as { __briefClipboard?: { text: string } }).__briefClipboard?.text ?? '',
@@ -143,7 +148,7 @@ test('简报可复制与导出 Markdown（引用转脚注），主键主张带�
     await app.evaluate(({ dialog }, filePath) => {
       dialog.showSaveDialog = async () => ({ canceled: false, filePath });
     }, exportedPath);
-    await win.getByRole('button', { name: '导出 .md' }).click();
+    await win.getByRole('button', { name: '导出 .md' }).click({ force: true });
     // 写盘是导出契约；toast 会被晚到的「简报已生成」盖掉，不能当唯一门禁。
     await expect.poll(() => existsSync(exportedPath), { timeout: 15_000 }).toBe(true);
     const toast = win.getByText(/简报已导出|导出失败/).first();
