@@ -32,7 +32,7 @@
   },
   "devDependencies": {
     "@electron/rebuild": "^4.2.0",
-    "@eslint/js": "^9.28.0",
+    "@eslint/js": "^10.0.1",
     "@playwright/test": "^1.52.0",
     "@testing-library/react": "^16.3.3",
     "@types/better-sqlite3": "^7.6.13",
