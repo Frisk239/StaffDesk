@@ -149,12 +149,10 @@ test('简报可复制与导出 Markdown（引用转脚注），主键主张带�
       dialog.showSaveDialog = async () => ({ canceled: false, filePath });
     }, exportedPath);
     await win.getByRole('button', { name: '导出 .md' }).click({ force: true });
-    // 写盘是导出契约；toast 会被晚到的「简报已生成」盖掉，不能当唯一门禁。
+    // 写盘是导出契约。toast 约 3.2s 被抹掉，也会被「简报已生成」盖掉；
+    // isVisible() 后再 textContent() 会把消失当成 30s 超时（PR #50 push e2e）。
     await expect.poll(() => existsSync(exportedPath), { timeout: 15_000 }).toBe(true);
-    const toast = win.getByText(/简报已导出|导出失败/).first();
-    if (await toast.isVisible()) {
-      expect(await toast.textContent(), '导出结果 toast').toMatch(/简报已导出/);
-    }
+    expect(await win.getByText('导出失败').isVisible(), '导出失败 toast').toBe(false);
     const exported = readFileSync(exportedPath, 'utf8');
     expect(exported).toContain('# 简报导出组织');
     expect(exported).toContain('（主键来源）[^1]');
