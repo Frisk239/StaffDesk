@@ -96,6 +96,11 @@ test('简报可复制与导出 Markdown（引用转脚注），主键主张带�
           },
         ],
       });
+      // 鬼魅根因（四连查后锁定）：App 的 briefDraftingFor 效应会在首份生成期间再触发一次
+      // generateBrief（IPC 守卫只跳过 START、仍完整生成第二份），而渲染器是否观察到那个瞬态
+      // 取决于广播时序——第二份简报的出现是纯竞态，chips 条（history>1）随之漂移。
+      // 种子阶段显式生成两次，把「至少两份」变成断言前的确定事实。
+      await api.generateBrief(object.id);
       await api.generateBrief(object.id);
       await api.dispatch({ type: 'SET_VIEW', view: { kind: 'object', objectId: object.id } });
       await api.dispatch({ type: 'OPEN_RIGHT_TAB', objectId: object.id, kind: '简报' });
